@@ -1,0 +1,352 @@
+/* ── Settings Page Shell (v6.75) ── */
+
+/* Full-page container — siblings with app-shell, mutually exclusive display */
+#settings-page {
+  display: none;
+  flex-direction: column;
+  width: 100%;
+  height: calc(100vh - 0px);
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  z-index: 10;
+}
+
+/* Gear button active state when settings page is open */
+.cfg-btn.active {
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}
+
+/* ── v7.50: File Upload Zone ── */
+.sp-upload-zone {
+  border: 1px dashed var(--divider);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--card);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.sp-upload-zone:hover { border-color: var(--purple-light); }
+.sp-upload-icon {
+  width: 28px; height: 28px;
+  border-radius: 5px;
+  background: var(--purple-pale);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  color: var(--purple);
+  font-size: 13px;
+}
+.sp-upload-title { font-size: 10px; font-weight: 600; color: var(--t1); font-family: var(--font); }
+.sp-upload-sub   { font-size: 9px; color: var(--label); margin-top: 1px; font-family: var(--font); }
+.sp-upload-text  { flex: 1; min-width: 0; }
+.sp-upload-btn {
+  font-size: 9px; font-weight: 600;
+  color: var(--purple);
+  border: 1px solid var(--purple-light);
+  border-radius: 4px; padding: 3px 8px;
+  background: var(--purple-pale);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  font-family: var(--font);
+}
+.sp-upload-input { display: none; }
+
+/* ── File chips ── */
+.sp-file-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--blue-pale); border: 1px solid var(--blue-mid);
+  border-radius: 4px; padding: 2px 6px;
+  font-size: 9px; font-weight: 600; color: var(--blue);
+  margin-top: 5px; margin-right: 4px;
+  font-family: var(--font);
+}
+.sp-file-chip-warn {
+  background: #FAEEDA; border-color: #F0C97A; color: var(--amber);
+}
+.sp-file-chip-remove {
+  background: none; border: none; cursor: pointer;
+  color: var(--label); display: flex; align-items: center;
+  padding: 0; font-size: 9px; transition: color 0.1s;
+}
+.sp-file-chip-remove:hover { color: var(--red); }
+
+/* ── Word count meter ── */
+.sp-word-meter-wrap {
+  height: 4px; background: var(--divider);
+  border-radius: 2px; margin-top: 6px; overflow: hidden;
+}
+.sp-word-meter-bar {
+  height: 100%; background: var(--purple);
+  border-radius: 2px; transition: width 0.2s;
+}
+.sp-word-meter-label {
+  font-size: 9px; color: var(--label);
+  margin-top: 3px; font-family: var(--font);
+}
+
+/* ── Product profile cards (Section 5 list) ── */
+.sp-profile-card {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--divider);
+  border-radius: 7px; background: #fff;
+  margin-bottom: 8px; cursor: pointer;
+  transition: border-color 0.12s;
+}
+.sp-profile-card:hover { border-color: var(--purple-light); }
+.sp-profile-card-icon {
+  width: 32px; height: 32px; border-radius: 6px;
+  background: var(--purple-pale);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; color: var(--purple); font-size: 14px;
+}
+.sp-profile-card-body  { flex: 1; min-width: 0; }
+.sp-profile-card-name  {
+  font-size: 11px; font-weight: 700; color: var(--t1);
+  margin-bottom: 2px;
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font);
+}
+.sp-profile-card-desc  {
+  font-size: 10px; color: var(--t3); line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font);
+}
+.sp-profile-card-meta  {
+  font-size: 9px; color: var(--label);
+  margin-top: 4px; display: flex; align-items: center; gap: 8px;
+  font-family: var(--font);
+}
+.sp-profile-card-meta i { font-size: 9px; }
+.sp-profile-type-badge {
+  font-size: 8px; font-weight: 700;
+  background: var(--blue-pale); color: var(--blue);
+  border-radius: 20px; padding: 1px 6px;
+  font-family: var(--font);
+  white-space: nowrap;  /* v8.55: prevent badge text wrap */
+  flex-shrink: 0;       /* v8.55: prevent badge shrinking */
+}
+.sp-profile-card-actions {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.sp-profile-action-btn {
+  width: 26px; height: 26px;
+  border: 1px solid var(--divider); border-radius: 5px;
+  background: var(--card);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--t3); font-size: 12px;
+  transition: all 0.12s;
+}
+.sp-profile-action-btn:hover {
+  border-color: var(--purple); color: var(--purple);
+  background: var(--purple-pale);
+}
+.sp-profile-action-del:hover {
+  border-color: var(--red); color: var(--red);
+  background: #FCE8E8;
+}
+
+/* ── Section 5 split panel layout ── */
+.sp-p5-shell {
+  display: flex; height: 100%; min-height: 0; overflow: hidden; width: 100%;
+}
+.sp-p5-list {
+  flex: 1; overflow-y: auto; padding: 10px 16px; min-width: 0; box-sizing: border-box;
+}
+.sp-p5-list::-webkit-scrollbar { width: 3px; }
+.sp-p5-list::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 2px; }
+.sp-p5-divider {
+  width: 0; background: var(--divider); flex-shrink: 0; display: none;
+}
+.sp-p5-divider.visible { width: 1px; display: block; }
+.sp-p5-edit {
+  flex: 1; min-width: 300px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sp-p5-edit-hdr {
+  padding: 10px 16px; border-bottom: 1px solid var(--divider);
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); flex-shrink: 0;
+}
+.sp-p5-edit-back {
+  width: 24px; height: 24px;
+  border: 1px solid var(--divider); border-radius: 4px;
+  background: #fff; display: flex; align-items: center;
+  justify-content: center; cursor: pointer;
+  color: var(--t3); flex-shrink: 0; transition: all 0.12s;
+}
+.sp-p5-edit-back:hover {
+  border-color: var(--blue); color: var(--blue); background: var(--blue-pale);
+}
+/* v8.53: ✕ close button — replaces back arrow, positioned top-right */
+.sp-p5-edit-close {
+  position: absolute; top: 10px; right: 12px;
+  width: 22px; height: 22px;
+  border: 1px solid var(--divider); border-radius: 4px;
+  background: #fff; display: flex; align-items: center;
+  justify-content: center; cursor: pointer;
+  color: var(--t3); transition: all 0.12s;
+}
+.sp-p5-edit-close:hover {
+  border-color: var(--red); color: var(--red); background: #FCE8E8;
+}
+.sp-p5-edit-title { font-size: 11px; font-weight: 600; color: var(--t1); font-family: var(--font); }
+.sp-p5-edit-sub   { font-size: 9px; color: var(--label); margin-top: 1px; font-family: var(--font); }
+.sp-p5-edit-scroll {
+  flex: 1; overflow-y: auto; padding: 10px 16px;
+}
+.sp-p5-edit-scroll::-webkit-scrollbar { width: 3px; }
+.sp-p5-edit-scroll::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 2px; }
+.sp-p5-edit-footer {
+  padding: 8px 16px; border-top: 1px solid var(--divider);
+  background: var(--card); flex-shrink: 0;
+  display: flex; justify-content: flex-end; gap: 6px;
+}
+
+/* ── Product type segmented control in edit form ── */
+.sp-p5-type-btn {
+  flex: 1; font-size: 10px; border: none;
+  border-right: 1px solid var(--divider);
+  cursor: pointer; color: var(--t3); font-weight: 500;
+  background: #fff; font-family: var(--font);
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.1s;
+}
+.sp-p5-type-btn:last-child { border-right: none; }
+.sp-p5-type-btn.active {
+  background: var(--purple-pale); color: var(--purple); font-weight: 700;
+}
+
+/* ── Section 5 scroll wrapper override — no padding for split panel ── */
+#sp-p5 {
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+/* ── v8.55: Product Profiles section container — force full width ── */
+#sp-p2 {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 100%;
+}
+
+/* ── v7.51: Apply / Discard panel footer buttons ── */
+.sp-p5-apply-btn {
+  background: var(--purple);
+  color: #fff;
+  border: 1px solid var(--purple);
+  border-radius: 5px;
+  padding: 5px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: all 0.12s;
+}
+.sp-p5-apply-btn:hover {
+  background: #4a17a0;
+  border-color: #4a17a0;
+}
+.sp-p5-discard-btn {
+  background: none;
+  border: 1px solid var(--divider);
+  border-radius: 5px;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: var(--t3);
+  cursor: pointer;
+  font-family: var(--font);
+  transition: all 0.12s;
+}
+.sp-p5-discard-btn:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* ── v7.52: Compact profile chip grid ── */
+.sp-profile-chip-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+/* v8.55: narrow to 2-col when edit panel is open — scoped selector for specificity */
+.sp-profile-chip-grid.sp-profile-chip-grid-narrow {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.sp-profile-chip {
+  border: 1px solid var(--divider);
+  border-radius: 7px;
+  background: #fff;
+  padding: 9px 10px;
+  transition: border-color 0.12s;
+  cursor: default;
+}
+.sp-profile-chip:hover { border-color: var(--purple-light); }
+.sp-profile-chip-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  min-width: 0;
+}
+.sp-profile-chip-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--t1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font);
+}
+.sp-profile-chip-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.sp-profile-chip-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 9px;
+  color: var(--label);
+  font-family: var(--font);
+}
+.sp-profile-chip-meta i { font-size: 9px; }
+
+/* ── v7.53: Profile chip card updates ── */
+.sp-profile-chip {
+  padding: 11px 12px 10px; /* taller than 9px 10px */
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;          /* v8.55: prevent grid track expansion */
+  box-sizing: border-box; /* v8.55: padding within track width */
+}
+.sp-profile-chip-desc {
+  font-size: 10px;
+  color: var(--t3);
+  line-height: 1.4;
+  margin: 4px 0 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: var(--font);
+}
+.sp-profile-chip-meta {
+  margin-top: auto;
+}

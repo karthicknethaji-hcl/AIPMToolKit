@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Sign In | AI PM Toolkit</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" rel="stylesheet"/>
+<link rel="icon" type="image/x-icon" href="./favicon.ico"/>
+<link rel="stylesheet" href="./styles/00-tokens.css">
+<link rel="stylesheet" href="./styles/01-base.css">
+<link rel="stylesheet" href="./styles/03-header-settings.css">
+<link rel="stylesheet" href="./styles/18-auth.css">
+</head>
+<body>
+
+<div class="auth-page">
+
+  <!-- Header — identical structure to index.html .hdr, minus settings gear, saved indicator, product name -->
+  <div class="hdr">
+    <div class="hdr-l">
+      <span class="logo-txt" id="logo-txt"></span>
+      <div class="hdr-sep" style="display:none;"></div>
+      <span class="hdr-title">AI PM Toolkit</span>
+      <span class="hdr-version" id="hdr-version"></span>
+    </div>
+    <div class="hdr-r">
+      <span class="hdr-badge">AI-Powered</span>
+    </div>
+  </div>
+
+  <!-- Centre card -->
+  <div class="auth-body">
+    <div class="auth-card">
+
+      <!-- Card header — title + subtitle swap per mode -->
+      <div class="auth-card-hdr">
+        <p class="auth-card-title" id="auth-title">Welcome Back</p>
+        <p class="auth-card-sub" id="auth-sub">Sign in to your account to continue</p>
+      </div>
+
+      <!-- Mode toggle -->
+      <div class="auth-toggle">
+        <button class="auth-toggle-btn active" id="btn-mode-signin" onclick="authSetMode('signin')">Sign In</button>
+        <button class="auth-toggle-btn" id="btn-mode-signup" onclick="authSetMode('signup')">Create Account</button>
+      </div>
+
+      <!-- Form -->
+      <div class="auth-form">
+
+        <!-- Display name — Sign Up only -->
+        <div class="auth-field" id="field-name" style="display:none;">
+          <label class="auth-label" for="auth-name">Display Name</label>
+          <input class="auth-input" type="text" id="auth-name" placeholder="E.g. Nethaji Karthick" autocomplete="name"/>
+        </div>
+
+        <!-- Email -->
+        <div class="auth-field">
+          <label class="auth-label" for="auth-email">Email</label>
+          <input class="auth-input" type="email" id="auth-email" placeholder="you@hcltech.com" autocomplete="email"/>
+          <div class="auth-field-error" id="email-error" style="display:none;">
+            <i class="ti ti-alert-circle" aria-hidden="true"></i>
+            <span id="email-error-msg"></span>
+          </div>
+        </div>
+
+        <!-- Password -->
+        <div class="auth-field">
+          <label class="auth-label" for="auth-password">Password</label>
+          <div class="auth-input-wrap">
+            <input class="auth-input has-toggle" type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password"/>
+            <button class="auth-pw-toggle" id="pw-toggle" onclick="authTogglePw()" type="button" aria-label="Show password">
+              <i class="ti ti-eye" id="pw-toggle-icon" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="auth-hint" id="pw-hint" style="display:none;">Min. 8 characters</div>
+        </div>
+
+        <!-- Toast feedback (loading / error / success) — sits above CTA, no layout jump on fields -->
+        <div class="auth-toast" id="auth-toast">
+          <i class="ti" id="auth-toast-icon" aria-hidden="true"></i>
+          <span id="auth-toast-msg"></span>
+        </div>
+
+        <!-- CTA -->
+        <button class="auth-cta" id="auth-cta" onclick="authSubmit()">Sign In</button>
+
+        <!-- Forgot password — Sign In only -->
+        <div class="auth-footer-link" id="forgot-wrap">
+          Forgot password? <a onclick="authForgotPassword()">Reset via email</a>
+        </div>
+
+      </div><!-- /auth-form -->
+    </div><!-- /auth-card -->
+  </div><!-- /auth-body -->
+
+</div><!-- /auth-page -->
+
+<!-- Supabase JS SDK (CDN — no build step) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- App config (AUTH_DOMAIN) -->
+<script src="./scripts/config.js"></script>
+<!-- Supabase credentials — env.js is NOT in the zip, drop it into scripts/ before deploying -->
+<script src="./scripts/env.js"></script>
+<!-- Auth functions -->
+<script src="./scripts/auth.js"></script>
+
+<script>
+// ── Login page controller ──
+
+var _authMode = 'signin'; // 'signin' | 'signup'
+var _pwVisible = false;
+
+// ── Initialise on load ──
+document.addEventListener('DOMContentLoaded', function() {
+  // ── Version string — set from APP_VERSION in config.js ──
+  var _vEl=document.getElementById('hdr-version');
+  if(_vEl&&typeof APP_VERSION!=='undefined')_vEl.textContent=APP_VERSION;
+
+  authInit();
+
+  // If already signed in, redirect straight to app
+  authGetSession().then(function(session) {
+    if (session) window.location.href = 'index.html';
+  });
+
+  // Enter key submits
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') authSubmit();
+  });
+});
+
+// ── Mode switch ──
+function authSetMode(mode) {
+  _authMode = mode;
+  authHideToast();
+  authClearFieldErrors();
+
+  var isSignup = (mode === 'signup');
+
+  // Toggle button states
+  document.getElementById('btn-mode-signin').classList.toggle('active', !isSignup);
+  document.getElementById('btn-mode-signup').classList.toggle('active', isSignup);
+
+  // Show/hide display name field
+  document.getElementById('field-name').style.display = isSignup ? '' : 'none';
+
+  // Show/hide password hint
+  document.getElementById('pw-hint').style.display = isSignup ? '' : 'none';
+
+  // Show/hide forgot password link
+  document.getElementById('forgot-wrap').style.display = isSignup ? 'none' : '';
+
+  // Update card title + subtitle
+  var domain = (typeof AUTH_DOMAIN !== 'undefined') ? AUTH_DOMAIN : 'hcltech.com';
+  document.getElementById('auth-title').textContent = isSignup ? 'Create Your Account' : 'Welcome Back';
+  document.getElementById('auth-sub').innerHTML = isSignup
+    ? 'Requires an <code>@' + domain + '</code> email address'
+    : 'Sign in to your account to continue';
+
+  // Update CTA label
+  document.getElementById('auth-cta').textContent = isSignup ? 'Create Account' : 'Sign In';
+
+  // Update autocomplete hint on password field
+  document.getElementById('auth-password').setAttribute('autocomplete', isSignup ? 'new-password' : 'current-password');
+
+  // Clear inputs
+  document.getElementById('auth-name').value = '';
+  document.getElementById('auth-email').value = '';
+  document.getElementById('auth-password').value = '';
+}
+
+// ── Submit handler ──
+async function authSubmit() {
+  var email    = document.getElementById('auth-email').value.trim();
+  var password = document.getElementById('auth-password').value;
+  var name     = document.getElementById('auth-name').value.trim();
+
+  // Basic client-side validation
+  if (!email) { authShowFieldError('email-error', 'email-error-msg', 'Email is required.'); return; }
+  if (!password) { authShowToast('error', 'ti-alert-circle', 'Password is required.'); return; }
+
+  authClearFieldErrors();
+  authSetLoading(true);
+
+  try {
+    if (_authMode === 'signin') {
+      authShowToast('loading', 'ti-loader-2', 'Signing in…');
+      await authSignIn(email, password);
+      authShowToast('success', 'ti-check', 'Signed in. Redirecting…');
+      setTimeout(function() { window.location.href = 'index.html'; }, 800);
+
+    } else {
+      if (!name) { authSetLoading(false); authHideToast(); authShowToast('error', 'ti-alert-circle', 'Display name is required.'); return; }
+      authShowToast('loading', 'ti-loader-2', 'Creating your account…');
+      await authSignUp(email, name, password);
+      authShowToast('success', 'ti-check', 'Account created. Redirecting…');
+      setTimeout(function() { window.location.href = 'index.html'; }, 800);
+    }
+
+  } catch(err) {
+    authSetLoading(false);
+    var msg = (typeof err === 'string') ? err : (err.message || 'Something went wrong. Please try again.');
+    // Domain error — show on field, not toast
+    if (msg.toLowerCase().includes('email addresses are permitted') || msg.toLowerCase().includes('@')) {
+      authHideToast();
+      authShowFieldError('email-error', 'email-error-msg', msg);
+      document.getElementById('auth-email').classList.add('is-error');
+    } else {
+      authShowToast('error', 'ti-alert-circle', msg);
+    }
+  }
+}
+
+// ── Forgot password ──
+async function authForgotPassword() {
+  var email = document.getElementById('auth-email').value.trim();
+  if (!email) {
+    authShowFieldError('email-error', 'email-error-msg', 'Enter your email address above first.');
+    return;
+  }
+  authClearFieldErrors();
+  authShowToast('loading', 'ti-loader-2', 'Sending reset link…');
+  try {
+    await authResetPassword(email);
+    authShowToast('success', 'ti-check', 'If that email is registered, a reset link is on its way. Check your inbox.');
+  } catch(err) {
+    var msg = (typeof err === 'string') ? err : (err.message || 'Could not send reset link.');
+    authShowToast('error', 'ti-alert-circle', msg);
+  }
+}
+
+// ── Password visibility toggle ──
+function authTogglePw() {
+  _pwVisible = !_pwVisible;
+  var input = document.getElementById('auth-password');
+  var icon  = document.getElementById('pw-toggle-icon');
+  input.type = _pwVisible ? 'text' : 'password';
+  icon.className = _pwVisible ? 'ti ti-eye-off' : 'ti ti-eye';
+  document.getElementById('pw-toggle').setAttribute('aria-label', _pwVisible ? 'Hide password' : 'Show password');
+}
+
+// ── UI helpers ──
+function authSetLoading(on) {
+  document.getElementById('auth-cta').disabled = on;
+}
+
+function authShowToast(type, iconClass, msg) {
+  var toast = document.getElementById('auth-toast');
+  var icon  = document.getElementById('auth-toast-icon');
+  var text  = document.getElementById('auth-toast-msg');
+  toast.className = 'auth-toast visible toast-' + type;
+  icon.className  = 'ti ' + iconClass;
+  text.textContent = msg;
+}
+
+function authHideToast() {
+  document.getElementById('auth-toast').className = 'auth-toast';
+}
+
+function authShowFieldError(wrapperId, msgId, msg) {
+  document.getElementById(wrapperId).style.display = 'flex';
+  document.getElementById(msgId).textContent = msg;
+}
+
+function authClearFieldErrors() {
+  document.getElementById('email-error').style.display = 'none';
+  document.getElementById('email-error-msg').textContent = '';
+  document.getElementById('auth-email').classList.remove('is-error');
+}
+</script>
+
+</body>
+</html>

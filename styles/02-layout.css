@@ -1,0 +1,6 @@
+.app{display:flex;flex:1;overflow:hidden;min-height:0;min-width:960px;}
+.left{width:300px;min-width:300px;background:var(--card);border-right:1px solid var(--divider);display:flex;flex-direction:column;overflow:hidden;transition:width 0.22s cubic-bezier(0.4,0,0.2,1),min-width 0.22s cubic-bezier(0.4,0,0.2,1);}
+.left.collapsed{width:44px;min-width:44px;}
+.left.collapsed .form-scroll,.left.collapsed .gen-wrap,.left.collapsed .regen-bar,.left.collapsed .ph-sub{display:none;}
+.left.collapsed .collapse-btn{margin:auto;}
+.sc-hidden{display:none!important;}

@@ -1,0 +1,249 @@
+/* ── 18-auth.css — Login / Signup page styles ──
+   Loaded by login.html only. Not referenced by index.html.
+   Uses CSS variables from 00-tokens.css.
+*/
+
+/* ── Page shell ── */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+}
+
+/* Header uses .hdr from 03-header-settings.css — no auth-specific header styles needed */
+
+/* ── Centre card ── */
+.auth-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+}
+.auth-card {
+  background: #fff;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 400px;
+  overflow: hidden;
+}
+
+/* ── Card header ── */
+.auth-card-hdr {
+  padding: 24px 28px 0;
+  text-align: center;
+}
+.auth-card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--t1);
+  margin: 0 0 4px;
+}
+.auth-card-sub {
+  font-size: 11px;
+  color: var(--t3);
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+.auth-card-sub code {
+  font-size: 10px;
+  background: var(--card);
+  border: 1px solid var(--divider);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: monospace;
+  color: var(--t2);
+}
+
+/* ── Mode toggle (Sign in / Create account) ── */
+.auth-toggle {
+  display: flex;
+  background: var(--card);
+  border-radius: 7px;
+  padding: 3px;
+  gap: 2px;
+  margin: 0 28px 20px;
+}
+.auth-toggle-btn {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 0;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--t3);
+  transition: background 0.15s, color 0.15s;
+  font-family: var(--font);
+}
+.auth-toggle-btn.active {
+  background: #fff;
+  color: var(--purple);
+  font-weight: 700;
+  border: 1px solid var(--divider);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+/* ── Form body ── */
+.auth-form {
+  padding: 0 28px 24px;
+}
+
+/* ── Field ── */
+.auth-field {
+  margin-bottom: 14px;
+}
+.auth-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t1);
+  margin-bottom: 5px;
+}
+.auth-input-wrap {
+  position: relative;
+}
+.auth-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--divider);
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--t1);
+  background: #fff;
+  outline: none;
+  font-family: var(--font);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.auth-input:focus {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px rgba(95,30,190,0.08);
+}
+.auth-input.is-error {
+  border-color: var(--red);
+}
+.auth-input.has-toggle {
+  padding-right: 38px;
+}
+
+/* ── Suppress native browser password reveal icon ── */
+input[type="password"]::-ms-reveal { display: none; }
+input[type="password"]::-ms-clear { display: none; }
+input[type="password"]::-webkit-credentials-auto-fill-button { display: none !important; visibility: hidden; pointer-events: none; }
+
+/* ── Password show/hide toggle ── */
+.auth-pw-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--label);
+  font-size: 15px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  transition: color 0.12s;
+}
+.auth-pw-toggle:hover { color: var(--t2); }
+
+/* ── Field hint ── */
+.auth-hint {
+  font-size: 10px;
+  color: var(--t4);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* ── Inline field error ── */
+.auth-field-error {
+  font-size: 10px;
+  color: var(--red);
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.4;
+}
+.auth-field-error i { font-size: 11px; flex-shrink: 0; }
+
+/* ── Toast (above CTA) ── */
+.auth-toast {
+  margin-bottom: 12px;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.4;
+  display: none;
+}
+.auth-toast.visible { display: flex; }
+.auth-toast i { font-size: 14px; flex-shrink: 0; }
+.auth-toast.toast-loading {
+  background: var(--purple-pale);
+  border: 1px solid var(--purple-light);
+  color: var(--purple-deep);
+}
+.auth-toast.toast-error {
+  background: #FCEBEB;
+  border: 1px solid #F09595;
+  color: #791F1F;
+}
+.auth-toast.toast-success {
+  background: #EAF3DE;
+  border: 1px solid #97C459;
+  color: #3B6D11;
+}
+
+/* ── CTA button ── */
+.auth-cta {
+  width: 100%;
+  padding: 11px 16px;
+  background: var(--purple);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.auth-cta:hover:not(:disabled) { background: var(--purple-deep); }
+.auth-cta:disabled {
+  background: var(--divider);
+  color: var(--label);
+  cursor: not-allowed;
+}
+
+/* ── Footer link (forgot password / switch mode) ── */
+.auth-footer-link {
+  text-align: center;
+  font-size: 11px;
+  color: var(--t3);
+  margin-top: 14px;
+}
+.auth-footer-link a {
+  color: var(--purple);
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.auth-footer-link a:hover { text-decoration: underline; }
+
+/* ── Scrollbar (if card ever scrolls) ── */
+.auth-card::-webkit-scrollbar { width: 3px; }
+.auth-card::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 2px; }

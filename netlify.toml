@@ -1,0 +1,11 @@
+# ── Netlify Configuration ──
+# No build step — app is pure static HTML/JS/CSS.
+
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/anthropic"
+  to = "/.netlify/functions/anthropic-proxy"
+  status = 200

@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AI PM Toolkit</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=DM+Serif+Display&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" rel="stylesheet"/>
+<link rel="icon" type="image/x-icon" href="./favicon.ico"/>
+<link rel="stylesheet" href="./styles/00-tokens.css">
+<link rel="stylesheet" href="./styles/01-base.css">
+<link rel="stylesheet" href="./styles/02-layout.css">
+<link rel="stylesheet" href="./styles/03-header-settings.css">
+<link rel="stylesheet" href="./styles/04-left-panel.css">
+<link rel="stylesheet" href="./styles/05-kpi-tree.css">
+<link rel="stylesheet" href="./styles/06-metrics-definition.css">
+<link rel="stylesheet" href="./styles/07-capability-drawer.css">
+<link rel="stylesheet" href="./styles/08-feature-canvas.css">
+<link rel="stylesheet" href="./styles/16-story-canvas-new.css">
+<link rel="stylesheet" href="./styles/19-prototype-canvas.css">
+<link rel="stylesheet" href="./styles/09-modals-export.css">
+<link rel="stylesheet" href="./styles/11-diagnostic-view.css">
+<link rel="stylesheet" href="./styles/12-product-leak-analysis.css">
+<link rel="stylesheet" href="./styles/13-market-intelligence.css">
+<link rel="stylesheet" href="./styles/10-capability-canvas.css">
+<link rel="stylesheet" href="./styles/14-pi-planning.css">
+<link rel="stylesheet" href="./styles/15-settings.css">
+<link rel="stylesheet" href="./styles/17-home.css">
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-l">
+    <span class="logo-txt" id="logo-txt"></span>
+    <div class="hdr-sep" id="hdr-sep" style="display:none;"></div>
+    <span class="hdr-title">AI PM Toolkit</span>
+    <span class="hdr-version" id="hdr-version"></span>
+  </div>
+  <div class="hdr-session-wrap" id="hdr-session-wrap">
+    <span class="hdr-product hdr-session-label" id="hdr-product-name"></span>
+    <button class="hdr-session-rename-btn" id="hdr-session-rename-btn" onclick="hdrRenameSession(event)" title="Rename session" aria-label="Rename session" style="display:none;background:none;border:none;cursor:pointer;padding:2px 4px;color:rgba(255,255,255,0.6);border-radius:3px;">
+      <i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i>
+    </button>
+  </div>
+  <div class="hdr-r">
+    <span class="hdr-badge">AI-Powered</span>
+    <span class="hdr-saved" id="hdr-saved">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      Saved
+    </span>
+    <!-- Avatar badge + dropdown (Step 3) -->
+    <div class="hdr-avatar-overlay" id="hdr-avatar-overlay" onclick="hdrAvatarClose()"></div>
+    <div class="hdr-avatar-wrap">
+      <div class="hdr-avatar" id="hdr-avatar" onclick="hdrAvatarToggle()" title="Account" aria-label="Account menu">?</div>
+      <div class="hdr-avatar-drop" id="hdr-avatar-drop">
+        <div class="hdr-avatar-user">
+          <div class="hdr-avatar-name" id="hdr-avatar-name">—</div>
+          <div class="hdr-avatar-email" id="hdr-avatar-email">—</div>
+        </div>
+        <div class="hdr-avatar-divider"></div>
+        <button class="hdr-avatar-profile" onclick="hdrOpenProfile()">
+          <i class="ti ti-user-circle" aria-hidden="true"></i> My Profile
+        </button>
+        <div class="hdr-avatar-divider"></div>
+        <button class="hdr-avatar-signout" onclick="hdrSignOut()">
+          <i class="ti ti-logout" aria-hidden="true"></i> Sign Out
+        </button>
+      </div>
+    </div>
+    <div class="cfg-wrap">
+      <button class="cfg-btn" id="cfg-btn" onclick="openSettingsPage()" title="Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      </button>
+      <div class="api-dot" id="api-dot"></div>
+    </div>
+  </div>
+</div>
+
+
+<div class="app-shell" id="app-shell">
+  <div class="out-hdr"><div class="tab-row">
+    <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
+    <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
+    <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
+    <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
+    <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Product Diagnostics</button>
+    <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> PI Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <div class="home-tab-lock" id="home-tab-lock"><i class="ti ti-lock" style="font-size:9px;" aria-hidden="true"></i><span>Tabs unlock after you launch a session</span></div>
+  </div></div>
+
+<div class="app">
+
+  <!-- HOME TAB -->
+  <div id="home-tab" style="display:flex;flex:1;overflow:hidden;">
+    <div class="home-left">
+      <div class="home-ph" id="home-ph">
+        <div class="home-ph-text">
+          <div class="home-ph-eyebrow">Session Setup</div>
+          <div class="home-ph-sub">Select a product and configure how to start</div>
+        </div>
+        <button class="collapse-btn" onclick="homeTogglePanel()" title="Toggle panel">
+          <svg id="icon-home-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+          <svg id="icon-home-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
+        </button>
+      </div>
+      <div class="home-form-scroll">
+        <div class="home-fl">
+          <label>Product <span class="home-req">*</span></label>
+          <select class="home-f-select" id="home-product-sel" onchange="homeOnProductChange()"></select>
+          <span class="home-hint">Manage products in Settings - Product Profiles</span>
+        </div>
+        <div id="home-pp-wrap"></div>
+        <div class="home-fl">
+          <label>Approach <span class="home-req">*</span></label>
+          <div class="home-seg">
+            <button class="home-seg-btn home-seg-btn-active" id="home-approach-outcome" onclick="homeSetApproach('outcome-based')">Outcome-Based</button>
+            <button class="home-seg-btn" id="home-approach-capability" onclick="homeSetApproach('capability-based')">Capability-Based</button>
+          </div>
+          <span class="home-hint">Drive based on metrics or capabilities</span>
+        </div>
+        <div class="home-fl">
+          <label>Generation Mode <span class="home-req">*</span></label>
+          <div class="home-seg">
+            <button class="home-seg-btn home-seg-btn-active" id="home-mode-ai" onclick="homeSetMode('ai-generated')">AI Generated</button>
+            <button class="home-seg-btn" id="home-mode-manual" onclick="homeSetMode('manual')" title="Available for Capability-Based only">Manual</button>
+          </div>
+        </div>
+        <div class="home-cond-box" id="home-sdocs-box">
+          <!-- Rendered by homeRenderSdocsSection() -->
+        </div>
+        <div class="home-fl">
+          <label>Custom Value Chain</label>
+          <textarea class="home-f-textarea" id="home-custom-vc" rows="2"
+            placeholder="One stage per line e.g. Discover, Plan, Purchase..."></textarea>
+          <span class="home-hint">Overrides AI-derived value chain stages</span>
+        </div>
+        <div class="home-fl">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <label style="margin:0;"><i class="ti ti-notes" style="font-size:10px;" aria-hidden="true"></i> Additional Context</label>
+            <span id="home-ctx-toggle" style="font-size:9px;color:var(--purple);cursor:pointer;" onclick="_homeToggleCtx()">+ Add notes</span>
+          </div>
+          <div id="home-ctx-wrap" style="display:none;">
+            <textarea class="home-f-textarea" id="home-additional-context" rows="2" maxlength="2000"
+              placeholder="Session-specific notes, constraints, focus areas..." style="margin-top:6px;"></textarea>
+            <div class="home-ctx-counter"><span id="home-ctx-counter">0/2000</span></div>
+          </div>
+        </div>
+        <div class="home-tog-row mi-gated" id="home-mi-row">
+          <div class="home-tog-lhs">
+            <div class="home-tog-label"><i class="ti ti-world-search" style="font-size:10px;" aria-hidden="true"></i> Market Intelligence</div>
+            <div class="home-tog-sub">Make your map market-aware from the start</div>
+          </div>
+          <label class="sp-toggle" style="flex-shrink:0;">
+            <input type="checkbox" id="home-mi-toggle"><div class="sp-track"></div><div class="sp-thumb"></div>
+          </label>
+        </div>
+        <!-- Error/status message — margin-top:auto pins it above the gen-wrap divider -->
+        <div class="home-launch-error" id="home-launch-error" style="display:none;"></div>
+      </div>
+      <div class="home-gen-wrap">
+        <button class="home-gen-btn" id="home-gen-btn" onclick="homeLaunch()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          Launch Session
+        </button>
+      </div>
+    </div>
+    <div class="home-main" id="home-main-body">
+      <div class="home-empty-wrap" id="home-empty-wrap">
+          <div class="home-empty-icon"><i class="ti ti-rocket" style="font-size:22px;color:var(--purple);" aria-hidden="true"></i></div>
+          <div class="home-empty-title">Where do you want to start?</div>
+          <div class="home-empty-desc">Select a product and configure your session on the left. Tabs unlock progressively as your session advances.</div>
+          <div class="home-steps">
+            <div class="home-e-step"><div class="home-e-num">1</div>Select product</div>
+            <div class="home-e-step"><div class="home-e-num">2</div>Choose approach</div>
+            <div class="home-e-step"><div class="home-e-num">3</div>Launch session</div>
+          </div>
+          <div class="home-or-line"><span>or explore first</span></div>
+          <div class="home-demo-card">
+            <div class="home-demo-icon"><i class="ti ti-test-pipe" style="font-size:14px;color:var(--purple);" aria-hidden="true"></i></div>
+            <div class="home-demo-title">Try with Demo Data</div>
+            <div class="home-demo-desc">Pick a pre-built product to explore — complete Discovery Map, capabilities, features, and stories. No setup needed.</div>
+            <div class="home-demo-options" id="home-demo-options" role="radiogroup">
+              <label class="home-demo-opt active">
+                <input type="radio" name="home-demo-pick" value="focusly" checked onchange="document.querySelectorAll('#home-demo-options .home-demo-opt').forEach(o=>o.classList.toggle('active',o.querySelector('input').checked))">
+                <div class="home-demo-opt-body">
+                  <div class="home-demo-opt-title">Focusly</div>
+                  <div class="home-demo-opt-desc">B2C productivity app — outcome-based, full L1-L4 metric map</div>
+                </div>
+              </label>
+              <label class="home-demo-opt">
+                <input type="radio" name="home-demo-pick" value="orderhub" onchange="document.querySelectorAll('#home-demo-options .home-demo-opt').forEach(o=>o.classList.toggle('active',o.querySelector('input').checked))">
+                <div class="home-demo-opt-body">
+                  <div class="home-demo-opt-title">OrderHub</div>
+                  <div class="home-demo-opt-desc">B2B omnichannel order orchestration — capability-driven mode</div>
+                </div>
+              </label>
+              <label class="home-demo-opt">
+                <input type="radio" name="home-demo-pick" value="unifiedcart" onchange="document.querySelectorAll('#home-demo-options .home-demo-opt').forEach(o=>o.classList.toggle('active',o.querySelector('input').checked))">
+                <div class="home-demo-opt-body">
+                  <div class="home-demo-opt-title">OneCart</div>
+                  <div class="home-demo-opt-desc">B2C multi-business unified checkout — outcome-based, full L1-L4 metric map</div>
+                </div>
+              </label>
+            </div>
+            <button class="home-demo-cta" onclick="homeLoadDemo()">
+              <i class="ti ti-player-play" style="font-size:9px;" aria-hidden="true"></i>
+              Load Demo Session
+              <span class="home-demo-tag">DEMO</span>
+            </button>
+          </div>
+        </div>
+    </div>
+  </div>
+
+  <div class="left sc-hidden" id="left-panel">
+    <div class="ph">
+      <div class="ph-text"><div class="ph-title">Outcome Map</div><div class="ph-sub">Define your product's outcome metrics</div></div>
+      <button class="collapse-btn" onclick="togglePanel()" title="Toggle panel">
+        <svg id="icon-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+        <svg id="icon-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
+      </button>
+    </div>
+    <div class="form-scroll">
+      <div class="fl"><label>Product Name <span class="req">*</span></label><input type="text" id="f-name" placeholder="e.g. IKEA Order Management, Focusly, Salesforce"/></div>
+      <div class="fl"><label>What does this product do? <span class="req">*</span></label><input type="text" id="f-desc" placeholder="e.g. Orchestrates omnichannel orders across warehouse, carrier and store channels"/><span class="hint">One sentence — the primary AI context signal</span></div>
+      <div class="fl"><label>Industry Vertical <span class="req">*</span></label><select id="f-industry" class="f-select"><option value="Banking &amp; Finance">Banking &amp; Finance</option><option value="Cross-Industry">Cross-Industry</option><option value="Education / EdTech">Education / EdTech</option><option value="Energy &amp; Utilities">Energy &amp; Utilities</option><option value="Government / Public Sector">Government / Public Sector</option><option value="Health &amp; Life Sciences">Health &amp; Life Sciences</option><option value="Insurance">Insurance</option><option value="Manufacturing">Manufacturing</option><option value="Media &amp; Entertainment">Media &amp; Entertainment</option><option value="Real Estate / PropTech">Real Estate / PropTech</option><option value="Retail &amp; Consumer Goods">Retail &amp; Consumer Goods</option><option value="Supply Chain &amp; Logistics">Supply Chain &amp; Logistics</option><option value="Technology &amp; Software">Technology &amp; Software</option><option value="Telecommunications">Telecommunications</option><option value="Travel &amp; Hospitality">Travel &amp; Hospitality</option></select></div>
+      <div class="fl"><label>Product Type <span class="req">*</span></label><div class="seg" id="seg-producttype"><button class="seg-btn active" data-v="B2C Product">B2C</button><button class="seg-btn" data-v="B2B SaaS">B2B SaaS</button><button class="seg-btn" data-v="Internal Tool">Internal</button><button class="seg-btn" data-v="System/API">System</button></div></div>
+      <div class="fl"><label>Current KPIs Being Tracked</label><input type="text" id="f-kpis" placeholder="e.g. order fill rate, OTIF, DAU"/><span class="hint">What you measure today, even if incomplete</span></div>
+      <div class="fl"><label>Biggest Known Problem</label><input type="text" id="f-problem" placeholder="e.g. High exception rate in last-mile delivery"/></div>
+      <div class="fl"><label>Primary User / ICP</label><input type="text" id="f-icp" placeholder="e.g. Warehouse ops teams, knowledge workers"/></div>
+      <div class="fl"><label>Product / Company URL</label><input type="url" id="f-url" placeholder="https://product.com or company website"/><span class="hint">Product page, app store listing, or company website</span></div>
+      <div class="fl"><label>Additional Context</label><textarea id="f-context" class="f-textarea" placeholder="Paste PRD excerpts, constraints, tech stack, org context, or client brief. Include insider intelligence here — e.g. 'order accuracy dropping due to staff training gaps, not systems — avoid recommending ML routing solutions'." maxlength="2000" rows="3"></textarea><span class="ctx-counter" id="f-context-counter">0/2000</span></div>
+      <div class="fl vc-section" id="vc-section">
+        <label>Custom Value Chain</label>
+        <textarea id="f-custom-vc" class="f-textarea" placeholder="Paste your client's process framework stages here, one per line, with optional 1-line descriptions. e.g.&#10;Discover — customer awareness and research&#10;Plan — meal and order planning&#10;Purchase — checkout and payment&#10;Fulfill — picking, packing, delivery&#10;Return — post-purchase service" maxlength="2000" rows="5"></textarea>
+        <span class="ctx-counter" id="f-vc-counter">0/2000</span>
+        <span class="vc-hint">When populated, the KPI tree will use these exact stages instead of deriving its own value chain.</span>
+      </div>
+      <div class="fl mi-gated" id="mi-kpi-toggle-row" style="padding:0;">
+        <div class="mi-kpi-toggle-row">
+          <div>
+            <div class="mi-toggle-label"><i class="ti ti-world-search" style="font-size:11px;"></i> Include Market Intelligence</div>
+            <div class="mi-toggle-sub">Make your KPI tree market-aware from the start</div>
+          </div>
+          <label class="sp-toggle" style="flex-shrink:0;">
+            <input type="checkbox" id="tog-mi-kpi" /><div class="sp-track"></div><div class="sp-thumb"></div>
+          </label>
+        </div>
+        
+      </div>
+    </div>
+        <div class="gen-wrap"><button class="gen-btn" id="gen-btn" onclick="generate()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Generate Discovery Map</button></div>
+        <div class="gen-wrap" style="margin-top:0;padding-top:0;"><button class="gen-btn-secondary" onclick="ccActivatePIFirst();revealAndSwitchTab('cc')"><i class="ti ti-clipboard-list" style="font-size:13px;" aria-hidden="true"></i> I already have a capability plan</button></div>
+  </div>
+
+  <div class="right">
+    <!-- Metrics Dictionary right panel -->
+    <div class="dd-panel" id="dd-panel"></div>
+    <!-- Hidden dd-out and dd-ls kept in DOM for JS refs — not shown in panel -->
+    <div style="display:none;" aria-hidden="true">
+      <div id="dd-out"></div>
+      <div id="dd-ls">
+        <div id="dd-load-headline"></div>
+        <div id="dd-load-sub"></div>
+        <div id="dd-load-steps"></div>
+      </div>
+    </div>
+    <div class="out-body" id="out-body" style="display:none;">
+      <div class="empty" id="es">
+        <div class="empty-icon"><i class="ti ti-chart-tree-map"></i></div>
+        <div class="empty-title">Your metrics teardown<br>starts here</div>
+        <div class="empty-desc">Enter your product details and generate a full Discovery Map — from North Star down to L3/L4 diagnostic signals, with practitioner rationale at every level.</div>
+        <div class="empty-steps"><div class="e-step"><div class="e-num">1</div>Set API key</div><div class="e-step"><div class="e-num">2</div>Describe product</div><div class="e-step"><div class="e-num">3</div>Generate &amp; explore</div></div>
+      </div>
+      <div class="loading" id="ls"><div class="spin"></div><div class="load-txt" id="load-headline">Interrogating your product...</div><div class="load-sub" id="load-sub">We're not Googling this. Promise.</div><div class="load-steps" id="load-steps"></div></div>
+      <div class="err" id="er"><div style="font-size:32px">&#9888;&#65039;</div><div class="err-msg" id="er-msg">Generation failed. Please try again — if the problem persists, check your API key in Settings.</div><button class="err-retry" onclick="generate()">Try again</button></div>
+      <div class="mm" id="mm-out"></div>
+    </div>
+    <!-- KPI Evidence Drawer — direct child of .right so position:absolute works correctly -->
+    <div class="kpi-evidence-drawer" id="kpi-evidence-drawer"></div>
+    <!-- Product Diagnostics Tab -->
+    <div class="la-tab" id="la-tab"></div>
+
+    <!-- Market Intelligence Tab -->
+    <div class="mi-tab" id="mi-tab"></div>
+
+    <!-- Capability Canvas Tab -->
+    <div class="cc-tab" id="cc-tab">
+      <div id="cc-main" style="display:flex;flex-direction:column;flex:1;overflow:hidden;height:100%;padding:0;"></div>
+    </div>
+
+    <!-- PI Canvas Tab -->
+    <div class="pi-tab" id="pi-tab">
+      <div class="pi-layout">
+        <div class="pi-left" id="pi-left"></div>
+        <div class="pi-main" id="pi-main"></div>
+      </div>
+    </div>
+
+    <!-- Feature Canvas Tab -->
+    <div class="sc-tab" id="fc-tab">
+      <div class="sc-layout">
+        <!-- Capability tree left panel -->
+        <div class="sc-cap-nav" id="sc-cap-nav">
+          <div class="sc-cap-nav-hdr">
+            <div class="sc-cap-nav-hdr-inner" id="sc-cap-nav-hdr-inner">
+              <div class="sc-cap-nav-title">Feature Canvas</div>
+              <div class="sc-cap-nav-sub">Generate stories for your features</div>
+            </div>
+            <button class="sc-cap-nav-collapse" id="sc-cap-nav-collapse" onclick="scToggleCapNav()" title="Collapse"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg></button>
+          </div>
+          <div class="sc-cap-nav-tree" id="sc-cap-nav-tree"></div>
+        </div>
+        <div class="sc-main" id="sc-main">
+          <div class="sc-scroll" id="sc-scroll">
+            <!-- Empty state shown when no features added -->
+            <div id="sc-empty-state" class="sc-empty">
+              <div class="sc-empty-icon"><i class="ti ti-writing"></i></div>
+              <div class="sc-empty-title">Your Feature Canvas is empty</div>
+              <div class="sc-empty-desc">Send features from Capability Canvas to start generating stories. Each feature carries full traceability — metric, capability, and rationale.</div>
+              <div class="sc-empty-hint"><i class="ti ti-arrow-left" style="font-size:13px;color:var(--purple);"></i> Use Capability Canvas to generate and select features, then send them here</div>
+            </div>
+            <!-- Canvas content shown when features exist -->
+            <div id="sc-content" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+              <div class="sc-toolbar">
+                <div class="sc-toolbar-l">
+                  <span class="cc-canvas-title">Feature Canvas</span>
+                  <div class="sc-count-badge" id="sc-feat-count-badge">0 features</div>
+                  <div class="sc-done-badge" id="sc-done-badge" style="display:none;"><i class="ti ti-check" style="font-size:9px;"></i> <span id="sc-done-count">0</span> with stories</div>
+                  <div id="sc-filter-badge" style="display:none;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;">
+                    <i class="ti ti-filter" style="font-size:9px;" aria-hidden="true"></i>
+                    <span id="sc-filter-label"></span>
+                    <span onclick="scSetCapFilter(null);fcClearFilter();" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span>
+                  </div>
+                </div>
+                <div class="sc-toolbar-r">
+                  <!-- Filter dropdown — Generated / Not Generated only -->
+                  <div class="sc-export-wrap" style="position:relative;">
+                    <button class="cc-tb-btn" id="fc-filter-btn" onclick="fcToggleFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
+                    <div class="cc-export-drop" id="fc-filter-drop">
+                      <div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Features</div>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-generated" onchange="fcSetStoriesFilter('generated')"> With stories</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-not-generated" onchange="fcSetStoriesFilter('not-generated')"> Without stories</label>
+                      <div style="height:0.5px;background:var(--divider);margin:4px 0;"></div>
+                      <div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-kpi" onchange="fcSetOriginFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-doc" onchange="fcSetOriginFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-custom" onchange="fcSetOriginFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-mi" onchange="fcSetOriginFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-diag" onchange="fcSetOriginFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>
+                      <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+                      <div style="padding:4px 12px 8px;"><button onclick="fcClearFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
+                    </div>
+                  </div>
+                  <!-- Export -->
+                  <div class="sc-export-wrap" id="sc-export-wrap-toolbar">
+                    <button class="export-cta-btn" id="sc-export-btn" onclick="scExportAll()" disabled>
+                      <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export
+                    </button>
+                  </div>
+                  <!-- Add Feature — primary, rightmost (dropdown: single / upload, v7.84) -->
+                  <div class="cc-addcap-wrap" style="position:relative;">
+                    <button class="cc-tb-btn-add" onclick="scToggleAddFeatDrop(event)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
+                    <div class="cc-addcap-drop" id="sc-addfeat-drop">
+                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>
+                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowUploadFeatModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div style="padding:0 22px;">
+                <div class="sc-legend">
+                <span class="sc-legend-lbl">Card states</span>
+                <div class="sc-legend-item"><div class="sc-legend-bar lb-none"></div> No stories yet</div>
+                <div class="sc-legend-item"><div class="sc-legend-bar lb-done"></div> Stories ready</div>
+                <div class="sc-legend-item"><div class="sc-legend-bar lb-sel"></div> Selected for gen</div>
+                <div class="sc-legend-sep"></div>
+                <span class="sc-legend-lbl" style="margin-left:4px;">Origin</span>
+                <div class="sc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
+                <div class="sc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
+                <div class="sc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
+                <div class="sc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
+                <div class="sc-legend-item"><i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</div>
+              </div>
+              </div>
+              <div id="sc-cards-scroll" style="flex:1;overflow-y:auto;padding:0 22px 16px;">
+                <div id="sc-cards-container"></div>
+              </div>
+            </div>
+          </div>
+          <div class="sc-action-bar" id="sc-action-bar" style="display:none;">
+            <div class="sc-action-left">
+              <label class="sc-select-all-toggle" id="sc-select-all-wrap">
+                <input type="checkbox" id="sc-select-all-chk" onchange="scToggleSelectAll(this)" title="Select / deselect all">
+                <span id="sc-select-all-lbl">Select all</span>
+              </label>
+              <span class="sc-action-count" id="sc-action-info"></span>
+            </div>
+            <div class="sc-action-btns">
+              <button class="sc-gen-btn" id="sc-gen-btn" onclick="scClickGenerate()" disabled>
+                <i class="ti ti-writing" style="font-size:12px;"></i> <span id="sc-gen-btn-label">Generate Stories</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <!-- Story side panel -->
+        <div class="sc-panel" id="sc-panel">
+          <div class="sc-panel-hdr">
+            <div class="sc-panel-tag">User Stories</div>
+            <div class="sc-panel-feat" id="sc-panel-feat-name">—</div>
+            <div class="sc-panel-meta" id="sc-panel-feat-meta"></div>
+            <button class="sc-panel-close" onclick="scClosePanelUserAction()">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="sc-panel-nav">
+            <div class="sc-panel-nav-info" id="sc-panel-nav-info">Feature 1 of 1 with stories</div>
+            <div class="sc-panel-nav-arrows">
+              <button class="sc-panel-nav-btn" id="sc-panel-prev" onclick="scPanelNav(-1)" title="Previous feature"><i class="ti ti-chevron-left" style="font-size:11px;"></i></button>
+              <button class="sc-panel-nav-btn" id="sc-panel-next" onclick="scPanelNav(1)" title="Next feature"><i class="ti ti-chevron-right" style="font-size:11px;"></i></button>
+            </div>
+          </div>
+          <div class="sc-panel-scroll" id="sc-panel-scroll">
+            <div class="sc-panel-loading" id="sc-panel-loading">
+              <div class="sc-spin"></div>
+              <div class="sc-load-txt">Generating user stories...</div>
+              <div class="sc-load-sub">Writing Gherkin acceptance criteria and estimating story points.</div>
+            </div>
+            <div id="sc-panel-empty"></div>
+            <div id="sc-panel-content" style="display:flex;flex-direction:column;flex:1;"></div>
+          </div>
+          <div class="sc-panel-footer">
+            <div class="sc-refine-bar" id="sc-refine-bar">
+              <div class="sc-refine-lbl">Refine Stories</div>
+              <div class="sc-refine-row">
+                <textarea class="sc-refine-txt" id="sc-refine-txt" placeholder="e.g. Focus on admin persona, add more edge cases, make ACs more technical..." rows="2"></textarea>
+                <button class="sc-refine-send" id="sc-refine-btn" onclick="scRefineStories()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i></button>
+              </div>
+            </div>
+            <div class="sc-panel-footer-split">
+              <div class="sc-panel-split-status" id="sc-panel-split-status">0 stories</div>
+              <div class="sc-panel-split-cta-wrap">
+                <button class="sc-panel-split-cta" id="fc-panel-sc-btn" onclick="fcPanelSendToSC()" disabled>
+                  <i class="ti ti-list-details" style="font-size:11px;" aria-hidden="true"></i> Send to Story Canvas &#8594;
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Story Canvas Tab (new) -->
+    <div class="sc-tab" id="sc-tab">
+      <div id="nsc-layout" class="nsc-layout">
+        <!-- populated by story-canvas-new.js -->
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- end app-shell -->
+
+<div class="cap-overlay" id="cap-overlay" onclick="closeCapDrawer()"></div>
+<div class="cap-drawer" id="cap-drawer">
+  <div class="cap-drawer-hdr">
+    <div class="cap-drawer-tag">Capabilities &amp; Features</div>
+    <div class="cap-drawer-metric" id="cap-metric-name">—</div>
+    <div class="cap-drawer-stage" id="cap-stage-name"></div>
+    <button class="cap-close" onclick="closeCapDrawer()">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="cap-drawer-body">
+    <div class="cap-loading" id="cap-loading">
+      <div class="cap-spin"></div>
+      <div class="cap-load-txt" id="cap-load-txt">Researching capabilities...</div>
+      <div class="cap-load-sub" id="cap-load-sub">This might take a moment...</div>
+      <div class="cap-load-steps" id="cap-load-steps"></div>
+    </div>
+    <div id="cap-content"></div>
+  </div>
+  <div class="cap-refine-wrap">
+    <div class="cap-refine-lbl">Suggest differently</div>
+    <div class="cap-refine-row">
+      <textarea class="cap-refine-txt" id="cap-refine-txt" placeholder="e.g. We already have invite flow. Focus on analytics..." rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();refineCapabilities();}"></textarea>
+      <button class="cap-refine-btn" id="cap-refine-btn" onclick="refineCapabilities()">&#8635; Refine</button>
+    </div>
+  </div>
+  <div class="cap-drawer-footer" id="cap-drawer-footer" style="display:none;">
+    <div class="cap-canvas-count"><strong id="cap-canvas-count-num">0</strong> feature(s) on canvas</div>
+    <button class="cap-go-canvas" onclick="closeCapDrawer();switchTab('fc');"><i class="ti ti-writing" style="font-size:11px;"></i> View Feature Canvas</button>
+  </div>
+</div>
+
+
+<!-- Settings page — full-page swap, replaces app-shell when open -->
+<div id="settings-page" style="display:none;flex-direction:column;width:100%;height:calc(100vh - 0px);min-height:0;overflow:hidden;"></div>
+
+<!-- Hidden status elements kept for checkKey() compatibility — not visible to user -->
+<span id="api-status" style="display:none;"></span>
+<span id="api-status-hint" style="display:none;"></span>
+
+<!-- Batch modal -->
+<div class="sc-modal-overlay" id="sc-modal-overlay">
+  <div class="sc-modal">
+    <div class="sc-modal-hdr">
+      <div class="sc-modal-icon"><i class="ti ti-alert-triangle"></i></div>
+      <div class="sc-modal-hdr-text">
+        <div class="sc-modal-title" id="sc-modal-title">Large selection — recommend batching</div>
+        <div class="sc-modal-sub" id="sc-modal-sub">Generating all features at once may take several minutes. Choose a batch size or proceed with all.</div>
+      </div>
+    </div>
+    <div class="sc-modal-body">
+      <div class="sc-modal-stats">
+        <div class="sc-modal-stat"><div class="sc-modal-stat-val" id="sc-modal-features">0</div><div class="sc-modal-stat-lbl">Features</div></div>
+        <div class="sc-modal-stat"><div class="sc-modal-stat-val" id="sc-modal-stories">~0</div><div class="sc-modal-stat-lbl">Est. stories</div></div>
+        <div class="sc-modal-stat"><div class="sc-modal-stat-val" id="sc-modal-time">~0s</div><div class="sc-modal-stat-lbl">Est. time</div></div>
+        <div class="sc-modal-stat"><div class="sc-modal-stat-val" id="sc-modal-cost">~$0</div><div class="sc-modal-stat-lbl">API cost</div></div>
+      </div>
+      <div class="sc-modal-batch-lbl">Recommended batch sizes</div>
+      <div class="sc-modal-batches" id="sc-modal-batches"></div>
+      <div class="sc-modal-hint">Batching prioritises features by stage — Activation → Engagement → Retention. Remaining features stay on the canvas for the next run.</div>
+    </div>
+    <div class="sc-modal-footer">
+      <button class="sc-modal-cancel" onclick="scModalClose()">Cancel</button>
+      <button class="sc-modal-proceed" id="sc-modal-proceed" onclick="scModalProceed()">
+        <i class="ti ti-writing" style="font-size:12px;"></i> <span id="sc-modal-proceed-label">Generate</span>
+      </button>
+    </div>
+  </div>
+</div>
+<!-- Supabase JS SDK — required for auth gate and Steps 3–7 -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- LZString — wireframe compression for session persistence. Must load before first sessionStoreSave. -->
+<script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<!-- Supabase credentials — env.js is NOT in the zip, drop it into scripts/ before deploying -->
+<script src="./scripts/env.js"></script>
+<!-- Auth functions — authInit(), authGetSession(), authGetUser(), authSignOut() -->
+<script src="./scripts/auth.js"></script>
+<script src="./scripts/state.js"></script>
+<script src="./scripts/config.js"></script>
+<script src="./scripts/utils.js"></script>
+<script src="./scripts/prompts.js"></script>
+<script src="./scripts/settings.js"></script>
+<script src="./scripts/settings-page.js"></script>
+<script src="./scripts/left-panel.js"></script>
+<script src="./scripts/kpi-tree.js"></script>
+<script src="./scripts/metrics-definition.js"></script>
+<script src="./scripts/capability-drawer.js"></script>
+<script src="./scripts/feature-canvas.js"></script>
+<script src="./scripts/story-canvas-new.js"></script>
+<script src="./scripts/prototype-canvas.js"></script>
+<script src="./scripts/export-xlsx.js"></script>
+<script src="./scripts/export-docx.js"></script>
+<script src="./scripts/diagnostic-view.js"></script>
+<script src="./scripts/product-leak-analysis.js"></script>
+<script src="./scripts/export-diagnostic-docx.js"></script>
+<script src="./scripts/market-intelligence.js"></script>
+<script src="./scripts/export-market-intel-docx.js"></script>
+  <script src="./scripts/capability-canvas.js"></script>
+  <script src="./scripts/pi-planning.js"></script>
+  <script src="./scripts/export-pi-docx.js"></script>
+<script src="./scripts/session-store.js"></script>
+<script src="./scripts/home.js"></script>
+<script src="./scripts/api.js"></script>
+<script src="./scripts/demo-data.js"></script>
+<script src="./scripts/main.js"></script>
+</body>
