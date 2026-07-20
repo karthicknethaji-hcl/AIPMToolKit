@@ -20,20 +20,20 @@ function checkKey(){
     s.textContent='Ready';s.className='api-status ok';
     document.getElementById('api-status-hint').textContent='Personal key active — overrides org key';
     document.getElementById('api-key').classList.remove('unset');dot.classList.remove('on');
-    sessionStorage.setItem('hcl_ak',k);
+    sessionStorage.setItem((typeof _byokKey==='function'?_byokKey():'hcl_ak'),k);
     if(document.getElementById('demo-badge')&&typeof clearDemoMode==='function')clearDemoMode();
   } else if(k.length>0){
     // Something entered but not a valid key format
     s.textContent='Invalid key';s.className='api-status unset';
     document.getElementById('api-status-hint').textContent='Key format not recognised';
     document.getElementById('api-key').classList.add('unset');dot.classList.add('on');
-    sessionStorage.removeItem('hcl_ak');
+    sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
   } else {
     // Empty — org key may be active on the proxy
     s.textContent='Org key active';s.className='api-status ok';
     document.getElementById('api-status-hint').textContent='Using organisation key — or enter a personal key above';
     document.getElementById('api-key').classList.remove('unset');dot.classList.remove('on');
-    sessionStorage.removeItem('hcl_ak');
+    sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
   }
   if(settingsOpen){
     if(typeof spRefreshKeyStatus==='function') spRefreshKeyStatus();
@@ -45,7 +45,7 @@ function toggleKeyVis(){
   else{inp.type='password';icon.className='ti ti-eye';}
 }
 document.addEventListener('DOMContentLoaded',function(){
-  var saved=sessionStorage.getItem('hcl_ak');
+  var saved=sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
   var dot=document.getElementById('api-dot');
   if(saved){
     var keyEl=document.getElementById('api-key');

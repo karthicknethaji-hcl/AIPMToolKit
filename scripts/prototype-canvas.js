@@ -187,6 +187,7 @@ function pcGetScreenshotContext(featId) {
 }
 
 function pcHandleScreenshotUpload(featId, file) {
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!file || !featId) return;
   // Validate type
   const allowed = ['image/png', 'image/jpeg', 'image/webp'];
@@ -213,6 +214,12 @@ function pcHandleScreenshotUpload(featId, file) {
     if (typeof newScProtoView !== 'undefined' && newScProtoView &&
         typeof newScActiveNavFeat !== 'undefined' && newScActiveNavFeat === featId) {
       pcRenderView(featId);
+    }
+    // v8.146 fix: confirmed missing entirely. Placed inside this async
+    // callback, after the data is actually set — not at the function's
+    // own top level, which would fire before the FileReader completes.
+    if(typeof _isDemoSession!=='undefined'&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pc',featId); });
     }
   };
   reader.readAsDataURL(file);
@@ -366,12 +373,13 @@ function pcRenderEmpty(featId, scroll, refine) {
   const ss = pcGetScreenshotContext(featId);
   const hasOwnSs = !!(protoStore[featId] && protoStore[featId].screenshotDataUrl);
   const ssChipHtml = hasOwnSs
-    ? `<div class="pc-ss-chip"><i class="ti ti-photo" style="font-size:10px;" aria-hidden="true"></i> Screenshot attached <button onclick="pcRemoveScreenshot('${e(featId)}')" class="pc-ss-remove" title="Remove">&#x2715;</button></div>`
+    ? `<div class="pc-ss-chip"><i class="ti ti-photo" style="font-size:10px;" aria-hidden="true"></i> Screenshot attached ${((typeof canEditSession!=='function')||canEditSession())?`<button onclick="pcRemoveScreenshot('${e(featId)}')" class="pc-ss-remove" title="Remove">&#x2715;</button>`:''}</div>`
     : (ss && ss.inherited
         ? `<div class="pc-ss-chip pc-ss-inherited"><i class="ti ti-photo" style="font-size:10px;" aria-hidden="true"></i> Using screenshot from <em>${e(ss.fromFeatName||ss.fromFeatId)}</em></div>`
         : '');
 
   const insufficientStories = storyCount < 2;
+  const _canEditPcEmpty = (typeof canEditSession!=='function')||canEditSession();
 
   scroll.innerHTML = `<div class="pc-empty-wrap">
     <div class="pc-empty-icon"><i class="ti ti-layout-board" aria-hidden="true"></i></div>
@@ -383,17 +391,17 @@ function pcRenderEmpty(featId, scroll, refine) {
       ${capWhy?`<span class="pc-ctx-pill pc-ctx-3"><i class="ti ti-hierarchy-2" style="font-size:8px;" aria-hidden="true"></i> ${e(feat.cap||'Capability')} — tertiary</span>`:''}
     </div>
     ${insufficientStories?`<div class="pc-warning-bar"><i class="ti ti-alert-triangle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i> At least 2 stories needed to generate a meaningful prototype. Generate more stories in Feature Canvas first.</div>`:''}
-    <div class="pc-upload-zone" onclick="document.getElementById('pc-ss-input-${e(featId)}').click()">
+    ${_canEditPcEmpty?`<div class="pc-upload-zone" onclick="document.getElementById('pc-ss-input-${e(featId)}').click()">
       <input type="file" id="pc-ss-input-${e(featId)}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="pcHandleScreenshotUpload('${e(featId)}',this.files[0])">
       <div class="pc-upload-icon"><i class="ti ti-photo-up" aria-hidden="true"></i></div>
       <div class="pc-upload-title">Upload reference screenshot (optional)</div>
       <div class="pc-upload-hint">Drop 1 screenshot of your existing app so the prototype matches your design language</div>
       <div class="pc-upload-opt">PNG, JPG, or WEBP — max 1.5 MB</div>
-    </div>
+    </div>`:''}
     ${ssChipHtml}
-    <button class="pc-gen-btn pc-gen-btn-empty" onclick="pcGenerate('${e(featId)}')" ${insufficientStories?'disabled':''}>
+    ${_canEditPcEmpty?`<button class="pc-gen-btn pc-gen-btn-empty" onclick="pcGenerate('${e(featId)}',this)" ${insufficientStories?'disabled':''}>
       <i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Prototype
-    </button>
+    </button>`:''}
   </div>`;
 
   // Hide refine bar in empty state — only shown in generated state
@@ -403,12 +411,17 @@ function pcRenderEmpty(featId, scroll, refine) {
 }
 
 function pcRemoveScreenshot(featId) {
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!protoStore[featId]) return;
   protoStore[featId].screenshotFile = null;
   protoStore[featId].screenshotDataUrl = null;
   protoStore[featId].screenshotInherited = false;
   protoStore[featId].inheritedFromFeatId = null;
   pcRenderView(featId);
+  // v8.146 fix: confirmed missing entirely.
+  if(typeof _isDemoSession!=='undefined'&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pc',featId); });
+  }
 }
 
 // ── Loading state ──
@@ -454,13 +467,14 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
 
   // Remove centering — generated view is top-aligned
   scroll.classList.remove('pc-scroll-centered');
+  const _canEditPcGen = (typeof canEditSession!=='function')||canEditSession();
 
   const staleHtml = isStale
-    ? `<div class="pc-stale-banner"><i class="ti ti-alert-triangle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i><span>Stories have changed since this prototype was generated.</span><button class="pc-stale-regen" onclick="pcGenerate('${e(featId)}')"><i class="ti ti-refresh" style="font-size:10px;" aria-hidden="true"></i> Regenerate</button></div>`
+    ? `<div class="pc-stale-banner"><i class="ti ti-alert-triangle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i><span>Stories have changed since this prototype was generated.</span>${_canEditPcGen?`<button class="pc-stale-regen" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:10px;" aria-hidden="true"></i> Regenerate</button>`:''}</div>`
     : '';
 
   const partialHtml = isPartial
-    ? `<div class="pc-partial-banner"><i class="ti ti-alert-circle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i><span>Wireframe was saved. Design brief did not complete — regenerate to finish.</span><button class="pc-stale-regen" onclick="pcGenerate('${e(featId)}')"><i class="ti ti-refresh" style="font-size:10px;" aria-hidden="true"></i> Regenerate</button></div>`
+    ? `<div class="pc-partial-banner"><i class="ti ti-alert-circle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i><span>Wireframe was saved. Design brief did not complete — regenerate to finish.</span>${_canEditPcGen?`<button class="pc-stale-regen" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:10px;" aria-hidden="true"></i> Regenerate</button>`:''}</div>`
     : '';
 
   // Wireframe section
@@ -476,7 +490,7 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
           <div class="pc-wf-unavail-icon"><i class="ti ti-layout-board" aria-hidden="true"></i></div>
           <div class="pc-wf-unavail-title">Wireframe not available</div>
           <div class="pc-wf-unavail-desc">The wireframe is not stored after a session restore. Clicking below will regenerate the full prototype — wireframe, design brief, coverage, and prompt — based on current stories.</div>
-          <button class="pc-regen-btn" onclick="pcGenerate('${e(featId)}')"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate Prototype</button>
+          ${_canEditPcGen?`<button class="pc-regen-btn" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate Prototype</button>`:''}
         </div>`;
 
   // Design brief section
@@ -558,14 +572,19 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
     </div>
   `;
 
-  refine.style.display = '';
-  refine.innerHTML = `<div class="pc-refine-inner">
-    <div class="pc-refine-label">Refine Prototype</div>
-    <div class="pc-refine-row">
-      <textarea class="pc-refine-input" id="pc-ctx-input" placeholder="e.g. Add error state on step node, show estimated time remaining per step..." rows="2">${e(entry.additionalContext||'')}</textarea>
-      <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}')"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
-    </div>
-  </div>`;
+  if(_canEditPcGen){
+    refine.style.display = '';
+    refine.innerHTML = `<div class="pc-refine-inner">
+      <div class="pc-refine-label">Refine Prototype</div>
+      <div class="pc-refine-row">
+        <textarea class="pc-refine-input" id="pc-ctx-input" placeholder="e.g. Add error state on step node, show estimated time remaining per step..." rows="2">${e(entry.additionalContext||'')}</textarea>
+        <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
+      </div>
+    </div>`;
+  } else {
+    refine.style.display = 'none';
+    refine.innerHTML = '';
+  }
 
   // Inject wireframe into iframe after DOM is set
   if (hasWireframe) {
@@ -789,6 +808,7 @@ function pcBuildCoverageHTML(coverageData, featId) {
 }
 
 function pcAddGapToContext(featId, storyTitle) {
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const el = document.getElementById('pc-ctx-input');
   if (el) {
     const existing = el.value.trim();
@@ -799,6 +819,10 @@ function pcAddGapToContext(featId, storyTitle) {
   if (protoStore[featId]) {
     protoStore[featId].additionalContext = document.getElementById('pc-ctx-input') ?
       document.getElementById('pc-ctx-input').value : storyTitle;
+  }
+  // v8.146 fix: confirmed missing entirely.
+  if(typeof _isDemoSession!=='undefined'&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pc',featId); });
   }
 }
 
@@ -830,14 +854,15 @@ function pcCopyPrompt(elId, btn) {
       setTimeout(function(){ btn.innerHTML = '<i class="ti ti-copy" style="font-size:9px;"></i> Copy'; }, 2000);
     }
   }).catch(function(){
-    if (typeof showToast === 'function') showToast('Copy failed — please copy manually.', 'warn');
+    if (typeof showToast === 'function') showToast('Copy failed. Please copy manually.', 'warn');
   });
 }
 
 // ── Generation — two-call split ──
 // Call 1: wireframe + screenTitle + wireframeOutline (skipped for non-UI features)
 // Call 2: design brief + story coverage + external prompt
-async function pcGenerate(featId) {
+async function pcGenerate(featId, triggerEl) {
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!featId) return;
 
   // pcReady guard
@@ -860,6 +885,18 @@ async function pcGenerate(featId) {
   if (visibleStories.length < 2) {
     if (typeof showToast === 'function') showToast('At least 2 stories needed to generate a prototype.', 'warn');
     return;
+  }
+
+  // Phase 5 fix (v8.118): immediate visual acknowledgment on click, before
+  // the lock check. This function is unusual among the wrapped generation
+  // functions in having SIX distinct possible trigger buttons (confirmed
+  // via grep — empty-state, stale-banner, partial-banner, two regenerate
+  // variants, and a try-again-on-error button), none referenced by a
+  // shared ID, so triggerEl (the actual clicked element, passed via `this`
+  // at every one of the six call sites) is disabled directly here rather
+  // than looking up any one specific ID.
+  if(triggerEl&&typeof triggerEl==='object'&&triggerEl.disabled!==undefined){
+    triggerEl.disabled=true;
   }
 
   // Non-UI detection
@@ -886,14 +923,49 @@ async function pcGenerate(featId) {
   v.nonUI = isNonUI;
   pcSyncExportButton(featId);
 
+  // Phase 5 (v8.117): attempt marker, layered ON TOP of the existing
+  // pcCanRenderFeature() guard (which already correctly handles the
+  // navigation-away case at all 8 DOM-write points below — genuinely
+  // pre-existing, not something built this phase). pcCanRenderFeature()
+  // checks "is this feature still the active nav feature," which does NOT
+  // distinguish an older, slower generateFor(featId) call from a NEWER
+  // one on the SAME featId — both would pass that check identically. The
+  // marker, stored directly on the variant object (v._genAttemptId, not a
+  // DOM attribute — there's no natural DOM element to stamp here the way
+  // the other 9 functions had, since this writes into protoStore state
+  // that pcRenderView() reads, not a container this function owns
+  // directly), closes that specific gap: only the MOST RECENT attempt for
+  // this featId is allowed to write its result.
+  const _attemptId = 'protogen_' + (Date.now()) + '_' + Math.random().toString(36).slice(2);
+  v._genAttemptId = _attemptId;
+  function _pcIsCurrentAttempt(){
+    const liveV = pcGetActiveVariant(featId);
+    return !!(liveV && liveV._genAttemptId === _attemptId);
+  }
+
   // startAiGen fires BEFORE any async work — tab navigation now blocked immediately
   let signal;
   signal = typeof startAiGen === 'function'
     ? startAiGen('Prototype for "' + feat.name + '" is being generated. Leaving now will discard incomplete work.')
     : null;
 
+  // Phase 5: withGenerationLock wraps the ENTIRE two-call sequence and all
+  // four partial-success save points below. Unlike every other wrapped
+  // function in this app, pcGenerate() deliberately saves BEST-EFFORT
+  // partial results on several failure paths (aborted-after-wireframe,
+  // brief-failed, post-process-failed-but-recovered) — this is intentional
+  // existing behavior, not something to discard-on-any-error like the
+  // simpler single-shot generators elsewhere. Each of the four save points
+  // below gets its own throwIfLost() checkpoint immediately before it,
+  // consistent with every other wrapped function, but none of the
+  // AbortError/pcPhase branches themselves are changed to rethrow-and-
+  // discard — that would destroy legitimately-recoverable partial work
+  // this function is specifically designed to preserve.
+  try{
+    await withGenerationLock(async (_lock) => {
+
   // Show loading state
-  if (pcCanRenderFeature(featId)) {
+  if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) {
     const scroll = document.getElementById('pc-scroll');
     const refine = document.getElementById('pc-refine-bar');
     if (scroll && refine) pcRenderLoading(featId, scroll, refine);
@@ -956,7 +1028,7 @@ async function pcGenerate(featId) {
       v.generatingPhase = 2;
 
       // Advance loading UI to phase 2
-      if (pcCanRenderFeature(featId)) {
+      if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) {
         const scroll = document.getElementById('pc-scroll');
         const refine = document.getElementById('pc-refine-bar');
         if (scroll && refine) pcRenderLoading(featId, scroll, refine);
@@ -1032,12 +1104,23 @@ async function pcGenerate(featId) {
         showToast('Prototype generated, but stories changed during generation. Review and regenerate if needed.', 'warn');
       }
 
-      if (pcCanRenderFeature(featId)) pcRenderView(featId);
+      if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) pcRenderView(featId);
 
+      // Phase 5: checkpoint before the main success save.
+      _lock.throwIfLost();
       if (typeof _isDemoSession !== 'undefined' && !_isDemoSession &&
           typeof sessionStoreSave === 'function' &&
           typeof _activeSessionId !== 'undefined' && _activeSessionId) {
-        sessionStoreSave(_activeSessionId);
+        const _pcOk = await sessionStoreSave(_activeSessionId);
+        // Build B: only this path represents a genuinely complete, non-
+        // partial generation — the other three save sites in this
+        // function are all partial-failure recoveries (v.partial=true)
+        // and deliberately do not emit this event, since claiming
+        // "prototype generated" for an incomplete result would mislead
+        // a collaborator.
+        if (_pcOk && typeof _activeSessionIsShared !== 'undefined' && _activeSessionIsShared && typeof _lsEmitContentEvent === 'function') {
+          await _lsEmitContentEvent(_activeSessionId, 'pc', 'prototype_generated', featId, null);
+        }
       }
     } catch(e3c) {
       e3c.pcPhase = 3;
@@ -1064,6 +1147,15 @@ async function pcGenerate(featId) {
         v.designBrief = null;
         v.coverageData = null;
         v.externalPrompt = null;
+        // Phase 5: checkpoint before this partial save. Note: an ABORT and
+        // a lock-loss are different signals that could theoretically both
+        // reach here (an AbortError from the user AND a lost lock from a
+        // heartbeat, in either order) — if the lock was lost, skip this
+        // save too, same reasoning as the other checkpoints.
+        try { _lock.throwIfLost(); } catch(lockLostErr) {
+          v.generating = false; v.generatingPhase = null;
+          return;
+        }
         if (typeof _isDemoSession !== 'undefined' && !_isDemoSession &&
             typeof sessionStoreSave === 'function' &&
             typeof _activeSessionId !== 'undefined' && _activeSessionId) {
@@ -1089,7 +1181,12 @@ async function pcGenerate(featId) {
       v.designBrief = null;
       v.coverageData = null;
       v.externalPrompt = null;
-      if (pcCanRenderFeature(featId)) pcRenderView(featId);
+      if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) pcRenderView(featId);
+      // Phase 5: checkpoint before this partial save, same reasoning as
+      // the abort-after-wireframe branch above.
+      try { _lock.throwIfLost(); } catch(lockLostErr) {
+        return;
+      }
       if (typeof _isDemoSession !== 'undefined' && !_isDemoSession &&
           typeof sessionStoreSave === 'function' &&
           typeof _activeSessionId !== 'undefined' && _activeSessionId) {
@@ -1102,6 +1199,17 @@ async function pcGenerate(featId) {
     // raw brief response both exist; attempt a defensive partial commit rather
     // than discarding a successful generation.
     if (err && err.pcPhase === 3) {
+      // Phase 5: if THIS specific pcPhase=3 error is actually a lock-lost
+      // signal from the checkpoint above (not a genuine rendering/save
+      // bug), do NOT attempt the recovery save below — that save is
+      // exactly what the checkpoint was trying to prevent. Toast already
+      // shown by withGenerationLock() itself.
+      if (err.message === 'generation_lock_lost') {
+        v.generating = false;
+        v.generatingPhase = null;
+        if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) pcRenderView(featId);
+        return;
+      }
       console.error('[PC] Post-processing failed after successful generation:', err.message, err.stack, 'subphase:', err.pcSubphase);
       let recovered = false;
       try {
@@ -1121,7 +1229,12 @@ async function pcGenerate(featId) {
           v.coverageData = null;
           v.externalPrompt = null;
         }
-        if (pcCanRenderFeature(featId)) pcRenderView(featId);
+        if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) pcRenderView(featId);
+        // Phase 5: checkpoint before this recovery save. Separate from the
+        // early-return special-case above — that one catches the lock-lost
+        // error THAT TRIGGERED this branch; this catches the lock being
+        // lost by a LATER heartbeat tick while recovery itself was running.
+        _lock.throwIfLost();
         if (typeof _isDemoSession !== 'undefined' && !_isDemoSession &&
             typeof sessionStoreSave === 'function' &&
             typeof _activeSessionId !== 'undefined' && _activeSessionId) {
@@ -1140,7 +1253,7 @@ async function pcGenerate(featId) {
     v.generating = false;
     v.generatingPhase = null;
     v.generated = v.generated || false;
-    if (pcCanRenderFeature(featId)) {
+    if (pcCanRenderFeature(featId) && _pcIsCurrentAttempt()) {
       const scroll = document.getElementById('pc-scroll');
       const refine = document.getElementById('pc-refine-bar');
       if (scroll) {
@@ -1149,7 +1262,7 @@ async function pcGenerate(featId) {
           <div class="pc-error-icon"><i class="ti ti-wifi-off" aria-hidden="true"></i></div>
           <div class="pc-error-title">Prototype Generation Failed</div>
           <div class="pc-error-desc">Something went wrong. Your stories and context are safe.</div>
-          <button class="pc-regen-btn" onclick="pcGenerate('${e(featId)}')"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Try Again</button>
+          <button class="pc-regen-btn" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Try Again</button>
         </div>`;
       }
       if (refine) { refine.style.display = 'none'; refine.innerHTML = ''; }
@@ -1160,6 +1273,22 @@ async function pcGenerate(featId) {
     v.generatingPhase = null;
     pcSyncExportButton(featId);
     if (typeof endAiGen === 'function') endAiGen();
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 fix (v8.118): REAL BUG, same class as ccGenerateOne()'s —
+    // this outer catch fires for a pre-flight lock rejection, and the
+    // triggerEl disabled at the top of this function was never being
+    // re-enabled here. pcRenderView() (which WOULD naturally replace the
+    // view, making the stale reference moot) only runs from inside the
+    // inner try, which this rejection never reaches — the original view,
+    // including the button the user clicked, is left completely
+    // untouched, disabled forever until some unrelated navigation
+    // happens to redraw it. Confirmed via live testing, not hypothetical.
+    pcSyncExportButton(featId);
+    if(triggerEl&&typeof triggerEl==='object'&&triggerEl.disabled!==undefined){
+      triggerEl.disabled=false;
+    }
   }
 }
 

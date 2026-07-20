@@ -31,6 +31,50 @@ function _docxOriginLabel(origin){
   return'KPI tree';
 }
 
+// ── Outcome Verification Loop (DOCX-1/DOCX-2): build hypothesis display
+// lines from a feature's outcomeHypothesis, shared by both the Discovery
+// Brief table cell and the Story Canvas detail-section paragraph. ──
+function _docxHypothesisLines(feat){
+  if(!feat||!feat.outcomeHypothesis||!feat.outcomeHypothesis.primary||!feat.outcomeHypothesis.primary.metric){
+    return[{text:'Not set',color:'9a9a96'}];
+  }
+  var p=feat.outcomeHypothesis.primary;
+  var lines=[];
+  // v9.10.02 (item 3 fix): only the "Primary:"/"Secondary:" label is
+  // bold — the metric name itself is normal weight. Previously the
+  // whole line (label + metric) was bolded as one unit.
+  lines.push({runs:[{text:'Primary: ',bold:true},{text:p.metric}]});
+  var hasBT=p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined;
+  lines.push({text:hasBT?(p.baseline+' \u2192 '+p.target):'\u2014'});
+  var secondary=(feat.outcomeHypothesis.secondary||[]).filter(function(s){return s&&s.metric;});
+  secondary.forEach(function(s){
+    lines.push({runs:[{text:'Secondary: ',bold:true},{text:s.metric}]});
+    var sHasBT=s.baseline!==null&&s.baseline!==undefined&&s.target!==null&&s.target!==undefined;
+    lines.push({text:sHasBT?(s.baseline+' \u2192 '+s.target):'\u2014'});
+  });
+  return lines;
+}
+
+// ── Single-paragraph hypothesis line for the Story Canvas detail section
+// (DOCX-2) — one prose paragraph with bold "HYPOTHESIS" label, natural
+// Word wrap, no forced single-line truncation. Returns null when the
+// feature has no hypothesis (paragraph omitted entirely, per agreement). ──
+function _docxHypothesisParagraph(feat){
+  if(!feat||!feat.outcomeHypothesis||!feat.outcomeHypothesis.primary||!feat.outcomeHypothesis.primary.metric)return null;
+  var p=feat.outcomeHypothesis.primary;
+  var hasBT=p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined;
+  var runs=[
+    new docx.TextRun({text:'HYPOTHESIS   ',font:'Calibri',size:18,bold:true,color:'5C5B57'}),
+    new docx.TextRun({text:'Primary: '+p.metric+' '+(hasBT?(p.baseline+' \u2192 '+p.target):'\u2014'),font:'Calibri',size:18,color:'2C2C2C'})
+  ];
+  var secondary=(feat.outcomeHypothesis.secondary||[]).filter(function(s){return s&&s.metric;});
+  secondary.forEach(function(s){
+    var sHasBT=s.baseline!==null&&s.baseline!==undefined&&s.target!==null&&s.target!==undefined;
+    runs.push(new docx.TextRun({text:'   \u00b7   Secondary: '+s.metric+' '+(sHasBT?(s.baseline+' \u2192 '+s.target):'\u2014'),font:'Calibri',size:18,color:'2C2C2C'}));
+  });
+  return new docx.Paragraph({spacing:{before:40,after:80},children:runs});
+}
+
 // ── Shared paragraph helpers (all builders use same font stack) ──
 function _docxHelpers(){
   var docxLib=docx;
@@ -52,8 +96,20 @@ function _docxHelpers(){
 }
 
 function _docxTable3Col(rows,colPcts){
-  // rows: [{cells:[{text,bold,color,bg}]}]
+  // rows: [{cells:[{text,bold,color,bg} OR {lines:[{text,bold,color} OR {runs:[{text,bold,color}]}],bg}]}]
   // colPcts: [p1,p2,p3] that sum to 100
+  // Outcome Verification Loop (DOCX-1): cells may now optionally provide
+  // `lines` (an array of {text,bold,color}) instead of a single `text` —
+  // each line becomes its own Paragraph, letting a cell stack multiple
+  // rows of content (e.g. "Primary: metric" / "baseline -> target" /
+  // "Secondary: metric" / "baseline -> target"). Existing single-`text`
+  // cells (used by the Capability-level table this same function serves)
+  // are unaffected — this is purely additive.
+  // v9.10.02 (item 3 fix): a line may ALSO optionally provide `runs` (an
+  // array of {text,bold,color}) instead of a single text/bold pair — this
+  // lets one line mix bold and normal text together (e.g. bold "Primary: "
+  // label followed by a normal-weight metric name), which a single
+  // {text,bold} pair can't express since bold applies to the whole run.
   var d=docx,WType=d.WidthType,SType=d.ShadingType;
   var pcts=colPcts||[40,40,20];
   return new d.Table({
@@ -61,13 +117,24 @@ function _docxTable3Col(rows,colPcts){
     columnWidths:undefined,
     rows:rows.map(function(row){
       return new d.TableRow({children:row.cells.map(function(cell,ci){
+        var paragraphs;
+        if(cell.lines&&cell.lines.length){
+          paragraphs=cell.lines.map(function(ln){
+            var runs=(ln.runs&&ln.runs.length)
+              ?ln.runs.map(function(r){return new d.TextRun({text:r.text||'',font:'Calibri',size:18,bold:!!r.bold,color:r.color||cell.color||'2C2C2C'});})
+              :[new d.TextRun({text:ln.text||'',font:'Calibri',size:18,bold:!!ln.bold,color:ln.color||cell.color||'2C2C2C'})];
+            return new d.Paragraph({spacing:{before:0,after:20},children:runs});
+          });
+        } else {
+          paragraphs=[new d.Paragraph({spacing:{before:0,after:0},children:[
+            new d.TextRun({text:cell.text||'',font:'Calibri',size:18,bold:!!cell.bold,color:cell.color||'2C2C2C'})
+          ]})];
+        }
         return new d.TableCell({
           width:{size:pcts[ci],type:WType.PERCENTAGE},
           shading:cell.bg?{type:SType.CLEAR,fill:cell.bg}:undefined,
           margins:{top:80,bottom:80,left:120,right:120},
-          children:[new d.Paragraph({spacing:{before:0,after:0},children:[
-            new d.TextRun({text:cell.text||'',font:'Calibri',size:18,bold:!!cell.bold,color:cell.color||'2C2C2C'})
-          ]})]
+          children:paragraphs
         });
       })});
     })
@@ -225,16 +292,16 @@ async function fcDownloadBriefDOCX(featuresSnapshot,productName){
         var tableRows=[{cells:[
           {text:'Feature',bold:true,bg:LIGHT,color:GREY},
           {text:'Why it matters',bold:true,bg:LIGHT,color:GREY},
-          {text:'Origin',bold:true,bg:LIGHT,color:GREY}
+          {text:'Hypothesis',bold:true,bg:LIGHT,color:GREY}
         ]}];
         capFeats.forEach(function(f){
           tableRows.push({cells:[
             {text:f.name||''},
             {text:f.why||'',color:'5C5B57'},
-            {text:_docxOriginLabel(f.origin),color:'5C5B57'}
+            {lines:_docxHypothesisLines(f),color:'5C5B57'}
           ]});
         });
-        children.push(_docxTable3Col(tableRows,[35,45,20]));
+        children.push(_docxTable3Col(tableRows,[30,40,30]));
         // Prototype images for features in this cap that have generated prototypes
         for(var fi=0;fi<capFeats.length;fi++){
           var feat=capFeats[fi];
@@ -337,6 +404,8 @@ async function scDownloadSprintDOCX(featuresSnapshot,productName){
           children.push(h.divider());
           children.push(h.h3(feat.name,hexColor));
           if(feat.why)children.push(h.italic(feat.why));
+          var _hypPara=_docxHypothesisParagraph(feat);
+          if(_hypPara)children.push(_hypPara);
           children.push(h.body(stories.length+' stor'+(stories.length===1?'y':'ies'),''));
           // Summary table
           var tableRows=[{cells:[

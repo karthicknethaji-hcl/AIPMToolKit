@@ -6,7 +6,13 @@
 function piOnTabEnter(){
   piCheckStaleness();
   piRenderLeftPanel();
-  if(typeof piPlan!=='undefined'&&piPlan){
+  // v9.01.01 fix: was a bare `piPlan` truthiness check -- true even for a
+  // minimal, backlog-only piPlan (no sprints yet), which would have routed
+  // into piRenderBoard() and crashed on an unguarded piPlan.sprints.forEach.
+  // Now correctly distinguishes "a real plan was generated" from "only a
+  // backlog is staged" -- the latter correctly shows the empty/backlog
+  // state instead, which already renders the staged-story tray correctly.
+  if(typeof piPlan!=='undefined'&&piPlan&&Array.isArray(piPlan.sprints)&&piPlan.sprints.length>0){
     piRenderBoard();
   } else {
     piRenderEmpty();
@@ -40,6 +46,8 @@ function piComputeHash(){
 function piRenderLeftPanel(){
   const lp=document.getElementById('pi-left');
   if(!lp)return;
+  // v9.08: computed once per render.
+  const _canEditPi=(typeof canEditSession!=='function')||canEditSession();
   const piName=(piPlan&&piPlan.name)||('PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3));
   const startDate=(piPlan&&piPlan.startDate)||new Date().toISOString().split('T')[0];
   const sprintCount=(piPlan&&piPlan.sprintCount)||(typeof appSettings!=='undefined'?appSettings.defaultSprints:6)||6;
@@ -67,12 +75,12 @@ function piRenderLeftPanel(){
       <div class="pi-section-lbl">PI Configuration</div>
       <div class="fl">
         <label>PI Name</label>
-        <input type="text" id="pi-name-input" value="${e(piName)}" maxlength="60">
+        <input type="text" id="pi-name-input" value="${e(piName)}" maxlength="60" ${_canEditPi?'':'readonly'}>
       </div>
       <div class="fl">
         <label>PI Start Date</label>
         <input type="date" id="pi-start-date" class="pi-date-input" value="${e(startDate)}"
-          onchange="piSetStartDate(this.value)">
+          ${_canEditPi?`onchange="piSetStartDate(this.value)"`:'readonly'}>
       </div>
       <div class="fl">
         <label>Sprint Configuration</label>
@@ -80,14 +88,14 @@ function piRenderLeftPanel(){
           <div class="pi-sprint-cfg-field">
             <div class="pi-sprint-cfg-lbl">Sprints</div>
             <div class="pi-input-unit-wrap">
-              <input type="number" id="pi-sprint-count" min="1" max="20" value="${sprintCount}" class="pi-input-unit-num">
+              <input type="number" id="pi-sprint-count" min="1" max="20" value="${sprintCount}" class="pi-input-unit-num" ${_canEditPi?'':'readonly'}>
               <span class="pi-input-unit-tag">sprints</span>
             </div>
           </div>
           <div class="pi-sprint-cfg-field">
             <div class="pi-sprint-cfg-lbl">Sprint Duration</div>
             <div class="pi-input-unit-wrap">
-              <input type="number" id="pi-sprint-dur-weeks" min="1" max="6" value="${Math.round(sprintDur/7)||2}" class="pi-input-unit-num">
+              <input type="number" id="pi-sprint-dur-weeks" min="1" max="6" value="${Math.round(sprintDur/7)||2}" class="pi-input-unit-num" ${_canEditPi?'':'readonly'}>
               <span class="pi-input-unit-tag">weeks</span>
             </div>
           </div>
@@ -100,25 +108,16 @@ function piRenderLeftPanel(){
         <tbody id="pi-squad-tbody">${piRenderSquadRows()}</tbody>
       </table>
       <div id="pi-cap-summary" style="font-size:9px;color:var(--t3);padding:4px 2px 6px;line-height:1.5;">${piRenderCapSummary()}</div>
-      <button class="pi-add-squad" onclick="piAddSquad()">+ Add Squad</button>
+      ${_canEditPi?`<button class="pi-add-squad" onclick="piAddSquad()">+ Add Squad</button>`:''}
       <div class="pi-section-lbl">Known Dependencies</div>
-      <textarea class="f-textarea" id="pi-known-deps" rows="2" placeholder="e.g. Payments infra migration must complete before checkout redesign." maxlength="1000"></textarea>
-      <div class="pi-section-lbl">Previous PI Carry-Forward</div>
-      <div class="pi-upload-row" onclick="document.getElementById('pi-prev-file').click()">
-        <i class="ti ti-upload" style="font-size:13px;color:var(--purple);flex-shrink:0;" aria-hidden="true"></i>
-        <span style="font-size:11px;font-weight:600;color:var(--t1);">Upload previous PI</span>
-        <span style="font-size:10px;color:var(--label);">.xlsx &middot; .csv</span>
-        <a href="assets/templates/prev-pi-template.xlsx" class="cc-template-link" onclick="event.stopPropagation()" style="margin-left:auto;"><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Template</a>
-      </div>
-      <input type="file" id="pi-prev-file" accept=".xlsx,.csv" style="display:none" onchange="piHandlePrevPIFile(this)">
-      <textarea class="f-textarea" id="pi-prev-paste" rows="2" placeholder="Or paste previous PI summary..." maxlength="2000"></textarea>
+      <textarea class="f-textarea" id="pi-known-deps" rows="2" placeholder="e.g. Payments infra migration must complete before checkout redesign." maxlength="1000" ${_canEditPi?'':'readonly'}></textarea>
     </div>
-    <div class="gen-wrap">
+    ${_canEditPi?`<div class="gen-wrap">
       <button class="gen-btn" id="pi-gen-btn" onclick="piGenerate()" ${piGetSquads().length===0?'disabled':''}>
         <i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i>
-        ${piPlan?'Regenerate PI Plan':'Generate PI Plan'}
+        ${(piPlan&&Array.isArray(piPlan.sprints)&&piPlan.sprints.length>0)?'Regenerate PI Plan':'Generate PI Plan'}
       </button>
-    </div>`;
+    </div>`:''}`;
 }
 
 function piRenderSquadRows(){
@@ -152,6 +151,7 @@ function piCalcCapacity(s){
 }
 
 function piAddSquad(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!Array.isArray(piSquads))piSquads=[];
   const _sqName=(typeof appSettings!=='undefined'?appSettings.defaultSquadName:'Squad')||'Squad';
   const _sqCap=(typeof appSettings!=='undefined'?appSettings.defaultSquadCapacity:80)||80;
@@ -165,6 +165,7 @@ function piAddSquad(){
 }
 
 function piRemoveSquad(idx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!Array.isArray(piSquads))return;
   piSquads.splice(idx,1);
   const tbody=document.getElementById('pi-squad-tbody');
@@ -174,6 +175,10 @@ function piRemoveSquad(idx){
 }
 
 function piUpdateSquad(idx,field,val){
+  // v9.08: found during PI gating pass — not in the original 29-entry
+  // inventory, but mutates piSquads and (below, unchanged) saves, so it
+  // needs the same guard as its siblings above.
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!Array.isArray(piSquads)||!piSquads[idx])return;
   piSquads[idx][field]=val;
   // Recalculate capacity display
@@ -181,49 +186,6 @@ function piUpdateSquad(idx,field,val){
   if(tbody)tbody.innerHTML=piRenderSquadRows();
   _piRefreshCapSummary();
   if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
-}
-
-function piHandlePrevPIFile(input){
-  const file=input.files[0];
-  if(!file)return;
-  // Delegate to the same parse chain used by capability canvas
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    if(typeof XLSX==='undefined'){
-      const s=document.createElement('script');
-      s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-      s.onload=()=>piParsePrevPI(ev.target.result);
-      document.head.appendChild(s);
-    } else {
-      piParsePrevPI(ev.target.result);
-    }
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-function piParsePrevPI(arrayBuffer){
-  try{
-    const wb=XLSX.read(arrayBuffer,{type:'array'});
-    const ws=wb.Sheets[wb.SheetNames[0]];
-    const data=XLSX.utils.sheet_to_json(ws,{defval:''});
-    if(!data||data.length===0){showToast('File appears empty. Download the template for the expected format.','warn');return;}
-    // Columns: Story, Feature, Capability, Story Points
-    const storyKey=Object.keys(data[0]||{}).find(k=>/^story$/i.test(k));
-    const featKey=Object.keys(data[0]||{}).find(k=>/^feature/i.test(k));
-    const capKey=Object.keys(data[0]||{}).find(k=>/^capability/i.test(k));
-    const ptsKey=Object.keys(data[0]||{}).find(k=>/story.?points/i.test(k)||/^points$/i.test(k));
-    if(!storyKey&&!featKey){showToast('Could not find Story or Feature column. Download the template for the expected format.','warn');return;}
-    if(typeof piInputs!=='undefined'){
-      piInputs.carryForwardItems=data.map(r=>({
-        name:storyKey?r[storyKey]||'':featKey?r[featKey]||'':'Unknown',
-        capability:capKey?r[capKey]||'':'',
-        points:+(ptsKey?r[ptsKey]||3:3)
-      })).filter(r=>r.name);
-    }
-    showToast('Parsed '+(piInputs.carryForwardItems||[]).length+' carry-forward stories from previous PI.','success');
-  }catch(err){
-    showToast('Could not read file. Download the template for the expected format.','error');
-  }
 }
 
 // ── Empty state ──
@@ -402,6 +364,7 @@ function piSequence(rankedIds,effTier,effScore,blockersOf,pointsOf,squads,sprint
 
 // ── Generate ──
 async function piGenerate(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const key=getKey();
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
   const squads=piGetSquads();
@@ -409,11 +372,32 @@ async function piGenerate(){
   // Item 11: use selected stories only
   const selectedStories=piGetSelectedStories();
   if(selectedStories.length===0){
-    showToast('No stories selected for PI — go to Story Canvas and select stories first.','info');
+    showToast('No stories selected for PI. Go to Story Canvas and select stories first.','info');
     return;
   }
-  // If plan already exists, confirm before regenerating
-  if(piPlan){
+  // v8.133 fix (item 3): courtesy pre-check, before any confirm modal.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
+  // If plan already exists, confirm before regenerating — UNLESS this is
+  // the confirmed re-entry from the modal's own Regenerate button (see
+  // below, _pgRegenConfirmed), in which case skip straight to the lock-
+  // gated wipe further down. Phase 5 fix (v8.118): the wipe itself used to
+  // happen unconditionally in the modal's onclick, BEFORE any lock check —
+  // meaning a user could confirm regeneration, have their existing PI plan
+  // wiped immediately, and only THEN discover (via the toast fired from
+  // inside withGenerationLock further down) that someone else was already
+  // generating, with their prior work already gone and no way back. Fixed
+  // by moving the actual wipe to run only AFTER the lock is confirmed
+  // acquired, inside the lock callback below — see that block for the
+  // wipe itself.
+  const _isConfirmedRegen = !!_pgRegenConfirmed;
+  _pgRegenConfirmed = false;
+  if(piPlan && Array.isArray(piPlan.sprints) && piPlan.sprints.length>0 && !_isConfirmedRegen){
     const overlay=document.createElement('div');
     overlay.id='pi-regen-overlay-1';
     overlay.className='modal-overlay';
@@ -425,7 +409,7 @@ async function piGenerate(){
       <div class="modal-body">This will reset all sprint assignments. Manual moves will be lost.</div>
       <div class="modal-footer">
         <button class="modal-cancel-btn" onclick="document.getElementById('pi-regen-overlay-1').remove()">Cancel</button>
-        <button class="modal-confirm-btn" onclick="document.getElementById('pi-regen-overlay-1').remove();scClearPIPlannedBadges();piPlan=null;piScVersion=null;piGenerate();">Regenerate</button>
+        <button class="modal-confirm-btn" onclick="document.getElementById('pi-regen-overlay-1').remove();_pgRegenConfirmed=true;piGenerate();">Regenerate</button>
       </div>
     </div>`;
     document.body.appendChild(overlay);
@@ -435,15 +419,15 @@ async function piGenerate(){
     return;
   }
 
+  // Phase 5 (v8.117): immediate visual acknowledgment — disable the
+  // button synchronously before any async work (including the lock
+  // check). The rich loader is deliberately NOT shown until the lock is
+  // confirmed acquired (inside withGenerationLock's callback below) —
+  // showing "Generating PI Plan..." before the lock check even runs would
+  // misleadingly claim generation started when the app is still only
+  // checking whether it's allowed to start.
   const btn=document.getElementById('pi-gen-btn');
   if(btn){btn.disabled=true;btn.innerHTML='<div class="cc-spin-sm"></div> Generating…';}
-  // Show loading state in main panel
-  const piMainLoader=document.getElementById('pi-main');
-  if(piMainLoader){piMainLoader.innerHTML=`<div class="pi-empty">
-    <div class="pi-empty-icon"><div class="cc-spin" style="width:32px;height:32px;border-width:3px;"></div></div>
-    <div class="pi-empty-title">Generating PI Plan…</div>
-    <div class="pi-empty-sub">AI is analysing dependencies, then sequencing across sprints and squads. This takes 2–4 minutes.</div>
-  </div>`;}
 
   // Read config from left panel
   const piName=document.getElementById('pi-name-input')?document.getElementById('pi-name-input').value.trim()||'PI-Plan':'PI-Plan';
@@ -465,6 +449,67 @@ async function piGenerate(){
   // Compute squad capacities — snapshot, decoupled from live piSquads via spread
   const squadsCapped=squads.map(s=>({...s,capacity:piCalcCapacity(s)}));
 
+  // Phase 5 (v8.117): attempt marker for this call. PI generation runs
+  // 2-4 minutes — the longest-running generation in the app — making it
+  // the single most likely case for a user to navigate away mid-call, or
+  // for a slow lock-check to resolve well after the user has moved on.
+  // Every later write below is guarded against this marker.
+  const _attempt=newGenAttempt();
+
+  // Phase 5: withGenerationLock wraps the ENTIRE workflow below — callAPI,
+  // parse, validate, the deterministic scoring/sequencing engine, and the
+  // sessionStoreSave() calls inside it — not just the callAPI() line. A
+  // lock scoped only to the network call would release before this
+  // function's own apply/save steps finish, letting a second person start
+  // generating against stale data. See api.js for the full rationale.
+  try{
+    await withGenerationLock(async (_lock) => {
+  // Phase 5 fix (v8.118): the destructive wipe (scClearPIPlannedBadges,
+  // piPlan=null, piScVersion=null) now happens HERE — after the lock is
+  // confirmed acquired, not before this whole withGenerationLock() call
+  // even started. If the lock check above had failed instead, execution
+  // would never reach this line at all, and the user's existing PI plan
+  // would be left completely untouched — exactly the fix this bug needed.
+  if(_isConfirmedRegen){
+    if(typeof scClearPIPlannedBadges==='function')scClearPIPlannedBadges();
+    // Phase 5 fix (v8.118): if this confirmed-regen came from piRegenerate()
+    // (the sprint-board's own regen button), restore the prior submission's
+    // story staging flags now — same data piRegenerate() used to mutate
+    // unconditionally before any lock check. _pgRegenPriorSubmittedStoryIds
+    // is null (not just empty) when this came from piGenerate()'s OWN
+    // confirm-modal instead, which never touches story staging at all —
+    // distinguishing those two paths correctly, not conflating them.
+    if(_pgRegenPriorSubmittedStoryIds!==null){
+      const _priorIds=_pgRegenPriorSubmittedStoryIds;
+      _pgRegenPriorSubmittedStoryIds=null;
+      if(_priorIds.length&&typeof scCanvas!=='undefined'){
+        scCanvas.forEach(f=>{
+          if(f.stories)f.stories.forEach(st=>{
+            st._stagedForPI=_priorIds.includes(st.id);st._inPIPlan=false;
+          });
+        });
+      }
+      if(typeof scPiSelectedIds!=='undefined'){
+        scPiSelectedIds=new Set();
+        if(typeof scCanvas!=='undefined')scCanvas.forEach(f=>{if(f.stories&&f.stories.some(s=>s._stagedForPI))scPiSelectedIds.add(f.id);});
+      }
+    }
+    piPlan=null;
+    piScVersion=null;
+    // Item 8: pause (not clear) any pending manual-edit notification —
+    // this real regeneration is about to replace the data wholesale, so a
+    // stale manual-edit timer firing mid-generation would be redundant at
+    // best, confusing at worst. Cleared for good on success (below), or
+    // resumed if this attempt doesn't complete (outer catch).
+    if(typeof _lsPauseManualEditForRegeneration==='function')_lsPauseManualEditForRegeneration('pi');
+  }
+  // Lock confirmed — show the real loader now, marker-stamped.
+  var piMainLoader=document.getElementById('pi-main');
+  if(piMainLoader){piMainLoader.innerHTML=markGenAttempt(_attempt,`<div class="pi-empty">
+    <div class="pi-empty-icon"><div class="cc-spin" style="width:32px;height:32px;border-width:3px;"></div></div>
+    <div class="pi-empty-title">Generating PI Plan…</div>
+    <div class="pi-empty-sub">AI is analysing dependencies, then sequencing across sprints and squads. This takes 2–4 minutes.</div>
+  </div>`);}
   try{
     const sys=(typeof SYS_PI!=='undefined'?SYS_PI:'');
     const _piDocCtx=(typeof buildDocContext==='function')?buildDocContext('pi'):'';
@@ -631,23 +676,97 @@ async function piGenerate(){
     // Reveal PI tab — piOnTabEnter (called by revealAndSwitchTab) handles piRenderBoard + piCheckStaleness
     revealAndSwitchTab('pi');
     piRenderLeftPanel();
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save — per the second
+    // adversarial review round, checking lock-lost status only AFTER this
+    // whole function returns would be too late; the save would already
+    // have happened. Throws generation_lock_lost if the lock was lost
+    // mid-generation, which the outer catch (added below) surfaces as a
+    // toast without a second, duplicate "PI plan generation failed" toast.
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'pi','pi_plan_generated',null,null);
+      }
+      // Item 8: the regeneration's own event is now durably emitted (or
+      // this was a private session with nothing to clear) — fully
+      // discard the paused manual-edit state rather than let it resume.
+      if(typeof _lsClearManualEditAfterRegeneration==='function')_lsClearManualEditAfterRegeneration('pi');
+    }
   }catch(err){
     if(err.name==='AbortError'){
       endAiGen();
-      // Reset the "Generating..." placeholder left behind in #pi-main
-      if(piMainLoader)piRenderEmpty();
+      // Phase 5 (v8.117): re-query fresh and check the marker before
+      // resetting — if the user has since navigated to a different view,
+      // don't reset a #pi-main that no longer belongs to this attempt.
+      var _abortMainArea=getIfCurrentAttempt('pi-main',_attempt);
+      if(_abortMainArea)piRenderEmpty();
       if(btn){btn.disabled=piGetSquads().length===0;btn.innerHTML='<i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i> Regenerate';}
-      return;
+      // Phase 5: rethrow rather than silently return. Per adversarial
+      // review, a silent return here made withGenerationLock() see this as
+      // a NORMAL SUCCESSFUL completion (fn() resolved without throwing) —
+      // indistinguishable from a real generation succeeding. That meant
+      // the outer lock-error catch (which resets UI state set BEFORE
+      // withGenerationLock was ever called) never ran on abort. Rethrowing
+      // preserves this function's own abort-specific cleanup above (which
+      // still runs first) while also letting the wrapper's own finally
+      // release the DB lock through the normal error path, and letting
+      // the outer catch below run its (harmless, idempotent) UI reset too.
+      throw err;
+    }
+    if(err.message==='generation_lock_lost'){
+      // Toast already shown by withGenerationLock() itself — avoid a
+      // second, confusing "PI plan generation failed" toast on top of it.
+      var _llMainArea=getIfCurrentAttempt('pi-main',_attempt);
+      if(_llMainArea)piRenderEmpty();
+      throw err; // propagate to outer catch for the shared btn/loader reset
     }
     // v8.98 fix: this branch was never resetting #pi-main, so any non-abort
     // failure (timeout, parse error, invalid structure) left the "Generating…"
     // spinner on screen indefinitely even though the toast below fired.
-    if(piMainLoader)piRenderEmpty();
+    // Phase 5 (v8.117): marker-guarded — a stale failure must not reset a
+    // #pi-main that a different, newer action now owns.
+    var _errMainArea=getIfCurrentAttempt('pi-main',_attempt);
+    if(_errMainArea)piRenderEmpty();
     showToast('PI plan generation failed: '+err.message,'error');
   }finally{
     if(btn){btn.disabled=piGetSquads().length===0;btn.innerHTML='<i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i> Regenerate';}
     endAiGen();
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 fix (v8.118): REAL BUG, found via live testing and confirmed
+    // via debug logging that piPlan itself was NEVER touched by a rejected
+    // lock (the wipe genuinely never runs — see the lock-gated wipe
+    // above). The bug was here instead: this catch UNCONDITIONALLY called
+    // piRenderEmpty(), which renders the "Configure your squads..." EMPTY
+    // STATE regardless of whether piPlan still has real, intact data —
+    // meaning a rejected regenerate attempt made an EXISTING, untouched
+    // plan visually disappear from the screen, even though the underlying
+    // data was completely safe in memory (confirmed live: renavigating
+    // away and back to the PI tab correctly showed the intact board,
+    // proving the data itself was always fine — only the immediate
+    // post-rejection view was wrong). Fixed, per explicit direction to
+    // make this foolproof rather than a hand-picked subset: call
+    // piOnTabEnter() directly — the SAME function that runs on every
+    // normal navigation to this tab (piCheckStaleness + piRenderLeftPanel
+    // + the piPlan-conditional board/empty render) — rather than
+    // reimplementing a narrower version of its logic here. This
+    // guarantees the rejection path can never drift out of sync with
+    // normal navigation's behavior, since there is only one function
+    // making this decision now, not two similar-but-separate ones.
+    var _lockErrMainArea=document.getElementById('pi-main');
+    if(_lockErrMainArea&&typeof piOnTabEnter==='function'){
+      piOnTabEnter();
+    }
+    if(btn){btn.disabled=piGetSquads().length===0;btn.innerHTML='<i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i> Regenerate';}
+    endAiGen();
+    // Item 8: this regeneration attempt didn't complete successfully —
+    // resume any manual-edit state that was paused at the wipe point, so
+    // its own notification can still eventually fire rather than being
+    // lost because a regeneration attempt failed. No-op if nothing was
+    // ever paused (e.g. the lock was rejected before the wipe even ran).
+    if(typeof _lsResumeManualEditAfterFailedRegeneration==='function')_lsResumeManualEditAfterFailedRegeneration('pi');
   }
 }
 
@@ -698,6 +817,7 @@ function piComputeSprints(count,durationDays,startDateStr){
 
 // ── Regenerate ──
 function piConfirmRegenerate(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const main=document.getElementById('pi-main');
   if(!main)return;
   const overlay=document.createElement('div');
@@ -721,31 +841,30 @@ function piConfirmRegenerate(){
 }
 
 function piRegenerate(){
-  // CL-3: clear PI planned badges from Story Canvas before reset
-  scClearPIPlannedBadges();
-  // Restore _stagedForPI flags on stories from previous submission scope
-  const prevSubmittedStories=piPlan&&piPlan.submittedStoryIds?[...piPlan.submittedStoryIds]:[];
-  if(prevSubmittedStories.length&&typeof scCanvas!=='undefined'){
-    scCanvas.forEach(f=>{
-      if(f.stories)f.stories.forEach(st=>{
-        st._stagedForPI=prevSubmittedStories.includes(st.id);st._inPIPlan=false;
-      });
-    });
-  }
-  // Rebuild scPiSelectedIds from story flags
-  if(typeof scPiSelectedIds!=='undefined'){
-    scPiSelectedIds=new Set();
-    if(typeof scCanvas!=='undefined')scCanvas.forEach(f=>{if(f.stories&&f.stories.some(s=>s._stagedForPI))scPiSelectedIds.add(f.id);});
-  }
-  piPlan=null;
-  piScVersion=null;
+  // Phase 5 fix (v8.118): same bug as piGenerate()'s own confirm-modal path
+  // — this function used to wipe piPlan and mutate scCanvas story flags
+  // UNCONDITIONALLY, before piGenerate()'s own lock check ever ran. If the
+  // lock check then failed (someone else generating), the user's existing
+  // PI plan and story staging were already gone with no way back. Fixed
+  // the same way: capture what we need from piPlan HERE (read-only, no
+  // mutation yet), stash it for use only if the lock actually succeeds,
+  // and let piGenerate() itself perform every mutation below AFTER
+  // acquiring the lock — see piGenerate()'s _isConfirmedRegen branch.
+  _pgRegenPriorSubmittedStoryIds = (piPlan&&piPlan.submittedStoryIds)?[...piPlan.submittedStoryIds]:[];
+  _pgRegenConfirmed=true;
   piGenerate();
 }
 
 // ── Sprint board ──
 function piRenderBoard(){
   const main=document.getElementById('pi-main');
-  if(!main||!piPlan)return;
+  // v9.01.01 fix: extended guard to also require a genuine sprints array
+  // (not just any truthy piPlan) -- centralizing this here protects all 7
+  // call sites of this function uniformly, rather than needing to fix each
+  // one individually. Strictly safer than before: this only ever turns an
+  // existing "do nothing" case into a broader "do nothing," never removes
+  // a previously-safe path.
+  if(!main||!piPlan||!Array.isArray(piPlan.sprints)||piPlan.sprints.length===0)return;
 
   const squads=piGetSquads();
   const squadColors=['#5F1EBE','#185FA5','#0F6E56','#C8870A','#A32D2D','#534AB7','#075B5B','#7D3C98'];
@@ -818,7 +937,7 @@ function piRenderBoard(){
   const backlogHtml=`<div class="pi-backlog-resize-handle" id="pi-backlog-resize" onmousedown="piBacklogResizeStart(event)" title="Drag to resize"></div>
   <div class="pi-backlog-tray" id="pi-backlog-tray" ondragover="piDragOver(event)" ondrop="piDropToBacklog(event)">
     <div class="pi-backlog-hdr">Backlog tray (${backlogStories.length} stories)</div>
-    <div class="pi-backlog-cards">${backlogStories.map(s=>{const shortId=s.id?s.id.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';return`<div class="pi-backlog-card" draggable="true" ondragstart="piDragStart(event,'${e(s.id)}')" onclick="piOpenBacklogPanel('${e(s.id)}')" title="${e(s.statement)}" style="cursor:pointer;"><span class="pi-card-id" style="display:block;margin-bottom:3px;">${e(shortId)}</span>${e((s.statement||s.title||'').substring(0,55))}…</div>`;}).join('')}</div>
+    <div class="pi-backlog-cards">${backlogStories.map(s=>{const shortId=s.id?s.id.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';const _canEditPiBl=(typeof canEditSession!=='function')||canEditSession();return`<div class="pi-backlog-card" draggable="${_canEditPiBl}" ${_canEditPiBl?`ondragstart="piDragStart(event,'${e(s.id)}')"`:''} onclick="piOpenBacklogPanel('${e(s.id)}')" title="${e(s.statement)}" style="cursor:${_canEditPiBl?'pointer':'not-allowed'};"><div class="pi-card-hdr-row"><span class="pi-card-id" style="display:block;">${e(shortId)}</span>${_canEditPiBl?`<button type="button" class="pi-card-remove" onclick="event.stopPropagation();event.preventDefault();piRemoveStoryFromBacklog('${e(s.id)}')" title="Move to Story Canvas" aria-label="Remove story from PI backlog">✕</button>`:''}</div>${e((s.statement||s.title||'').substring(0,55))}…</div>`;}).join('')}</div>
   </div>`;
 
   main.innerHTML=`<div class="pi-main-content" id="pi-main-content">${unsavedHtml+toolbarHtml+staleBannerHtml+boardHtml+backlogHtml}</div>`;
@@ -849,16 +968,21 @@ function piRenderStoryCard(story,squadColorMap){
   const squadColor=squadColorMap&&squad&&squadColorMap[squad]?squadColorMap[squad]:'var(--divider)';
   const dorVal=story.dor||'READY';
   const dorClass=dorVal==='READY'?'pi-card-dor-ready':dorVal==='IN REVIEW'?'pi-card-dor-review':'pi-card-dor-blocked';
+  // v9.08: draggable set conditionally — this is the one entry point
+  // deliberately using a disabled-not-hidden treatment, per product
+  // decision, since removing drag handles while leaving cards visible
+  // would look broken rather than intentionally locked.
+  const _canEditPiCard=(typeof canEditSession!=='function')||canEditSession();
   return`<div class="pi-story-card${isBlocked?' blocked':''}${isManual?' manually-moved':''}" 
-    draggable="true" 
-    ondragstart="piDragStart(event,'${e(story.id)}');this.dataset.dragged='1';"
+    draggable="${_canEditPiCard}" 
+    ${_canEditPiCard?`ondragstart="piDragStart(event,'${e(story.id)}');this.dataset.dragged='1';"`:''}
     onclick="if(!this.dataset.dragged)piOpenRightPanel('${e(story.id)}');delete this.dataset.dragged;"
     ondragend="delete this.dataset.dragged;"
     id="pi-card-${e(story.id)}"
-    style="cursor:pointer;border-left-color:${squadColor};">
+    style="cursor:${_canEditPiCard?'pointer':'not-allowed'};border-left-color:${squadColor};">
     <div class="pi-card-hdr-row">
       <span class="pi-card-id">${e(shortId)}</span>
-      <button class="pi-card-remove" onclick="event.stopPropagation();piRemoveStoryFromSprint('${e(story.id)}')" title="Move to backlog">&#x2715;</button>
+      ${_canEditPiCard?`<button class="pi-card-remove" onclick="event.stopPropagation();piRemoveStoryFromSprint('${e(story.id)}')" title="Move to backlog">&#x2715;</button>`:''}
     </div>
     <div class="pi-card-title">${e(stmtShort)}</div>
     <div class="pi-card-meta-row">
@@ -932,6 +1056,12 @@ function piCheckCapacity(squads,squadColorMap){
 let piDraggingId=null;
 
 function piDragStart(evt,storyId){
+  // v9.08: per product decision, drag-and-drop uses a disabled state
+  // rather than hiding the card entirely — removing drag handles while
+  // keeping the card visible would look like something is broken, not
+  // intentionally locked. Preventing drag start here is the actual
+  // enforcement; the card's own render sets draggable=false to match.
+  if(typeof canEditSession==='function'&&!canEditSession()){evt.preventDefault();return;}
   piDraggingId=storyId;
   evt.dataTransfer.effectAllowed='move';
   const card=document.getElementById('pi-card-'+storyId);
@@ -947,6 +1077,7 @@ function piDragOver(evt){
 
 function piDrop(evt,targetSprint){
   evt.preventDefault();
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const storyId=piDraggingId;
   piDraggingId=null;
   if(!storyId)return;
@@ -971,6 +1102,7 @@ function piDrop(evt,targetSprint){
 }
 
 function piMoveToPrint(storyId,targetSprint,manual){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan)return;
   if(!piPlan.storyAssignments[storyId]){
     piPlan.storyAssignments[storyId]={sprint:targetSprint,squad:'',points:3,status:'planned'};
@@ -981,12 +1113,19 @@ function piMoveToPrint(storyId,targetSprint,manual){
   if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
   piRenderBoard();
   piUpdateTabBadge();
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    // v8.141 (item 8): mark only once the save has actually resolved
+    // successfully — chained via .then(), not called from this function's
+    // own top level, so a tab-switch flush can never fire before the
+    // underlying data is genuinely durable.
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
 // ── Drop story back to backlog tray ──
 function piDropToBacklog(evt){
   evt.preventDefault();
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const storyId=piDraggingId;
   piDraggingId=null;
   document.querySelectorAll('.pi-sprint-col').forEach(c=>c.style.borderColor='');
@@ -998,11 +1137,146 @@ function piDropToBacklog(evt){
 }
 
 function piRemoveStoryFromSprint(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan)return;
   if(piPlan.storyAssignments[storyId])delete piPlan.storyAssignments[storyId];
   if(!piPlan.backlogStoryIds)piPlan.backlogStoryIds=[];
   if(!piPlan.backlogStoryIds.includes(storyId))piPlan.backlogStoryIds.push(storyId);
   piRenderBoard();
+  // v8.141 fix (bundled with item 8): confirmed missing entirely — this
+  // edit was never persisted at all, same class of gap as item 7's three
+  // functions. Added here, plus the same mark-after-success chaining.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
+}
+
+// ── Remove story from backlog (v9.03: FIX 1.2 + FIX 1.1 async safety) ──
+function piRemoveStoryFromBacklog(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
+  if(!piPlan||!piPlan.backlogStoryIds)return;
+  // FIX 1.3: Idempotence guard — prevent duplicate saves/events on rapid clicks
+  if(piPlan.backlogStoryIds.indexOf(storyId)===-1)return;
+  
+  // Snapshot current state for revert if save fails
+  var oldBacklogIds=Array.isArray(piPlan.backlogStoryIds)?piPlan.backlogStoryIds.slice():[];
+  
+  // FIX 10.1 (v9.04): Find ORIGINAL story in scCanvas (not copy from piFindStory)
+  // piFindStory returns a shallow copy via spread operator, so mutations don't persist
+  var story=null;
+  var featureId=null;
+  if(typeof scCanvas!=='undefined'&&Array.isArray(scCanvas)){
+    for(var i=0;i<scCanvas.length;i++){
+      var f=scCanvas[i];
+      if(f.stories&&Array.isArray(f.stories)){
+        for(var j=0;j<f.stories.length;j++){
+          if(f.stories[j].id===storyId){
+            story=f.stories[j];
+            featureId=f.id;
+            break;
+          }
+        }
+        if(story)break;
+      }
+    }
+  }
+  // Fallback: if not found in scCanvas, check piStoryPool (stories created in PI)
+  if(!story&&typeof piStoryPool!=='undefined'&&piStoryPool[storyId]){
+    story=piStoryPool[storyId];
+  }
+  if(!story)return; // Story not found
+  
+  var oldInPIPlan=story._inPIPlan;
+  var oldStagedForPI=story._stagedForPI;
+  
+  // ── Mutate state optimistically ──
+  piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(function(id){
+    return id!==storyId;
+  });
+  story._inPIPlan=false;
+  story._stagedForPI=false;
+  
+  // ── Render immediately ──
+  piRenderBoard();
+  piUpdateTabBadge(); // Show unsaved indicator
+  
+  // ── FIX 1.1: Persist with proper async value capture ──
+  var saveSessionId=_activeSessionId;
+  var wasSharedSession=(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared);
+  
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&saveSessionId){
+    sessionStoreSave(saveSessionId).then(function(ok){
+      if(!ok){
+        // REVERT on save failure
+        piPlan.backlogStoryIds=oldBacklogIds;
+        story._inPIPlan=oldInPIPlan;
+        story._stagedForPI=oldStagedForPI;
+        piRenderBoard();
+        piUpdateTabBadge();
+        
+        // Show error to user
+        if(typeof showToast==='function'){
+          showToast('Failed to save backlog removal. Changes reverted. Please try again.','error');
+        }
+        return false;
+      }
+      
+      // ── Save succeeded — now emit live-sync event ──
+      try {
+        if(typeof _lsMarkManualEdit==='function'){
+          _lsMarkManualEdit('pi');
+        }
+      } catch(e){
+        console.warn('[PI] Manual edit marker failed:',e);
+      }
+      
+      if(wasSharedSession&&typeof _lsEmitContentEvent==='function'){
+        try {
+          var emitted=_lsEmitContentEvent(
+            saveSessionId,
+            'pi',
+            'pi_plan_updated',
+            null,
+            null
+          );
+          if(emitted&&typeof emitted.catch==='function'){
+            emitted.catch(function(e){
+              console.warn('[PI] Live-sync event emission failed:',e);
+            });
+          }
+        } catch(e){
+          console.warn('[PI] Live-sync event emission failed:',e);
+        }
+      }
+      
+      // FIX 10.2 (v9.04): Refresh Story Canvas to reflect updated badge state
+      // The story object was mutated (._inPIPlan=false), now SC needs to re-render
+      // Works for both private AND shared sessions (user requested both)
+      try {
+        if(typeof newScRender==='function'){
+          newScRender();
+        }
+      } catch(e){
+        console.warn('[PI→SC] Story Canvas refresh failed:',e);
+        // Don't block on SC render failure — save already persisted
+      }
+      
+      return true;
+    }).catch(function(e){
+      console.warn('[PI] Backlog removal save threw exception:',e);
+      
+      // Revert on exception
+      piPlan.backlogStoryIds=oldBacklogIds;
+      story._inPIPlan=oldInPIPlan;
+      story._stagedForPI=oldStagedForPI;
+      piRenderBoard();
+      piUpdateTabBadge();
+      
+      if(typeof showToast==='function'){
+        showToast('Failed to save backlog removal. Changes reverted. Please try again.','error');
+      }
+    });
+  }
 }
 
 function piGetBlockingConflict(storyId,targetSprint){
@@ -1105,6 +1379,8 @@ function piRenderRightPanel(storyId){
   const deps=piGetDepsForStory(storyId);
   const note=(asgn.note)||'';
   const allStories=piPlan?Object.keys(piPlan.storyAssignments):[];
+  // v9.08.02: computed once per panel render.
+  const _canEditPiRp=(typeof canEditSession!=='function')||canEditSession();
 
   panel.innerHTML=`
     <div class="pi-rp-hdr" style="position:relative;">
@@ -1133,16 +1409,16 @@ function piRenderRightPanel(storyId){
         <div class="pi-rp-section-lbl">Planning</div>
         <div class="pi-rp-planning-row">
           <div class="pi-rp-field"><div class="pi-rp-field-lbl">Points</div>
-            <span class="pi-rp-pts-badge${asgn.userSetPoints?' pi-rp-pts-user-set':''}" id="pi-rp-pts-${storyId}" onclick="piEditPoints('${e(storyId)}')" title="Click to edit">${asgn.userSetPoints?(asgn.points||3)+' pts':'~'+(asgn.points||3)+' pts'}</span>
+            <span class="pi-rp-pts-badge${asgn.userSetPoints?' pi-rp-pts-user-set':''}${_canEditPiRp?'':' pi-rp-pts-badge-disabled'}" id="pi-rp-pts-${storyId}" ${_canEditPiRp?`onclick="piEditPoints('${e(storyId)}')" title="Click to edit"`:''}>${asgn.userSetPoints?(asgn.points||3)+' pts':'~'+(asgn.points||3)+' pts'}</span>
           </div>
           <div class="pi-rp-field"><div class="pi-rp-field-lbl">Squad</div>
-            <select class="pi-rp-select" onchange="piUpdateAssignment('${e(storyId)}','squad',this.value)">
+            <select class="pi-rp-select" onchange="piUpdateAssignment('${e(storyId)}','squad',this.value)" ${_canEditPiRp?'':'disabled'}>
               <option value="">— Assign squad —</option>
               ${squads.map(sq=>`<option value="${e(sq.name)}" ${asgn.squad===sq.name?'selected':''}>${e(sq.name)}</option>`).join('')}
             </select>
           </div>
           <div class="pi-rp-field"><div class="pi-rp-field-lbl">Sprint</div>
-            <select class="pi-rp-select" onchange="piUpdateAssignmentSprint('${e(storyId)}',+this.value)">
+            <select class="pi-rp-select" onchange="piUpdateAssignmentSprint('${e(storyId)}',+this.value)" ${_canEditPiRp?'':'disabled'}>
               ${piPlan.sprints.map(sp=>`<option value="${sp.id}" ${asgn.sprint===sp.id?'selected':''}>${e(sp.label)}</option>`).join('')}
             </select>
           </div>
@@ -1156,20 +1432,20 @@ function piRenderRightPanel(storyId){
           <span class="pi-rp-dep-name">${e((piFindStory(d.direction==='blocks'?d.toId:d.fromId)||{statement:d.toId||d.fromId}).statement||'').substring(0,50)}</span>
           <span class="pi-rp-dep-sprint">S${d.direction==='blocks'?(piPlan.storyAssignments[d.toId]||{sprint:'?'}).sprint:(piPlan.storyAssignments[d.fromId]||{sprint:'?'}).sprint}</span>
           <span class="pi-rp-dep-source ${d.source||'ai'}">${d.source==='user'?'user set':'AI inferred'}</span>
-          <button class="pi-rp-dep-remove" onclick="piRemoveDep('${e(storyId)}','${e(d.fromId||'')}','${e(d.toId||'')}')">&#x2715;</button>
+          ${_canEditPiRp?`<button class="pi-rp-dep-remove" onclick="piRemoveDep('${e(storyId)}','${e(d.fromId||'')}','${e(d.toId||'')}')">&#x2715;</button>`:''}
         </div>`).join('')}
         <div id="pi-rp-dep-form-${storyId}"></div>
-        <button class="pi-rp-add-dep-link" onclick="piShowAddDepForm('${e(storyId)}')">+ Add Dependency</button>
+        ${_canEditPiRp?`<button class="pi-rp-add-dep-link" onclick="piShowAddDepForm('${e(storyId)}')">+ Add Dependency</button>`:''}
       </div>
       <div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Note <span style="font-size:9px;color:var(--label);">(exported in PI DOCX)</span></div>
-        <textarea class="pi-rp-note-area" id="pi-rp-note-${storyId}" maxlength="300" onblur="piSaveNote('${e(storyId)}',this.value)">${e(note)}</textarea>
+        <textarea class="pi-rp-note-area" id="pi-rp-note-${storyId}" maxlength="300" ${_canEditPiRp?`onblur="piSaveNote('${e(storyId)}',this.value)"`:'readonly'}>${e(note)}</textarea>
         <div class="pi-rp-counter" id="pi-rp-note-count-${storyId}">${note.length} / 300</div>
       </div>
     </div>
     <div class="pi-rp-footer">
       <div id="pi-rp-remove-confirm-${storyId}" style="margin-bottom:6px;display:none;"></div>
-      <button class="pi-rp-remove-link" onclick="piShowRemoveConfirm('${e(storyId)}')"><i class="ti ti-trash" style="font-size:10px;" aria-hidden="true"></i> Remove from PI?</button>
+      ${_canEditPiRp?`<button class="pi-rp-remove-link" onclick="piShowRemoveConfirm('${e(storyId)}')"><i class="ti ti-trash" style="font-size:10px;" aria-hidden="true"></i> Remove from PI?</button>`:''}
     </div>`;
   // Wire note counter
   const noteArea=document.getElementById('pi-rp-note-'+storyId);
@@ -1177,6 +1453,7 @@ function piRenderRightPanel(storyId){
 }
 
 function piEditPoints(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const asgn=piPlan&&piPlan.storyAssignments&&piPlan.storyAssignments[storyId];
   if(!asgn)return;
   const badge=document.getElementById('pi-rp-pts-'+storyId);
@@ -1188,22 +1465,35 @@ function piEditPoints(storyId){
 }
 
 function piSavePoints(storyId,pts){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan||!piPlan.storyAssignments[storyId])return;
   piPlan.storyAssignments[storyId].points=Math.max(1,Math.min(20,pts||3));
   piPlan.storyAssignments[storyId].userSetPoints=true;
   // Refresh board capacity bars without full re-render
   piRenderBoard();
   piOpenRightPanel(storyId);
+  // v8.133 fix (item 7): confirmed live — this edit was never persisted at
+  // all, for anyone, shared or not. Matches the exact save-guard already
+  // used by every other manual-edit function in this file.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
 function piUpdateAssignment(storyId,field,value){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan||!piPlan.storyAssignments[storyId])return;
   piPlan.storyAssignments[storyId][field]=value;
   piRenderBoard();
   piOpenRightPanel(storyId);
+  // v8.133 fix (item 7): see piSavePoints() above for the full rationale.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
 function piUpdateAssignmentSprint(storyId,newSprint){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const conflict=piGetBlockingConflict(storyId,newSprint);
   if(conflict){piShowDepConflict(storyId,newSprint,conflict);return;}
   piMoveToPrint(storyId,newSprint,false);
@@ -1211,11 +1501,18 @@ function piUpdateAssignmentSprint(storyId,newSprint){
 }
 
 function piSaveNote(storyId,note){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan||!piPlan.storyAssignments[storyId])return;
   piPlan.storyAssignments[storyId].note=note;
+  // v8.133 fix (item 7): see piSavePoints() above for the full rationale.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
+
 function piShowAddDepForm(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const container=document.getElementById('pi-rp-dep-form-'+storyId);
   if(!container)return;
   const allOtherStories=piGetAllStories().filter(s=>s.id!==storyId).sort((a,b)=>(a.id||'').localeCompare(b.id||''));
@@ -1295,6 +1592,7 @@ function piSelectDepStory(storyId,targetId,targetTitle){
 }
 
 function piLinkDep(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const container=document.getElementById('pi-rp-dep-form-'+storyId);
   const dir=container&&container._currentDir||'blocks';
   if(!piPlan)return;
@@ -1316,18 +1614,24 @@ function piLinkDep(storyId){
   }
   container.innerHTML='';
   piRenderRightPanel(storyId);
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
 function piRemoveDep(storyId,fromId,toId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan||!piPlan.dependencies)return;
   piPlan.dependencies=piPlan.dependencies.filter(d=>!(d.fromId===fromId&&d.toId===toId));
   piRenderBoard();
   piRenderRightPanel(storyId);
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('pi'); });
+  }
 }
 
 function piShowRemoveConfirm(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const container=document.getElementById('pi-rp-remove-confirm-'+storyId);
   if(!container)return;
   container.style.display='block';
@@ -1372,6 +1676,8 @@ function piOpenBacklogPanel(storyId){
   const note=(asgn.note)||'';
   const squads=piGetSquads();
   const shortId=storyId?storyId.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';
+  // v9.08.02: computed once per backlog panel render.
+  const _canEditPiBlRp=(typeof canEditSession!=='function')||canEditSession();
   panel.innerHTML=`
     <div class="pi-rp-hdr" style="position:relative;">
       <div class="pi-rp-breadcrumb">
@@ -1399,10 +1705,10 @@ function piOpenBacklogPanel(storyId){
         <div class="pi-rp-section-lbl">Planning</div>
         <div class="pi-rp-planning-row" style="align-items:center;gap:12px;">
           <div class="pi-rp-field"><div class="pi-rp-field-lbl">Points</div>
-            <span class="pi-rp-pts-badge${asgn.userSetPoints?' pi-rp-pts-user-set':''}" id="pi-rp-pts-${storyId}" onclick="piEditPointsBacklog('${e(storyId)}')" title="Click to edit">${asgn.userSetPoints?(asgn.points||3)+' pts':'~'+(asgn.points||3)+' pts'}</span>
+            <span class="pi-rp-pts-badge${asgn.userSetPoints?' pi-rp-pts-user-set':''}${_canEditPiBlRp?'':' pi-rp-pts-badge-disabled'}" id="pi-rp-pts-${storyId}" ${_canEditPiBlRp?`onclick="piEditPointsBacklog('${e(storyId)}')" title="Click to edit"`:''}>${asgn.userSetPoints?(asgn.points||3)+' pts':'~'+(asgn.points||3)+' pts'}</span>
           </div>
           <div class="pi-rp-field"><div class="pi-rp-field-lbl">Move to Sprint</div>
-            <select class="pi-rp-select" onchange="piMoveBacklogToSprint('${e(storyId)}',+this.value)">
+            <select class="pi-rp-select" onchange="piMoveBacklogToSprint('${e(storyId)}',+this.value)" ${_canEditPiBlRp?'':'disabled'}>
               <option value="">— Assign to sprint —</option>
               ${piPlan&&piPlan.sprints?piPlan.sprints.map(sp=>`<option value="${sp.id}">${e(sp.label)}</option>`).join(''):''}
             </select>
@@ -1411,12 +1717,13 @@ function piOpenBacklogPanel(storyId){
       </div>
       <div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Note</div>
-        <textarea class="pi-rp-note-area" id="pi-rp-note-bl-${storyId}" maxlength="300" onblur="piSaveNote('${e(storyId)}',this.value)">${e(note)}</textarea>
+        <textarea class="pi-rp-note-area" id="pi-rp-note-bl-${storyId}" maxlength="300" ${_canEditPiBlRp?`onblur="piSaveNote('${e(storyId)}',this.value)"`:'readonly'}>${e(note)}</textarea>
       </div>
     </div>`;
 }
 
 function piMoveBacklogToSprint(storyId, sprintId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!sprintId||!piPlan)return;
   piMoveToPrint(storyId, sprintId, true);
   piCloseRightPanel();
@@ -1425,6 +1732,7 @@ function piMoveBacklogToSprint(storyId, sprintId){
 
 // ── Edit points in backlog right panel ──
 function piEditPointsBacklog(storyId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const asgn=(piPlan&&piPlan.storyAssignments&&piPlan.storyAssignments[storyId])||{points:3};
   const badge=document.getElementById('pi-rp-pts-'+storyId);
   if(!badge)return;
@@ -1435,6 +1743,7 @@ function piEditPointsBacklog(storyId){
 }
 
 function piSavePointsBacklog(storyId,pts){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!piPlan){
     // Story not in plan yet — store on storyAssignments anyway
     if(!piPlan)piPlan={storyAssignments:{}};

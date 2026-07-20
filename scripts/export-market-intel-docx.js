@@ -1,8 +1,20 @@
 // ── MARKET INTELLIGENCE DOCX EXPORT ──
 // Owns: miBuildDocx
 
-function miBuildDocx(miData, ctx){
+function miBuildDocx(miData, ctx, exportMode){
   if(!miData){return;}
+  // v9.01.01 fix: exportMode distinguishes Current View (instant, no AI
+  // call, Sections 1-5 only) from Full Report (Sections 1-8, requires the
+  // separate AI-enhancement call in miDownloadDocx). Previously this
+  // function always wrote all 8 section headers unconditionally and
+  // Section 5 always read from ds.gapMatrix -- data that only exists
+  // after the Full Report AI call -- so Current View's Section 5 was
+  // always empty and Sections 6-8 always showed as empty headers.
+  // Defaults to 'full' so the existing miDownloadDocx call site (which
+  // doesn't pass this param) keeps its current, already-confirmed-working
+  // behavior unchanged. Named distinctly from the existing local `mode`
+  // below (market/category product mode) to avoid a naming collision.
+  const isCurrentView=exportMode==='current';
   const mode=miData.productMode||'market';
   const isCategory=(mode==='category');
   const productName=(ctx&&ctx.name)||'Product';
@@ -135,16 +147,41 @@ function miBuildDocx(miData, ctx){
 
   // ── Section 5: Capability Gap Matrix ──
   html+=`<h1 style="color:#003087;font-size:16pt;border-bottom:2px solid #003087;padding-bottom:6px;page-break-before:always;">Section 5 — Capability Gap Analysis</h1>`;
-  const gapMatrix=ds.gapMatrix||[];
-  if(gapMatrix.length){
-    html+=`<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;margin:12px 0;">
-      <tr style="background:#003087;color:#fff;"><th>Market Expectation</th><th>Product Today</th><th>Sev</th><th>Gap</th><th>Opportunity</th></tr>
-      ${gapMatrix.map(r=>{
-        const sevBg=r.severity==='H'?'#FDE8E8':r.severity==='M'?'#FFF4D7':'#DCE6F0';
-        return`<tr><td>${esc(r.expectation)}</td><td>${esc(r.today)}</td><td style="background:${sevBg};text-align:center;font-weight:bold;">${esc(r.severity)}</td><td>${esc(r.gap)}</td><td>${esc(r.opportunity)}</td></tr>`;
-      }).join('')}
-    </table>`;
+  if(isCurrentView){
+    // v9.01.01 fix: Current View has no docxSections (no AI-enhancement
+    // call made), so render Section 5 from miData.capabilities directly --
+    // already generated, already available, same data the in-app
+    // "Capability Recommendations" panel shows.
+    if(caps.length){
+      const matchBg={aligned:'#E1F5EE',partial:'#FFF4D7'};
+      const matchLabel={aligned:'In KPI Tree',partial:'Partial in Tree'};
+      html+=`<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;margin:12px 0;">
+        <tr style="background:#003087;color:#fff;"><th>Capability</th><th>KPI Tree Alignment</th><th>Tree Path</th></tr>
+        ${caps.map(c=>{
+          const bg=matchBg[c.kpiTreeMatch]||'#FDE8E8';
+          const label=matchLabel[c.kpiTreeMatch]||'Gap';
+          return`<tr><td>${esc(c.name)}</td><td style="background:${bg};text-align:center;font-weight:bold;">${esc(label)}</td><td>${esc(c.kpiTreePath||'')}${c.kpiTreeStage?' &middot; '+esc(c.kpiTreeStage):''}</td></tr>`;
+        }).join('')}
+      </table>`;
+    }
+  } else {
+    const gapMatrix=ds.gapMatrix||[];
+    if(gapMatrix.length){
+      html+=`<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;margin:12px 0;">
+        <tr style="background:#003087;color:#fff;"><th>Market Expectation</th><th>Product Today</th><th>Sev</th><th>Gap</th><th>Opportunity</th></tr>
+        ${gapMatrix.map(r=>{
+          const sevBg=r.severity==='H'?'#FDE8E8':r.severity==='M'?'#FFF4D7':'#DCE6F0';
+          return`<tr><td>${esc(r.expectation)}</td><td>${esc(r.today)}</td><td style="background:${sevBg};text-align:center;font-weight:bold;">${esc(r.severity)}</td><td>${esc(r.gap)}</td><td>${esc(r.opportunity)}</td></tr>`;
+        }).join('')}
+      </table>`;
+    }
   }
+
+  // v9.01.01 fix: Current View stops here -- Sections 6-8 all depend on
+  // docxSections fields that only exist after Full Report's AI call, and
+  // were previously always rendered as empty headers with no content for
+  // Current View. Skipped entirely now rather than shown empty.
+  if(!isCurrentView){
 
   // ── Section 6: Product Capability Map ──
   html+=`<h1 style="color:#003087;font-size:16pt;border-bottom:2px solid #003087;padding-bottom:6px;page-break-before:always;">Section 6 — Product Capability Map</h1>`;
@@ -201,6 +238,8 @@ function miBuildDocx(miData, ctx){
   }
   if(ds.methodologyNote)html+=`<h2 style="color:#5F1EBE;font-size:13pt;">8.2 Methodology</h2><p>${esc(ds.methodologyNote)}</p>`;
   if(ds.limitations)html+=`<h2 style="color:#5F1EBE;font-size:13pt;">8.3 Limitations &amp; Caveats</h2><p>${esc(ds.limitations)}</p>`;
+
+  } // end !isCurrentView (Sections 6-8)
 
   html+=`<div style="background:#F4F6FA;border-top:2px solid #D0D5E8;padding:12px;margin-top:24px;text-align:center;font-size:10pt;color:#6B6B68;">
     ${_orgNameMi?esc(_orgNameMi)+' · ':''}AI PM Toolkit · ${esc(monthYear)}

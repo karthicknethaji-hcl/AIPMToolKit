@@ -41,6 +41,12 @@ const appSettings={
   featDiag:true,
   featMI:false,   // default OFF — adds cost to every KPI tree run
   featPI:true,
+  // Outcome Verification Loop (Phase C) — default OFF, matches featMI's
+  // pattern of a new, optional module not force-enabled for existing
+  // sessions/companies. Confirmed OK to default OFF per no explicit
+  // instruction otherwise — this is a genuinely new tab, not a fix to
+  // existing behavior.
+  featOutcomePulse:false,
   // Section 3 — Output Depth (wired into prompts in v6.76)
   maxCaps:4,
   includeSubCaps:false,
@@ -53,7 +59,12 @@ const appSettings={
   defaultSprintDur:2,     // weeks
   defaultSquadName:'Squad',
   defaultSquadCapacity:80,
-  teamVelocity:'med'      // 'low' | 'med' | 'high'
+  teamVelocity:'med',      // 'low' | 'med' | 'high'
+  // Section 4 addendum (v9.08) — session sharing access control, NOT an
+  // output-depth setting despite living in this section for now. Governs
+  // the default share_mode a session gets when first shared. 'view'
+  // default matches the DB column default exactly.
+  defaultShareMode:'view'  // 'view' | 'edit'
 };
 
 // Convenience aliases — kept for backward compat with all existing applyFeats() call sites
@@ -62,6 +73,7 @@ let featDD=appSettings.featDD;
 let featCap=appSettings.featCap;
 let featDiag=appSettings.featDiag;
 let featPI=appSettings.featPI;
+let featOutcomePulse=appSettings.featOutcomePulse;
 
 // ── COMPANY PROFILE ──
 // Org-level context. Set once in Settings Section 1. Shared across all products.
@@ -156,6 +168,18 @@ let piInputs={
 };
 
 let piPlan=null;
+// Phase 5 fix (v8.118): flag set by the regenerate-confirm modal's own
+// button, letting piGenerate()'s re-entry skip straight past its own
+// confirm-modal branch and proceed to the lock-gated wipe — see
+// pi-planning.js's piGenerate() for the full rationale.
+let _pgRegenConfirmed=false;
+// Phase 5 fix (v8.118): piRegenerate() (the OTHER regenerate-confirm path,
+// reached from the sprint-board's own regen button, distinct from
+// piGenerate()'s internal confirm-modal) needs to restore story staging
+// flags from the PRIOR piPlan — but that restore must not happen until
+// the lock is confirmed acquired either. This stashes what it read,
+// read-only, before piPlan gets wiped.
+let _pgRegenPriorSubmittedStoryIds=null;
 let piStoryPool={};  // standalone stories not attached to scCanvas features (PI demo + future use)
 let piSquads=[{name:(appSettings.defaultSquadName||'Squad')+' 1',capacity:appSettings.defaultSquadCapacity||80}];
 let piScVersion=null;

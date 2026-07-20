@@ -65,7 +65,7 @@ function buildDiagnosticDocxHTML(la,productName){
     .caveat-block{background:#fff4d7;border-left:3px solid #c8870a;padding:6px 10px;margin-bottom:8pt;}
   </style>
   </head><body>
-  <h1>Product Diagnostics Report — ${productName}</h1>
+  <h1>${productName} - Experiment Canvas</h1>
   <p style="font-family:Arial;font-size:10pt;color:#aabbcc;margin:0 0 12pt;">${typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':''}AI PM Toolkit</p>
 
   <h2>North Star Metric</h2>

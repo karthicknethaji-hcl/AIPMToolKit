@@ -118,7 +118,7 @@ function newScBuildLayout(){
               <div style="position:relative;">
                 <button class="export-cta-btn" id="nsc-export-btn" onclick="newScExportAll()" disabled><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
               </div>
-              <button class="cc-tb-btn-add" onclick="newScShowAddStoryModal(null)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Story</button>`
+              ${((typeof canEditSession!=='function')||canEditSession())?`<button class="cc-tb-btn-add" onclick="newScShowAddStoryModal(null)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Story</button>`:''}`
               :`<button class="export-cta-btn" id="nsc-proto-export-btn" onclick="pcAvailCall('pcExportPrototype','${newScActiveNavFeat||''}')" ${!(typeof protoStore!=='undefined'&&protoStore[newScActiveNavFeat]&&protoStore[newScActiveNavFeat].variants&&protoStore[newScActiveNavFeat].variants['v1']&&protoStore[newScActiveNavFeat].variants['v1'].generated)?'disabled':''}><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export Prototype</button>`}
             </div>
           </div>
@@ -233,11 +233,14 @@ function newScRenderLeftNav(){
   // Build Stage → Metric → Cap → Feature hierarchy (mirrors fcRenderCapNav)
   const stageOrder=gData?gData.stages.map(s=>s.label):[];
   const treeData={};
+  // v9.06.02: removed the hardcoded 'Custom Capabilities' generic grouping
+  // key — mirrors the identical fix in feature-canvas.js. Groups by
+  // f.metric directly now, so distinct custom buckets stay visually
+  // separate instead of collapsing into one undifferentiated group.
   scCanvas.forEach(f=>{
     if(!f.stories||!f.stories.some(s=>s._inSC&&!s._hiddenFromSC))return;
     const st=f.stage||'Other';
-    const isPIStage=st==='PI Plan';
-    const mt=isPIStage?'Custom Capabilities':(f.metric||'Unknown');
+    const mt=f.metric||'Unknown';
     const cp=f.cap||'Uncategorised';
     if(!treeData[st])treeData[st]={metrics:{}};
     if(!treeData[st].metrics[mt])treeData[st].metrics[mt]={caps:{}};
@@ -249,8 +252,15 @@ function newScRenderLeftNav(){
     const sg=treeData[stage];
     if(!sg)return;
     const color=stageColorMap[stage]||'var(--label)';
-    h+=`<div class="sc-nav-stage"><div class="sc-nav-stage-bar" style="background:${color}"></div><span class="sc-nav-stage-lbl" style="color:${color}">${e(stage)}</span></div>`;
+    // v9.01.01 fix: same display-only transformation as FC's identical
+    // pattern -- internal 'stage' value stays untouched.
+    const _dispStage=stage==='PI Plan'?'Custom Value Stage':stage;
+    h+=`<div class="sc-nav-stage"><div class="sc-nav-stage-bar" style="background:${color}"></div><span class="sc-nav-stage-lbl" style="color:${color}">${e(_dispStage)}</span></div>`;
     Object.entries(sg.metrics).forEach(([metric,md])=>{
+      // v9.06.02: removed the "Custom Capabilities" -> mode-aware-term
+      // display transformation, mirrors FC's identical fix — metric is
+      // already correct as-is (getOrCreateCurrentDefaultPiBucket() stores
+      // the mode-aware default name directly at creation time).
       h+=`<div class="sc-nav-metric"><span class="sc-nav-metric-name">${e(metric)}</span></div>`;
       Object.entries(md.caps).forEach(([cap,feats])=>{
         // Cap label — structural, not clickable (matches FC pattern)
@@ -401,20 +411,22 @@ function newScBuildStoryCard(st,feat,stageColor){
 
   let ptsLabel=st.points?st.points+' pts':'— pts';
   let dorLabel=st.dor==='READY'?'<span class="sc-story-dor-ok">Ready</span>':'<span class="sc-story-dor-no">Needs review</span>';
+  // v9.08: computed once per card render.
+  const _canEditScCard=(typeof canEditSession!=='function')||canEditSession();
 
   return `<div class="${cls}" onclick="newScOpenPanel(${JSON.stringify({id:st.id}).replace(/"/g,"'")},${JSON.stringify({id:feat.id}).replace(/"/g,"'")})" id="nsc-story-${e(st.id)}" style="cursor:pointer;position:relative;">
     ${(isInPIPlan||sprintLabel)?`<div style="position:absolute;top:0;left:0;right:0;height:3px;background:var(--green);border-radius:0 6px 0 0;"></div>`:''}    
     <div class="sc-card-top">
       <span class="sc-story-id" style="letter-spacing:0.5px;">${e(st.id)}</span>
       <div class="sc-card-actions">
-        <button class="sc-card-pencil" onclick="event.stopPropagation();newScShowEditStoryModal('${e(st.id)}','${e(feat.id)}')" title="Edit story" aria-label="Edit story" style="background:none;border:none;cursor:pointer;padding:2px;color:var(--t3);display:flex;align-items:center;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
+        ${_canEditScCard?`<button class="sc-card-pencil" onclick="event.stopPropagation();newScShowEditStoryModal('${e(st.id)}','${e(feat.id)}')" title="Edit story" aria-label="Edit story" style="background:none;border:none;cursor:pointer;padding:2px;color:var(--t3);display:flex;align-items:center;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
         ${isInPIPlan
-          ?`<div class="nsc-pi-tag" title="In PI plan"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In PI plan <span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span></div>`
-          :`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for PI':'Select for PI'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`
+          ?`<div class="nsc-pi-tag" title="In PI plan"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In PI plan ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span>`:''}</div>`
+          :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for PI':'Select for PI'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
         }
-        <button class="sc-card-remove" onclick="event.stopPropagation();newScDeleteStoryById('${e(st.id)}','${e(feat.id)}')" title="Remove story">
+        ${_canEditScCard?`<button class="sc-card-remove" onclick="event.stopPropagation();newScDeleteStoryById('${e(st.id)}','${e(feat.id)}')" title="Remove story">
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+        </button>`:''}
       </div>
     </div>
     <div class="sc-card-name" style="margin:4px 0 3px;">${e(st.title)}</div>
@@ -439,6 +451,7 @@ function newScToggleGroup(featId){
 
 // ── PI selection ──
 function newScToggleStoryPiSelect(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -457,6 +470,9 @@ function newScToggleStoryPiSelect(storyId,featId){
     if(updatedSt&&updatedFeat)newScOpenPanel(updatedSt,updatedFeat);
   }
   if(typeof piCheckStaleness==='function')piCheckStaleness();
+  // v8.146 fix: confirmed missing entirely. PI-staging state only — no
+  // live-edit mark, same convention as newScConfirmRemoveFromPI above.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 function newScClearAllPiSelection(){
@@ -468,12 +484,20 @@ function newScClearAllPiSelection(){
     scCanvas.forEach(f=>{if(f.stories&&f.stories.some(s=>s._stagedForPI))scPiSelectedIds.add(f.id);});
   }
   newScRenderMain();
+  // v8.146 fix: confirmed missing entirely. PI-staging state only — no
+  // live-edit mark, same convention as the two functions above.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 // ── Action bar ──
 function newScUpdateActionBar(){
   const bar=document.getElementById('nsc-action-bar');
   if(!bar)return;
+  // v9.08: matches ccUpdateActionBar's pattern — this bar exists only to
+  // stage/send stories to PI, nothing a view-only session can do.
+  const _canEditScBar=(typeof canEditSession!=='function')||canEditSession();
+  bar.style.display=_canEditScBar?'':'none';
+  if(!_canEditScBar)return;
   const visibleStories=newScGetAllVisibleStories();
   const totalStories=visibleStories.length;
   const piCount=visibleStories.filter(s=>s._stagedForPI).length;
@@ -517,9 +541,26 @@ function newScSelectAll(){
   newScRender();
 }
 
-function newScSendToPI(){
+async function newScSendToPI(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const piCount=scCanvas.reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC&&s._stagedForPI).length:0),0);
   if(piCount===0){showToast('Select stories for PI first.','info');return;}
+  // v9.01.01 fix: confirmed via diagnostic logging that piPlan is still
+  // null at this point for any session that reaches Story Canvas without
+  // ever having opened PI Canvas first (e.g. Discovery Map -> Feature
+  // Canvas -> Story Canvas). The guard below previously just skipped the
+  // push silently whenever piPlan was null -- meaning the story-level
+  // _inPIPlan flags got set (so Story Canvas looked correct) but the
+  // actual backlog array PI Canvas and the tab-reveal check depend on was
+  // never created at all. Initializing it minimally here, matching only
+  // the two fields anything downstream actually needs (backlogStoryIds,
+  // storyAssignments) -- NOT a full plan shape (name/sprints/etc), since
+  // piOnTabEnter()/piRenderBoard() are now fixed (see below) to correctly
+  // treat "no sprints yet" as the backlog-only empty state, not a
+  // generated plan.
+  if(typeof piPlan==='undefined'||!piPlan){
+    piPlan={backlogStoryIds:[],storyAssignments:{}};
+  }
   // Dispatch: mark _inPIPlan, clear _stagedForPI, sync backlog
   scCanvas.forEach(f=>{
     if(!f.stories)return;
@@ -569,7 +610,24 @@ function newScSendToPI(){
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
   }
   showToast(`${piCount} stor${piCount!==1?'ies':'y'} added to PI Canvas.`,'success');
-  if(piCount>0&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  // v9.01-diag fix: this save is now AWAITED before the function returns.
+  // Previously fire-and-forget — if the user navigated to Home quickly
+  // after Send to PI, homeClearSession()'s own (also unawaited) save
+  // could fire, and/or a resume could re-fetch before this write actually
+  // completed. Awaiting here closes that race for THIS action specifically.
+  if(piCount>0&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    const _saveOk=await sessionStoreSave(_activeSessionId);
+    // v9.01 fix: this action never emitted a live-sync content event at
+    // all — confirmed root cause for shared-session collaborators (e.g.
+    // ES) getting no refresh toast and no resume-pickup when stories were
+    // sent to PI. Reuses the existing 'pi_plan_updated' event type (a
+    // manual-edit pattern, already has a corresponding RLS insert policy
+    // gated on a recent save) rather than introducing a new event type
+    // that would need its own DB-side policy change.
+    if(_saveOk&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+      await _lsEmitContentEvent(_activeSessionId,'pi','pi_plan_updated',null,null);
+    }
+  }
 }
 
 // ── Filter ──
@@ -713,6 +771,11 @@ function newScOpenPanel(stOrId,featOrId){
   if(titleEl)titleEl.textContent=st.id+' · '+(st.title||'');
   // Content
   newScRenderPanelContent(st,feat);
+  // v9.08.02: "Remove story from canvas" is a static button built once in
+  // newScBuildLayout(), not part of the per-story template — synced here
+  // since this function runs every time the panel opens for any story.
+  const removeBtn=document.getElementById('nsc-remove-btn');
+  if(removeBtn)removeBtn.style.display=((typeof canEditSession!=='function')||canEditSession())?'':'none';
   // Reset inline remove confirm
   newScHideRemoveConfirm();
 }
@@ -746,6 +809,9 @@ function newScRenderPanelContent(st,feat){
       }).join('')+`</div>`
     :'<div style="font-size:10px;color:var(--label);font-style:italic;">No acceptance criteria — generate stories in Feature Canvas to include ACs.</div>';
 
+  // v9.08: computed once per panel render, matches the readOnly-inline-
+  // in-template pattern used elsewhere (settings-page.js Company Profile).
+  const _canEditSc=(typeof canEditSession!=='function')||canEditSession();
   el.innerHTML=`
     <!-- Traceability — uses FC scRenderLineage with nsc-trace-meta target -->
     <div id="nsc-trace-meta" style="margin-bottom:10px;"></div>
@@ -768,8 +834,8 @@ function newScRenderPanelContent(st,feat){
         <div style="font-size:11px;font-weight:600;color:var(--t1);">Definition of Ready</div>
         <div style="font-size:10px;color:var(--t3);margin-top:2px;">PM-confirmed readiness for sprint planning</div>
       </div>
-      <label class="sp-toggle" onclick="event.preventDefault();newScToggleDor('${e(st.id)}','${e(feat.id)}')">
-        <input type="checkbox" ${st.dor==='READY'?'checked':''} readonly>
+      <label class="sp-toggle${_canEditSc?'':' sp-toggle-locked'}" ${_canEditSc?`onclick="event.preventDefault();newScToggleDor('${e(st.id)}','${e(feat.id)}')"`:''}>
+        <input type="checkbox" ${st.dor==='READY'?'checked':''} ${_canEditSc?'readonly':'disabled'}>
         <div class="sp-track"></div><div class="sp-thumb"></div>
       </label>
     </div>
@@ -782,10 +848,10 @@ function newScRenderPanelContent(st,feat){
           <div class="nsc-dep-row">
             <span class="nsc-dep-dir ${dep.direction==='blocks'?'nsc-dep-blocks':dep.direction==='blocked-by'?'nsc-dep-blocked':'nsc-dep-external'}">${dep.direction==='blocks'?'Blocks →':dep.direction==='blocked-by'?'← Blocked by':'⚙ External'}</span>
             <span style="flex:1;font-size:10px;color:var(--t2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e(dep.storyTitle||dep.storyId)}</span>
-            <button onclick="newScRemoveDep('${e(st.id)}','${e(feat.id)}',${di})" style="border:none;background:none;cursor:pointer;color:var(--t3);padding:2px;flex-shrink:0;font-size:10px;" title="Remove dependency">✕</button>
+            ${_canEditSc?`<button onclick="newScRemoveDep('${e(st.id)}','${e(feat.id)}',${di})" style="border:none;background:none;cursor:pointer;color:var(--t3);padding:2px;flex-shrink:0;font-size:10px;" title="Remove dependency">✕</button>`:''}
           </div>`).join(''):'<div style="font-size:10px;color:var(--label);font-style:italic;margin-bottom:6px;">No dependencies linked.</div>'}
       </div>
-      <!-- Add dep form -->
+      ${_canEditSc?`<!-- Add dep form -->
       <div id="nsc-dep-form-${e(st.id)}" style="display:none;margin-top:8px;">
         <div style="display:flex;gap:5px;margin-bottom:6px;">
           <button class="nsc-dir-btn" id="nsc-dir-blocks" onclick="newScSetDepDir('${e(st.id)}','blocks')">This Blocks →</button>
@@ -806,13 +872,13 @@ function newScRenderPanelContent(st,feat){
           <button onclick="document.getElementById('nsc-dep-form-${e(st.id)}').style.display='none';newScClearDepForm('${e(st.id)}');" style="background:none;border:1px solid var(--divider);border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;color:var(--t2);font-family:var(--font);">Cancel</button>
         </div>
       </div>
-      <button onclick="document.getElementById('nsc-dep-form-${e(st.id)}').style.display=document.getElementById('nsc-dep-form-${e(st.id)}').style.display==='none'?'block':'none';" style="margin-top:6px;font-size:10px;color:var(--purple);background:none;border:1px solid #CECBF6;border-radius:5px;padding:3px 10px;cursor:pointer;font-family:var(--font);">+ Add dependency</button>
+      <button onclick="document.getElementById('nsc-dep-form-${e(st.id)}').style.display=document.getElementById('nsc-dep-form-${e(st.id)}').style.display==='none'?'block':'none';" style="margin-top:6px;font-size:10px;color:var(--purple);background:none;border:1px solid #CECBF6;border-radius:5px;padding:3px 10px;cursor:pointer;font-family:var(--font);">+ Add dependency</button>`:''}
     </div>
 
     <!-- Notes -->
     <div>
       <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">(exported in PI DOCX)</span></div>
-      <textarea id="nsc-notes-${e(st.id)}" rows="3" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;" placeholder="Add notes visible to the team…" oninput="newScSaveNotes('${e(st.id)}','${e(feat.id)}')">${e(st.notes||'')}</textarea>
+      <textarea id="nsc-notes-${e(st.id)}" rows="3" ${_canEditSc?'':'readonly'} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:${_canEditSc?'var(--t1)':'var(--t3)'};resize:vertical;box-sizing:border-box;${_canEditSc?'':'background:var(--card);cursor:default;'}" placeholder="Add notes visible to the team…" ${_canEditSc?`oninput="newScSaveNotes('${e(st.id)}','${e(feat.id)}')"`:''}>${e(st.notes||'')}</textarea>
     </div>`;
   // Render traceability using FC's scRenderLineage — same pattern, same logic, same Link one? CTA
   if(typeof scRenderLineage==='function'){
@@ -823,6 +889,7 @@ function newScRenderPanelContent(st,feat){
 
 // ── Panel interactions ──
 function newScToggleDor(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -830,6 +897,9 @@ function newScToggleDor(storyId,featId){
   st.dor=st.dor==='READY'?'NOT READY':'READY';
   newScRenderMain();
   newScOpenPanel(st,feat);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+storyId); });
+  }
 }
 
 let _newScDepDir='blocks';
@@ -879,6 +949,7 @@ function newScClearDepForm(storyId){
 }
 
 function newScAddDep(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -898,6 +969,9 @@ function newScAddDep(storyId,featId){
   if(form)form.style.display='none';
   newScOpenPanel(st,feat);
   newScRenderMain();
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+storyId); });
+  }
 }
 
 function newScRemoveDep(storyId,featId,depIdx){
@@ -909,19 +983,27 @@ function newScRemoveDep(storyId,featId,depIdx){
   if(typeof pcMarkStale==='function')pcMarkStale(featId);
   newScOpenPanel(st,feat);
   newScRenderMain();
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+storyId); });
+  }
 }
 
 function newScSaveNotes(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
   if(!st)return;
   const inp=document.getElementById('nsc-notes-'+storyId);
   if(inp)st.notes=inp.value;
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+storyId); });
+  }
 }
 
 // ── Inline remove confirm (Item 31) ──
 function newScShowRemoveConfirm(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!newScPanelStoryId||!newScPanelFeatId)return;
   const confirm=document.getElementById('nsc-remove-confirm');
   const btn=document.getElementById('nsc-remove-btn');
@@ -942,6 +1024,7 @@ function newScHideRemoveConfirm(){
 
 // ── Confirm remove story from PI (Option C × button) ──
 function newScConfirmRemoveFromPI(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   showConfirm(
     'Remove from PI plan?',
     'This story will be deselected and removed from your PI Canvas backlog.',
@@ -963,11 +1046,17 @@ function newScConfirmRemoveFromPI(storyId,featId){
       newScRender();
       if(typeof piCheckStaleness==='function')piCheckStaleness();
       showToast('Story removed from PI plan.','success');
+      // v8.146 fix: confirmed missing entirely. PI-staging state only —
+      // deliberately no live-edit mark, matching the existing convention
+      // that selection/staging state isn't live-synced (same as
+      // scSelectedIds/leakSelectedIds elsewhere in this app).
+      if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
     }
   );
 }
 
 function newScDoRemoveStory(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -993,10 +1082,16 @@ function newScDoRemoveStory(storyId,featId){
   if(typeof piUpdateTabBadge==='function')piUpdateTabBadge();
   if(typeof piCheckStaleness==='function')piCheckStaleness();
   showToast('Story removed from Story Canvas.','success');
+  // v8.146 fix: confirmed missing entirely — this soft-hide (a genuine
+  // content change collaborators should see) was never persisted.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+storyId); });
+  }
 }
 
 // ── Delete story (from card × button — still uses confirm for accidental tap prevention) ──
 function newScDeleteStoryById(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -1044,6 +1139,7 @@ function newScDeleteStoryConfirm(){
 
 // ── Add Story modal ──
 function newScShowAddStoryModal(prefeatId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   // Build sorted feature list
   const features=scCanvas.filter(f=>f.stories&&f.stories.length>=0);
   features.sort((a,b)=>a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
@@ -1166,9 +1262,12 @@ function newScDoAddStory(){
     });
   });
   showToast('Story '+newId+' added.','success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+newId); });
+  }
 }
 function newScShowEditStoryModal(storyId,featId){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
@@ -1317,7 +1416,20 @@ function newScDoEditStory(storyId,origFeatId){
     newScOpenPanel(st,targetFeat);
   }
   showToast('Story updated.','success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    // Reassignment marks BOTH the old and new feature+story targets —
+    // matches the local pcMarkStale(origFeatId,newFeatId) pattern already
+    // used just above. Old-parent-first ordering (already the natural
+    // order here) biases any partial-failure window toward "briefly
+    // missing" rather than "briefly duplicated", per the confirmed-safe
+    // reasoning from design review.
+    var _reassigned=(newFeatId!==origFeatId);
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _lsMarkManualEdit('sc',origFeatId+_LS_SC_TARGET_SEP+storyId);
+      if(_reassigned)_lsMarkManualEdit('sc',newFeatId+_LS_SC_TARGET_SEP+storyId);
+    });
+  }
 }
 function newScRevealTab(){
   const btn=document.getElementById('tab-sc');

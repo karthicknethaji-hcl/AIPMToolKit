@@ -31,6 +31,8 @@ function homeInit(){
   homeSetApproach('outcome-based');
   _homeUpdateLaunchBtn();
   homeRenderSessionLibrary();
+  _homeApplyReadOnlyState();
+  if(typeof _lsHomePollStart==='function') _lsHomePollStart();
 }
 
 function homeOnTabEnter(){
@@ -40,9 +42,67 @@ function homeOnTabEnter(){
   if(lock) lock.style.display=sessionActive?'none':'flex';
   _homeSetError('');
   homeRenderSessionLibrary();
+  _homeApplyReadOnlyState();
   // Retry failed doc summaries on tab re-entry
   _homeRetrySdocSummaries();
   homeRenderSdocsSection();
+  // Phase 3a (v8.126): idempotent — internally no-ops if already running
+  // for the current company (re-entering Home repeatedly shouldn't stack
+  // duplicate intervals/channels).
+  if(typeof _lsHomePollStart==='function') _lsHomePollStart();
+}
+
+// v9.09 — Read Only role state for the Home tab. Left panel: every control
+// stays visible and structurally unchanged, but gets `disabled` individually
+// (per the project's existing "hidden vs disabled" standing rule — toggles/
+// dropdowns/inputs get disabled, not hidden). Right panel: ONLY the top
+// launch-specific block (icon/title/desc/steps) swaps for a Read Only
+// message — the "or explore first" divider and Demo Data card below it are
+// DELIBERATELY left fully untouched and interactive. Demo sessions never
+// call sessionStoreCreate() and are blocked from sessionStoreSave() by
+// canEditSession() as a second, independent guard — confirmed via code
+// reading, not assumed — so a Read Only user gets full sandboxed
+// generate/edit/delete capability within a demo session with zero lasting
+// effect. This is an intentional, explicitly confirmed exception to the
+// launch-block, not an oversight.
+function _homeApplyReadOnlyState(){
+  const isReadOnly=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+
+  const note=document.getElementById('home-ph-readonly-note');
+  if(note) note.classList.toggle('home-hidden',!isReadOnly);
+
+  const launchTop=document.getElementById('home-empty-top-launch');
+  const readonlyTop=document.getElementById('home-empty-top-readonly');
+  if(launchTop) launchTop.classList.toggle('home-hidden',isReadOnly);
+  if(readonlyTop) readonlyTop.classList.toggle('home-hidden',!isReadOnly);
+
+  // Disable every left-panel setup control individually — Demo Data card
+  // controls are NOT in this list, by design (see comment above).
+  const _fieldIds=['home-product-sel','home-approach-outcome','home-approach-capability',
+    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-gen-btn'];
+  _fieldIds.forEach(function(id){
+    const el=document.getElementById(id);
+    if(el) el.disabled=isReadOnly;
+  });
+  // v9.09.01 — the upload trigger is a div+onclick, not a <button>, and
+  // #home-sdocs-box is fully rebuilt by homeRenderSdocsSection() at ~7
+  // call sites — a one-time querySelector disable here (the v9.09 bug)
+  // gets silently wiped the next time that function runs. Fixed at the
+  // actual source: homeRenderSdocsSection() itself now checks role when
+  // building the upload row's onclick, and both upload handlers
+  // (homeHandleFileUpload, homeHandleSdocsUpload) have their own
+  // independent guard as defense-in-depth. Re-render now so the box
+  // reflects the current role immediately, not just on its next natural
+  // re-render.
+  if(typeof homeRenderSdocsSection==='function') homeRenderSdocsSection();
+
+  // Message/button-disable state itself is owned by _homeUpdateLaunchBtn()
+  // (called separately, at ~15 existing call sites) — it checks readonly
+  // FIRST and wins regardless of call order, so no duplicate logic needed
+  // here. This function only handles the parts _homeUpdateLaunchBtn()
+  // doesn't: the header note, the right-panel top swap, and per-field
+  // disabled state on controls _homeUpdateLaunchBtn() doesn't touch.
+  _homeUpdateLaunchBtn();
 }
 
 function homeTogglePanel(){
@@ -57,6 +117,23 @@ function homeTogglePanel(){
 
 // ── Product selector ──
 function _homeRenderProductSelector(){
+  // v8.113: zero-company (membership count 0) is distinct from zero-products
+  // (a real company with no product profiles set up yet) — the empty
+  // dropdown option alone doesn't tell these apart, and only one of them
+  // has an actionable fix from this screen (create a company; a missing
+  // product profile is fixed in Settings, a section that itself won't even
+  // be reachable for a zero-company user per this same build).
+  var zeroCompanyEl=document.getElementById('home-zero-company-state');
+  var formFieldsEl=document.getElementById('home-form-fields');
+  var isZeroCompany=(typeof _pgtMembershipCount!=='undefined' && _pgtMembershipCount===0);
+  if(zeroCompanyEl) zeroCompanyEl.classList.toggle('home-hidden', !isZeroCompany);
+  if(formFieldsEl) formFieldsEl.classList.toggle('home-hidden', isZeroCompany);
+  _homeUpdateLaunchBtn();
+  if(isZeroCompany){
+    activeProfileId=null;
+    return;
+  }
+
   const sel=document.getElementById('home-product-sel');
   if(!sel) return;
   const prev=sel.value;
@@ -116,6 +193,19 @@ function _homeUpdateLaunchBtn(){
   const btn=document.getElementById('home-gen-btn');
   const errEl=document.getElementById('home-launch-error');
   if(!btn)return;
+  // v9.09 — Read Only hard-blocks launch regardless of product/doc state.
+  // Checked FIRST so no other branch below can override this message —
+  // _homeUpdateLaunchBtn() has ~15 call sites throughout this file, and this
+  // guard needs to win at all of them, not just the ones this build touched.
+  const isReadOnly=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+  if(isReadOnly){
+    btn.disabled=true;
+    if(errEl){
+      errEl.style.display='flex';
+      errEl.innerHTML='<i class="ti ti-alert-triangle" style="font-size:11px;color:#BA7517;" aria-hidden="true"></i> <span style="color:#BA7517;font-weight:400;">Setup is disabled for view only access</span>';
+    }
+    return;
+  }
   const hasProduct=!!(activeProfileId&&productProfiles&&productProfiles.find(function(p){return p.id===activeProfileId;}));
   const pendingDocs=_homeSessionDocs.filter(function(d){return d.summaryStatus==='pending';});
   const isCapManual=(_homeApproach==='capability-based'&&_homeMode==='manual');
@@ -170,7 +260,7 @@ function homeRenderPreviewCard(){
   html+='<div class="home-pp-hdr">';
   html+='<span class="home-pp-eyebrow">Product Profile</span>';
   html+='<div class="home-pp-actions">';
-  html+='<button class="home-pp-icon-btn" onclick="openSettingsToSection(2);" title="Edit profile"><i class="ti ti-pencil" style="font-size:9px;" aria-hidden="true"></i></button>';
+  html+='<button class="home-pp-icon-btn" onclick="openSettingsToSection(2);" title="'+((typeof _spIsAdmin==='function'&&_spIsAdmin())?'Edit profile':'View profile')+'"><i class="ti '+((typeof _spIsAdmin==='function'&&_spIsAdmin())?'ti-pencil':'ti-eye')+'" style="font-size:9px;" aria-hidden="true"></i></button>';
   html+='<button class="home-pp-icon-btn" onclick="homePPCardToggle()" title="Toggle details" id="home-pp-chevron"><i class="ti ti-chevron-'+ (_homePPCollapsed?'down':'up') +'" style="font-size:9px;" aria-hidden="true"></i></button>';
   html+='</div>';
   html+='</div>';
@@ -211,13 +301,16 @@ function homeRenderPreviewCard(){
 }
 
 function _homeNudgeCard(){
+  const isAdmin = (typeof _spIsAdmin==='function') && _spIsAdmin();
   return '<div class="home-nudge-card">'
     +'<div class="home-nudge-icon"><i class="ti ti-box-multiple" style="font-size:16px;color:var(--purple);" aria-hidden="true"></i></div>'
     +'<div class="home-nudge-title">No products set up yet</div>'
-    +'<div class="home-nudge-desc">Create a product profile to get started. Your profile feeds AI context for every generation.</div>'
-    +'<button class="home-nudge-cta" onclick="openSettingsToSection(2);">'
-    +'<i class="ti ti-plus" style="font-size:10px;" aria-hidden="true"></i> Add Product Profile'
-    +'</button>'
+    +'<div class="home-nudge-desc">'+(isAdmin?'Create a product profile to get started. Your profile feeds AI context for every generation.':'Ask an admin to add a product profile to get started.')+'</div>'
+    +(isAdmin
+      ? '<button class="home-nudge-cta" onclick="openSettingsToSection(2);">'
+        +'<i class="ti ti-plus" style="font-size:10px;" aria-hidden="true"></i> Add Product Profile'
+        +'</button>'
+      : '')
     +'</div>';
 }
 
@@ -243,7 +336,7 @@ function homeSetApproach(val){
     const manualBtn=document.getElementById('home-mode-manual');
     if(manualBtn){
       manualBtn.disabled=true;
-      manualBtn.title='Available for Capability-Based only';
+      manualBtn.title='Available for Process Area only';
     }
   } else {
     const manualBtn=document.getElementById('home-mode-manual');
@@ -280,6 +373,10 @@ function _homeSetModePills(val){
 
 // ── Manual input (cond-box) — file upload only ──
 function homeHandleFileUpload(input){
+  // v9.09.01 — defense-in-depth guard, independent of the trigger div being
+  // visually disabled. Read Only must not process an upload even if the
+  // hidden file input is reached some other way (e.g. drag-and-drop).
+  if(typeof currentUserRole!=='undefined'&&currentUserRole==='readonly')return;
   const file=input.files&&input.files[0];
   if(!file) return;
   const ext=file.name.split('.').pop().toLowerCase();
@@ -421,6 +518,14 @@ function _homeWireCounters(){
 
 // ── Launch Session ──
 function homeLaunch(){
+  // v9.09 — Read Only hard block, independent of the button's disabled
+  // state (defense-in-depth against direct console/script invocation).
+  // The real security boundary is the RLS policy on mt_sessions' INSERT —
+  // this is a UX-layer guard on top of that, not a substitute for it.
+  if(typeof currentUserRole!=='undefined'&&currentUserRole==='readonly'){
+    _homeSetError('<i class="ti ti-alert-triangle" style="font-size:11px;color:#BA7517;" aria-hidden="true"></i> <span style="color:#BA7517;font-weight:400;">Setup is disabled for view only access</span>');
+    return;
+  }
   // Clear any previous inline errors
   _homeSetError('');
   _homeSetCondError('');
@@ -476,11 +581,20 @@ function _homeDoLaunch(){
   };
 
   sessionActive=true;
+  _activeSessionOwnerId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
   homeRenderSdocsSection(); // immediately clear stale chips from DOM
 
   // Create session in store immediately on launch
   if(typeof sessionStoreCreate==='function'){
-    sessionStoreCreate(sessionContext);
+    var _lsNewSessId=sessionStoreCreate(sessionContext);
+    // Phase 3c (v8.126): started here, after the row actually exists — not
+    // at the sessionActive=true line above. Effectively a no-op today (a
+    // brand-new session is never shared at creation, so _lsSessionWatchStart
+    // itself will just decline to do anything), but the ordering is correct
+    // regardless of that guard, not dependent solely on it.
+    if(_lsNewSessId && typeof _lsSessionWatchStart==='function' && typeof _activeSessionIsShared!=='undefined' && _activeSessionIsShared){
+      _lsSessionWatchStart(_lsNewSessId, null);
+    }
   }
   // Silent retry: attempt summarisation for any failed session docs after 2s
   setTimeout(function(){_homeRetrySdocSummaries();},2000);
@@ -501,12 +615,46 @@ function _homeDoLaunch(){
 
 // ── Clear session ──
 function homeClearSession(){
-  // Save current session before wiping — must happen before any state is cleared
-  if(!_isDemoSession && typeof sessionStoreSave==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+  // Save current session before wiping — must happen before any state is cleared.
+  // v8.150 fix (Issue 2, corrected — explicit sign-off obtained for this
+  // edit per this function's own standing rule): the v8.149 attempt at
+  // this fix used an explicit skipSave parameter, computed and passed by
+  // exactly one caller (sessionStoreRestore, only for "re-resuming the
+  // same already-active session"). Confirmed via live testing that this
+  // missed the actual failure mode entirely — in the real user journey,
+  // navigating away to Home (a DIFFERENT call site, in api.js) already
+  // triggers this same save, and already clears the active-session
+  // pointer, before the user ever gets to explicitly re-resuming
+  // anything. The v8.149 check was already false by the time it mattered.
+  // Corrected: the detection is now automatic and internal, protecting
+  // EVERY caller of this function uniformly, not just one that
+  // remembers to opt in — closing the exact class of gap that caused
+  // the first attempt to fail. Skips only this one save line; every
+  // other cleanup step below (stopping the watch, clearing pointers,
+  // etc.) runs exactly as before, unconditionally.
+  var _unsafeToOverwrite = (typeof _activeSessionIsShared !== 'undefined' && _activeSessionIsShared
+    && typeof _activeSessionId !== 'undefined' && _activeSessionId
+    && typeof _lsSessionMightBeUnsafeToOverwrite === 'function'
+    && _lsSessionMightBeUnsafeToOverwrite(_activeSessionId));
+  if(!_unsafeToOverwrite && !_isDemoSession && typeof sessionStoreSave==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
     sessionStoreSave(_activeSessionId);
   }
+  // Phase 3c (v8.126) — explicit sign-off obtained separately before this
+  // edit, per this project's own rule that this function requires that.
+  // Stops the in-session watch for whichever session was active. Safe to
+  // call even if no watch is running (no-op), and safe to call twice in a
+  // row (e.g. kickout already stopped it before calling this) — idempotent.
+  if(typeof _lsSessionWatchStop==='function') _lsSessionWatchStop();
   _activeSessionId=null;
-  _isDemoSession=false;
+  // Phase 5: clear alongside _activeSessionId — no session active means
+  // nothing is "shared" either. Prevents a stale true carrying over into
+  // whatever gets loaded/created next, ahead of that load explicitly
+  // setting its own value.
+  _activeSessionIsShared=false;
+  _activeSessionOwnerId=null;
+  // v9.08: reset alongside its siblings — no active session means share
+  // mode is irrelevant until the next load/create explicitly sets it.
+  if(typeof _activeSessionShareMode!=='undefined') _activeSessionShareMode='view';
   _homeSessionDocs=[];
   _homeCtxExpanded=false;
 
@@ -650,7 +798,7 @@ function mmRenderSessionPanel(){
 
   const p=sc.productProfile||{};
   const cp=sc.companyProfile||{};
-  const approachLabel=sc.approach==='outcome-based'?'Outcome-Based':'Capability-Based';
+  const approachLabel=sc.approach==='outcome-based'?'Outcome Metrics':'Process Area';
   const modeLabel=sc.generationMode==='ai-generated'?'AI Generated':'Manual';
   const companyName=cp.companyName||'';
 
@@ -898,16 +1046,44 @@ function _homeRenderCards(lib, sessions){
 
   const filtered=_homeGetFilteredSessions(sessions);
 
+  // v8.150 fix (Issue 3): the badge (which session shows "Last Active")
+  // and the actual first-position card in the grid were computed
+  // completely independently — a prior fix corrected which session gets
+  // the badge, but never touched this ordering, so the two could point
+  // at different sessions. Restoring the original intended pairing:
+  // pin the badged session to the front — but only under the default
+  // "Last Modified" sort. Overriding an explicit, different sort choice
+  // (alphabetical, by name, etc.) the person deliberately selected would
+  // look like broken sorting, not a helpful highlight. Never resurrect
+  // the pin if the current filter/search has already excluded that
+  // session — a filtered-out session should stay filtered out.
+  //
+  // v8.149 fix (Issue 2): this pointer itself comes from this person's
+  // own tracked "last active" value (populated at boot from
+  // mt_users_companies via _pgtResolveCompany, updated on every
+  // create/resume) — not from sorting every cached session by
+  // whoever-saved-it-most-recently, which let any collaborator's edit
+  // silently override what showed as THIS person's own last active
+  // session. savedAt itself is untouched and still correctly drives the
+  // "Updated X ago" line and the explicit "sort by last modified" option,
+  // both legitimately about anyone's activity, not just this person's own.
+  const lastActiveId=(typeof _pgtMyLastActiveSessionId!=='undefined'&&_pgtMyLastActiveSessionId&&sessions.some(function(s){return s.id===_pgtMyLastActiveSessionId;}))
+    ? _pgtMyLastActiveSessionId
+    : null;
+  if (_homeSessSort==='lastSaved' && lastActiveId){
+    var _pinIdx=filtered.findIndex(function(s){return s.id===lastActiveId;});
+    if (_pinIdx>0){
+      var _pinned=filtered.splice(_pinIdx,1)[0];
+      filtered.unshift(_pinned);
+    }
+  }
+
   // Remove old cards area
   const old=lib.querySelector('.home-sess-cards-area');
   if(old) old.remove();
 
   const area=document.createElement('div');
   area.className='home-sess-cards-area';
-
-  // Unified grid — last active card first, distinguished by badge + border only
-  const allSorted=sessions.slice().sort(function(a,b){return (b.savedAt||0)-(a.savedAt||0);});
-  const lastActiveId=allSorted.length>0?allSorted[0].id:null;
 
   if(filtered.length>0){
     const grid=document.createElement('div');
@@ -949,29 +1125,154 @@ function _homeGetFilteredSessions(sessions){
   return list;
 }
 
+// ── Phase 5: session card 3-dot menu ──
+// Reuses _uiRowMenuToggle()/_uiRowMenuClose() (utils.js, built generic in
+// Phase 4 specifically for this reuse) — only the menu CONTENT below is new.
+// Styled via .tm-menu-item/.tm-dots (styles/20-team-management.css) —
+// confirmed safe to reuse: all CSS loads unconditionally via <link> in
+// index.html's <head>, not conditionally scoped to the Settings-page DOM.
+function _homeSessMenuHtml(sess){
+  const _shareLabel = sess.isShared ? 'Unshare' : 'Share';
+  const _shareIcon  = sess.isShared ? 'ti-users-minus' : 'ti-users';
+  // Phase 5, fixed after adversarial review: the original version spliced
+  // e(sess.name) — HTML-escaped, but NOT JS-string-escaped — directly into
+  // a single-quoted argument inside onclick="...". e() doesn't escape ' or
+  // \, so a session name like "Bob's plan" broke the handler outright, and
+  // a deliberately crafted name could inject arbitrary JS. This was also a
+  // PRE-EXISTING bug at two other call sites (homeSessionRenameInline in
+  // both card-render functions) that predates this phase — fixed there too,
+  // see below. Fixed here by moving off inline onclick with string
+  // arguments entirely: session id/name/isShared travel as data-*
+  // attributes (through e(), the CORRECT tool for an HTML attribute value)
+  // and _homeSessMenuAction() below reads them back off the clicked
+  // element — no JS string literal ever contains untrusted data.
+  const _safeId = e(sess.id);
+  const _safeName = e(sess.name||'');
+  return ''
+    +'<div role="menuitem" tabindex="0" class="tm-menu-item" data-sess-action="rename" data-sess-id="'+_safeId+'" onclick="_uiRowMenuClose();_homeSessMenuAction(this)">'
+      +'<i class="ti ti-pencil" aria-hidden="true"></i>Rename</div>'
+    +'<div role="menuitem" tabindex="0" class="tm-menu-item" data-sess-action="toggle-share" data-sess-id="'+_safeId+'" onclick="_uiRowMenuClose();_homeSessMenuAction(this)">'
+      +'<i class="ti '+_shareIcon+'" aria-hidden="true"></i>'+_shareLabel+'</div>'
+    +'<div style="height:0.5px;background:var(--divider);"></div>'
+    +'<div role="menuitem" tabindex="0" class="tm-menu-item tm-menu-item-danger" data-sess-action="delete" data-sess-id="'+_safeId+'" data-sess-name="'+_safeName+'" data-sess-shared="'+(sess.isShared?'1':'0')+'" onclick="_uiRowMenuClose();_homeSessMenuAction(this)">'
+      +'<i class="ti ti-trash" aria-hidden="true"></i>Delete</div>';
+}
+
+// Phase 5: single delegated handler for the session-card 3-dot menu. Reads
+// action/id/name/shared straight off the clicked element's data-*
+// attributes (already HTML-decoded correctly by the browser — no manual
+// JS-string parsing of anything) and dispatches to the real function. This
+// is what makes the menu immune to the escaping bug described above: no
+// value from sess ever passes through a JS string literal at all.
+function _homeSessMenuAction(el){
+  if(!el) return;
+  const action=el.getAttribute('data-sess-action');
+  const id=el.getAttribute('data-sess-id');
+  if(!id) return;
+  if(action==='rename') homeStartRenameFromMenu(id);
+  else if(action==='toggle-share') homeSessionToggleShare(id);
+  else if(action==='delete'){
+    const name=el.getAttribute('data-sess-name')||'';
+    const isShared=el.getAttribute('data-sess-shared')==='1';
+    homeSessionDeleteConfirm(id,name,isShared);
+  }
+}
+
+function homeToggleSessMenu(triggerEl, sessionId){
+  const sess=(typeof sessionStoreList==='function'?sessionStoreList():[]).find(function(s){return s.id===sessionId;});
+  if(!sess) return;
+  const menuHtml='<div style="width:150px;background:#fff;border:1px solid var(--divider);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,0.12);overflow:hidden;">'+_homeSessMenuHtml(sess)+'</div>';
+  _uiRowMenuToggle(triggerEl, menuHtml);
+}
+
+// Rename entry point from the 3-dot menu — locates the live name element on
+// the card (now line 1, .home-sess-name — see B3) and hands off to the
+// existing homeSessionRenameInline() mechanism unchanged. Menu closes first
+// (see call site above) so the DOM query below finds the settled card, not
+// a stale one mid-close.
+function homeStartRenameFromMenu(sessionId){
+  const nameEl=document.querySelector('[data-sess-name-id="'+sessionId+'"]');
+  if(!nameEl) return;
+  const sess=(typeof sessionStoreList==='function'?sessionStoreList():[]).find(function(s){return s.id===sessionId;});
+  homeSessionRenameInline(sessionId, nameEl, (sess&&sess.name)||'');
+}
+
+
+// ── Phase 5: meta line, three states ──
+// Private: unchanged relative-time only.
+// Shared, idle: "Updated x ago by [Name]" — lastEditedByName is a
+// denormalized snapshot (see session-store.js _ssUpsertToDB), not a live
+// lookup, by deliberate design (Gap 1 resolution).
+// Shared, someone actively generating: "[Name] is generating now" —
+// informational only. Staleness mirrors acquire_generation_lock()'s own
+// 60s window so this label doesn't claim someone's generating long after
+// their lock would actually be reclaimable.
+function _homeSessMetaLine(sess){
+  const _timeStr=_homeRelTime(sess.savedAt);
+  if(!sess.isShared) return '<span class="home-sess-time">Updated '+_timeStr+'</span>';
+  // Phase 5, fixed after B3 testing: the original check
+  // (Date.now()-sess.activeAt < 60000) is true for ANY activeAt in the
+  // future, since a negative age is always < 60000 — a clock-skewed
+  // client or a corrupted localStorage record with a future timestamp
+  // would show "generating now" indefinitely, never going stale. Bounded
+  // on both ends now: age must be non-negative (allowing a small grace
+  // window for minor clock skew between client and whatever set the
+  // timestamp) AND under the 60s staleness window.
+  const _ageMs = Date.now() - Number(sess.activeAt);
+  const _isGenerating = sess.activeUserId && sess.activeAt
+    && Number.isFinite(_ageMs) && _ageMs >= -5000 && _ageMs < 60000;
+  if(_isGenerating){
+    const _genName = sess.activeUserName || 'Someone';
+    return '<span class="home-sess-time home-sess-time-generating"><i class="ti ti-loader-2" aria-hidden="true"></i> '+e(_genName)+' is generating now</span>';
+  }
+  const _byName = sess.lastEditedByName ? ' by '+e(sess.lastEditedByName) : '';
+  return '<span class="home-sess-time">Updated '+_timeStr+_byName+'</span>';
+}
+
 function _homeRenderPinnedBanner(sess){
   const stagePill=_homeGetStagePill(sess.lastStage);
   const counts=sess.counts||{};
   const approachPill=sess.approach==='capability-based'
-    ?'<span class="home-sess-pill home-sess-pill-cap"><i class="ti ti-sitemap" aria-hidden="true"></i> Capability-Based</span>'
-    :'<span class="home-sess-pill home-sess-pill-outcome"><i class="ti ti-chart-line" aria-hidden="true"></i> Outcome-Based</span>';
+    ?'<span class="home-sess-pill home-sess-pill-cap"><i class="ti ti-sitemap" aria-hidden="true"></i> Process Area</span>'
+    :'<span class="home-sess-pill home-sess-pill-outcome"><i class="ti ti-chart-line" aria-hidden="true"></i> Outcome Metrics</span>';
   const modePill=sess.generationMode==='manual'
     ?'<span class="home-sess-pill home-sess-pill-mode">Manual</span>'
     :'<span class="home-sess-pill home-sess-pill-mode">AI Generated</span>';
+  const _sharedIcon=sess.isShared?'<i class="ti ti-users" aria-hidden="true" title="Shared with your team" style="font-size:11px;color:var(--t3);margin-left:5px;"></i>':'';
+  // Phase 5 (v8.117 fix): only the session's owner sees the 3-dot menu at
+  // all. Root cause of the original gap: the DB's own RLS already blocks
+  // a non-owner's actual Rename/Unshare/Delete (both are UPDATE/DELETE,
+  // restricted to user_id = current_app_user()), but the client had no
+  // way to know that — it optimistically mutated LOCAL state regardless,
+  // so a non-owner clicking Delete on someone else's shared session would
+  // see it vanish from their own screen, then silently reappear on next
+  // sync, since nothing had actually changed server-side. !sess.userId
+  // covers legacy pre-Phase-5 records with no owner field recorded at
+  // all — without this fallback, a real owner's own old session would
+  // incorrectly hide the menu from THEM. Confirmed direction from
+  // stakeholder: non-owner sees NO trigger at all, not an empty menu.
+  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-pin-banner" onclick="homeSessionResume(\''+sess.id+'\')">';
   html+='<div class="home-pin-label"><i class="ti ti-bolt" aria-hidden="true"></i> Last active</div>';
-  html+='<button class="home-sess-x" onclick="event.stopPropagation();homeSessionDeleteConfirm(\''+sess.id+'\',\''+e(sess.name)+'\')" aria-label="Delete session">';
-  html+='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-  html+='</button>';
+  html+=_dotsBtn;
   html+='<div class="home-sess-top" style="padding-top:20px;">';
   html+='<div class="home-sess-icon"><i class="ti ti-device-laptop" aria-hidden="true"></i></div>';
   html+='<div class="home-sess-meta">';
-  html+='<div class="home-sess-product">'+e(sess.productName||'Unnamed')+'<span class="home-sess-type-badge">'+e(sess.productType||'')+'</span></div>';
-  html+='<div class="home-sess-sub">'+e(sess.companyName||'')+(sess.companyName?'':'')+'</div>';
-  html+='</div>';
-  html+='<div class="home-sess-right">';
-  html+='<div class="home-sess-name-chip" onclick="event.stopPropagation();homeSessionRenameInline(\''+sess.id+'\',this,\''+e(sess.name)+'\')" title="Click to rename"><i class="ti ti-pencil" aria-hidden="true"></i> '+e(sess.name||'')+'</div>';
+  html+=(_isOwner
+    ?'<div class="home-sess-name" data-sess-name-id="'+sess.id+'" onclick="event.stopPropagation();homeSessionRenameInline(\''+sess.id+'\',this)" title="Click to rename">'+e(sess.name||'')+_sharedIcon+'</div>'
+    // Phase 5 (v8.117 fix): non-owner gets plain, non-interactive text —
+    // no onclick, no "Click to rename" title, no rename affordance at
+    // all. This closes the SAME gap the 3-dot hiding closes, for a
+    // second, separate click target (the name text itself) that was
+    // missed on the first pass — confirmed via grep that this onclick
+    // existed independently of the 3-dot menu's homeStartRenameFromMenu()
+    // path, and was NOT gated by the ownership check when that check was
+    // first added.
+    :'<div class="home-sess-name" data-sess-name-id="'+sess.id+'">'+e(sess.name||'')+_sharedIcon+'</div>'
+  );
+  html+='<div class="home-sess-sub">'+e(sess.productName||'Unnamed')+'<span class="home-sess-type-badge">'+e(sess.productType||'')+'</span></div>';
   html+='</div>';
   html+='</div>'; // sess-top
   html+='<div class="home-sess-pills">'+approachPill+modePill+stagePill+'</div>';
@@ -994,25 +1295,39 @@ function _homeRenderSessionCard(sess, isLastActive){
   const counts=sess.counts||{};
   const isActive=(typeof _activeSessionId!=='undefined'&&_activeSessionId===sess.id);
   const approachPill=sess.approach==='capability-based'
-    ?'<span class="home-sess-pill home-sess-pill-cap">Capability-Based</span>'
-    :'<span class="home-sess-pill home-sess-pill-outcome">Outcome-Based</span>';
+    ?'<span class="home-sess-pill home-sess-pill-cap">Process Area</span>'
+    :'<span class="home-sess-pill home-sess-pill-outcome">Outcome Metrics</span>';
   const modePill=sess.generationMode==='manual'
     ?'<span class="home-sess-pill home-sess-pill-mode">Manual</span>'
     :'<span class="home-sess-pill home-sess-pill-mode">AI</span>';
+  const _sharedIcon=sess.isShared?'<i class="ti ti-users" aria-hidden="true" title="Shared with your team" style="font-size:11px;color:var(--t3);margin-left:5px;"></i>':'';
+  // Phase 5 (v8.117 fix): identical ownership check to
+  // _homeRenderPinnedBanner above — see that function's comment for the
+  // full rationale. Both render functions must apply this consistently,
+  // since they render the same underlying session data in two different
+  // card layouts (pinned banner vs. regular grid card).
+  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-sess-card'+(isLastActive?' home-sess-card-last-active':'')+(isActive?' home-sess-card-active':'')+'" onclick="homeSessionResume(\''+sess.id+'\')">';
   if(isLastActive) html+='<div class="home-sess-last-active-badge"><i class="ti ti-bolt" aria-hidden="true"></i> Last Active</div>';
-  html+='<button class="home-sess-x" onclick="event.stopPropagation();homeSessionDeleteConfirm(\''+sess.id+'\',\''+e(sess.name)+'\')" aria-label="Delete session">';
-  html+='<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-  html+='</button>';
+  html+=_dotsBtn;
   html+='<div class="home-sess-top">';
   html+='<div class="home-sess-icon"><i class="ti ti-device-laptop" aria-hidden="true"></i></div>';
   html+='<div class="home-sess-meta">';
-  html+='<div class="home-sess-product">'+e(sess.productName||'Unnamed')+'<span class="home-sess-type-badge">'+e(sess.productType||'')+'</span></div>';
-  html+='<div class="home-sess-sub">'+e(sess.companyName||'')+'</div>';
-  html+='</div>';
-  html+='<div class="home-sess-right">';
-  html+='<div class="home-sess-name-chip" onclick="event.stopPropagation();homeSessionRenameInline(\''+sess.id+'\',this,\''+e(sess.name)+'\')" title="Click to rename"><i class="ti ti-pencil" aria-hidden="true"></i> '+e(sess.name||'')+'</div>';
+  html+=(_isOwner
+    ?'<div class="home-sess-name" data-sess-name-id="'+sess.id+'" onclick="event.stopPropagation();homeSessionRenameInline(\''+sess.id+'\',this)" title="Click to rename">'+e(sess.name||'')+_sharedIcon+'</div>'
+    // Phase 5 (v8.117 fix): non-owner gets plain, non-interactive text —
+    // no onclick, no "Click to rename" title, no rename affordance at
+    // all. This closes the SAME gap the 3-dot hiding closes, for a
+    // second, separate click target (the name text itself) that was
+    // missed on the first pass — confirmed via grep that this onclick
+    // existed independently of the 3-dot menu's homeStartRenameFromMenu()
+    // path, and was NOT gated by the ownership check when that check was
+    // first added.
+    :'<div class="home-sess-name" data-sess-name-id="'+sess.id+'">'+e(sess.name||'')+_sharedIcon+'</div>'
+  );
+  html+='<div class="home-sess-sub">'+e(sess.productName||'Unnamed')+'<span class="home-sess-type-badge">'+e(sess.productType||'')+'</span></div>';
   html+='</div>';
   html+='</div>'; // sess-top
   html+='<div class="home-sess-pills">'+approachPill+modePill+stagePill+'</div>';
@@ -1026,7 +1341,7 @@ function _homeRenderSessionCard(sess, isLastActive){
   html+='<div class="home-sess-ct"><i class="ti ti-files" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.docs||0)+'</span> docs</div>';
   html+='</div>';
   html+='<div class="home-sess-footer-row">';
-  html+='<span class="home-sess-time">'+_homeRelTime(sess.savedAt)+'</span>';
+  html+=_homeSessMetaLine(sess);
   html+='<button class="home-sess-resume-link" onclick="event.stopPropagation();homeSessionResume(\''+sess.id+'\')"><i class="ti ti-player-play" aria-hidden="true"></i> Resume &#8594;</button>';
   html+='</div>';
   html+='</div>'; // sess-bottom
@@ -1052,7 +1367,7 @@ function _homeRelTime(ts){
   if(!ts) return '';
   const diff=Date.now()-ts;
   const mins=Math.floor(diff/60000);
-  if(mins<2) return 'Just now';
+  if(mins<2) return 'just now';
   if(mins<60) return mins+' min ago';
   const hrs=Math.floor(mins/60);
   if(hrs<24) return hrs+' hr'+(hrs>1?'s':'')+' ago';
@@ -1069,9 +1384,15 @@ function homeSessionResume(sessionId){
   if(typeof sessionStoreRestore==='function') sessionStoreRestore(sessionId);
 }
 
-function homeSessionDeleteConfirm(sessionId, sessionName){
+function homeSessionDeleteConfirm(sessionId, sessionName, isShared){
+  // B4: copy branches on whether the session being deleted is shared.
+  // Private copy trimmed (no itemized list) to match the shared variant's
+  // tone — both now differ only in the sentence naming who's affected.
+  const _msg = isShared
+    ? 'This session is shared with your team. Deleting it removes all generated product data for everyone. This cannot be undone.'
+    : 'This will permanently delete all generated product data for this session. This cannot be undone.';
   showConfirm(
-    'This will permanently delete all generated data for this session, including the Discovery Map, capabilities, features, stories, and PI plan. This cannot be undone.',
+    _msg,
     'Delete "'+sessionName+'"?',
     function(){
       const isActive=(typeof _activeSessionId!=='undefined'&&_activeSessionId===sessionId);
@@ -1079,6 +1400,7 @@ function homeSessionDeleteConfirm(sessionId, sessionName){
       if(isActive){
         // Deleted the active session — clear live state without saving
         _activeSessionId=null;
+        _activeSessionIsShared=false;
         if(typeof homeClearSession==='function') homeClearSession();
       }
       // Full re-render handles empty state restoration
@@ -1279,13 +1601,26 @@ async function _homeCallAIRecs(sessions, token) {
   const sys=_aiRecPrompt.sys;
   const usr=_aiRecPrompt.usr;
 
+  // v9.01: rerouted to the Render proxy — same backend and same PROXY_URL
+  // convention already used by callAPI() in api.js, replacing the Netlify
+  // Function path (/api/anthropic -> netlify/functions/anthropic-proxy.js)
+  // this previously used. Root cause for the reroute: the Netlify Function
+  // path was being blocked by HCL's corporate web security gateway
+  // ("Suspicious" category, likely path/keyword-based on "anthropic" in the
+  // URL) even though the exact same requests succeed via the Render path,
+  // which has been allowlisted there for a long time. Confirmed via direct
+  // testing: real AI generation (PI/CC/FC/SC/MI, all via callAPI()) already
+  // works through this Render path on this same network.
+  // Body shape is unchanged and already compatible — server.js's own
+  // /api/anthropic route expects the same company_id-in-body,
+  // X-Auth-Token, and Authorization: Bearer BYOK convention this function
+  // already sends (confirmed by reading server.js's requireActiveCompanyMember
+  // and main handler before making this change, not assumed).
   const LOCAL_PROXY = 'http://localhost:3001/api/anthropic';
   const host = window.location.hostname;
   const isLocal = host === '' || host === 'localhost' || host === '127.0.0.1';
-  // Hosted: same-origin /api/anthropic — no CORS preflight, works on corporate networks.
-  // Local dev: localhost:3001 (Render proxy running locally).
-  const NETLIFY_PROXY_URL = '/api/anthropic';
-  const proxyUrl = isLocal ? LOCAL_PROXY : NETLIFY_PROXY_URL;
+  const hostedProxyUrl = (typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL : 'https://product-diagnostics-proxy.onrender.com/api/anthropic';
+  const proxyUrl = isLocal ? LOCAL_PROXY : hostedProxyUrl;
 
   const model = (typeof resolveModel==='function')?resolveModel(null,'ai-recommendations'):'claude-sonnet-4-6';
 
@@ -1307,11 +1642,15 @@ async function _homeCallAIRecs(sessions, token) {
   fetch(proxyUrl, {
     method: 'POST',
     headers: _aiRecsHeaders,
-    body: JSON.stringify({ model: model, max_tokens: 600, system: sys, messages: [{ role: 'user', content: usr }] })
+    body: JSON.stringify({
+      model: model, max_tokens: 600, system: sys, messages: [{ role: 'user', content: usr }],
+      _caller: 'ai-recommendations',
+      company_id: (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
+    })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) throw new Error((typeof _pgtAnthropicErrorMessage==='function')?_pgtAnthropicErrorMessage(data.error):(data.error.message||'Unknown error'));
     const raw = data.content && data.content[0] ? data.content[0].text : '[]';
     const clean = raw.replace(/```json|```/g, '').trim();
     const recs = JSON.parse(clean);
@@ -1325,7 +1664,7 @@ async function _homeCallAIRecs(sessions, token) {
     // Reset flag so the Refresh button can trigger a new attempt after any error
     _homeAIRecsRequested = false;
     const el = document.getElementById('home-ai-recs');
-    if (el) el.innerHTML = '<div class="home-ai-empty">Could not load recommendations. Try refreshing.</div>';
+    if (el) el.innerHTML = '<div class="home-ai-empty">' + (err.message || 'Could not load recommendations. Try refreshing.') + '</div>';
     console.warn('AI recs error:', err.message);
   });
 }
@@ -1382,6 +1721,13 @@ function homeAIRecClick(sessionId, targetTab) {
 function homeRenderSdocsSection(){
   var box=document.getElementById('home-sdocs-box');
   if(!box)return;
+  // v9.09.01 — Read Only guard, checked HERE because this function rebuilds
+  // #home-sdocs-box's entire innerHTML from scratch at ~7 call sites
+  // throughout this file — a disabled attribute set anywhere else gets
+  // wiped out the next time this runs. This is the actual source of truth
+  // for what's in the DOM, so the guard belongs here, not in a one-time
+  // querySelector patch applied elsewhere (the bug that shipped in v9.09).
+  var _isReadOnly=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
   var isCapManual=(_homeApproach==='capability-based'&&_homeMode==='manual');
   if(isCapManual){
     // Cap+manual mode — render capability list upload + compact session docs row if any
@@ -1389,7 +1735,7 @@ function homeRenderSdocsSection(){
       +'<div class="home-cond-label"><i class="ti ti-list" style="font-size:10px;" aria-hidden="true"></i> Your Capability List <span class="home-req">*</span></div>'
       +'<a href="assets/templates/capability-list-template.xlsx" class="home-template-link" onclick="event.stopPropagation()"><i class="ti ti-download" style="font-size:10px;" aria-hidden="true"></i> Template</a>'
       +'</div>'
-      +'<div class="home-upload-row" id="home-upload-row" onclick="document.getElementById(\'home-file-input\').click()">'
+      +'<div class="home-upload-row" id="home-upload-row" '+(_isReadOnly?'style="opacity:0.5;pointer-events:none;"':'onclick="document.getElementById(\'home-file-input\').click()"')+'>'
       +'<i class="ti ti-upload" style="font-size:12px;color:var(--purple);flex-shrink:0;" aria-hidden="true"></i>'
       +'<span class="home-upload-row-label">Click to upload</span>'
       +'<span class="home-upload-row-types">.xlsx &middot; .csv</span>'
@@ -1411,7 +1757,7 @@ function homeRenderSdocsSection(){
       +'<span style="font-size:9px;color:var(--purple-light);">Optional</span>'
       +'</div>'
       +'</div>'
-      +'<div class="home-upload-row" onclick="document.getElementById(\'home-sdocs-file-input\').click()">'
+      +'<div class="home-upload-row" '+(_isReadOnly?'style="opacity:0.5;pointer-events:none;"':'onclick="document.getElementById(\'home-sdocs-file-input\').click()"')+'>'
       +'<i class="ti ti-upload" style="font-size:12px;color:var(--purple);flex-shrink:0;" aria-hidden="true"></i>'
       +'<span class="home-upload-row-label">Click to upload</span>'
       +'<span class="home-upload-row-types">docx, pdf, txt, xlsx, csv</span>'
@@ -1434,7 +1780,7 @@ function homeRenderSdocsSection(){
       +'<span style="font-size:9px;color:var(--purple-light);">Optional</span>'
       +'</div>'
       +'</div>'
-      +'<div class="home-upload-row" onclick="document.getElementById(\'home-sdocs-file-input\').click()">'
+      +'<div class="home-upload-row" '+(_isReadOnly?'style="opacity:0.5;pointer-events:none;"':'onclick="document.getElementById(\'home-sdocs-file-input\').click()"')+'>'
       +'<i class="ti ti-upload" style="font-size:12px;color:var(--purple);flex-shrink:0;" aria-hidden="true"></i>'
       +'<span class="home-upload-row-label">Click to upload</span>'
       +'<span class="home-upload-row-types">docx, pdf, txt, xlsx, csv</span>'
@@ -1449,6 +1795,8 @@ function homeRenderSdocsSection(){
 
 // ── Handle session doc uploads ──
 function homeHandleSdocsUpload(inputEl){
+  // v9.09.01 — same defense-in-depth guard as homeHandleFileUpload().
+  if(typeof currentUserRole!=='undefined'&&currentUserRole==='readonly')return;
   var files=Array.from(inputEl.files||[]);
   if(!files.length)return;
   var remaining=Math.max(0,HOME_SESSION_DOCS_MAX-_homeSessionDocs.length);

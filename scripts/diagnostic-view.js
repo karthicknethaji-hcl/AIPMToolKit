@@ -350,7 +350,8 @@ function dvRenderAnalyzeBar(session){
 
 function dvEvidenceTriggerLabel(ev){
   const hasEvidence=ev&&(ev.currentValue||ev.previousValue||ev.targetBenchmark||ev.trend||ev.notes||ev.instrumentationStatus);
-  if(hasEvidence)return`<i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i> Edit evidence &#8594;`;
+  const _canEditDvTrigger=(typeof canEditSession!=='function')||canEditSession();
+  if(hasEvidence&&_canEditDvTrigger)return`<i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i> Edit evidence &#8594;`;
   return`Evidence &#8594;`;
 }
 
@@ -388,6 +389,10 @@ function dvOpenEvidenceDrawer(metricId,metricName,stageName,level){
   const strDesc={'Strong evidence':'Current value, previous value, target, and/or trend filled','Moderate evidence':'Current value filled — add trend or target for stronger signal','Weak evidence':'Notes or partial data only — add current values for better analysis','Instrumentation gap':'Metric is not tracked — flag for instrumentation before analysis','No evidence':'No data entered yet for this metric'};
   const trendOpts=['','Improving','Flat','Declining','Unknown'].map(v=>`<option value="${v}"${ev.trend===v?' selected':''}>${v||'Select trend'}</option>`).join('');
   const instOpts=['','Instrumented','Partially instrumented','Not instrumented','Unknown'].map(v=>`<option value="${v}"${ev.instrumentationStatus===v?' selected':''}>${v||'Select status'}</option>`).join('');
+  // v9.08.02: computed once per drawer open. Per project rule, standalone
+  // action buttons (Save/Clear) are hidden; inline-editable fields are
+  // readonly/disabled rather than hidden, so the panel remains readable.
+  const _canEditDvEv=(typeof canEditSession!=='function')||canEditSession();
   drawer.innerHTML=`
     <div class="dv-drawer-head">
       <div class="dv-drawer-head-text">
@@ -397,24 +402,24 @@ function dvOpenEvidenceDrawer(metricId,metricName,stageName,level){
       <button class="dv-drawer-close" onclick="dvCloseEvidenceDrawer()" aria-label="Close"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="dv-drawer-body">
-      <div class="dv-field"><label class="dv-field-lbl">Current value</label><input type="text" class="dv-field-input" id="dvf-current" value="${e(ev.currentValue||'')}" placeholder="e.g. 38%, 3.4 days, Unknown"/></div>
-      <div class="dv-field"><label class="dv-field-lbl">Previous value</label><input type="text" class="dv-field-input" id="dvf-previous" value="${e(ev.previousValue||'')}" placeholder="e.g. 44% last month, Unknown"/></div>
-      <div class="dv-field"><label class="dv-field-lbl">Target / benchmark</label><input type="text" class="dv-field-input" id="dvf-target" value="${e(ev.targetBenchmark||'')}" placeholder="e.g. 65%, Same-day activation"/></div>
+      <div class="dv-field"><label class="dv-field-lbl">Current value</label><input type="text" class="dv-field-input" id="dvf-current" value="${e(ev.currentValue||'')}" placeholder="e.g. 38%, 3.4 days, Unknown" ${_canEditDvEv?'':'readonly'}/></div>
+      <div class="dv-field"><label class="dv-field-lbl">Previous value</label><input type="text" class="dv-field-input" id="dvf-previous" value="${e(ev.previousValue||'')}" placeholder="e.g. 44% last month, Unknown" ${_canEditDvEv?'':'readonly'}/></div>
+      <div class="dv-field"><label class="dv-field-lbl">Target / benchmark</label><input type="text" class="dv-field-input" id="dvf-target" value="${e(ev.targetBenchmark||'')}" placeholder="e.g. 65%, Same-day activation" ${_canEditDvEv?'':'readonly'}/></div>
       <div class="dv-field-row">
-        <div class="dv-field"><label class="dv-field-lbl">Trend</label><select class="dv-field-select" id="dvf-trend">${trendOpts}</select></div>
-        <div class="dv-field"><label class="dv-field-lbl">Instrumentation</label><select class="dv-field-select" id="dvf-inst">${instOpts}</select></div>
+        <div class="dv-field"><label class="dv-field-lbl">Trend</label><select class="dv-field-select" id="dvf-trend" ${_canEditDvEv?'':'disabled'}>${trendOpts}</select></div>
+        <div class="dv-field"><label class="dv-field-lbl">Instrumentation</label><select class="dv-field-select" id="dvf-inst" ${_canEditDvEv?'':'disabled'}>${instOpts}</select></div>
       </div>
-      <div class="dv-field"><label class="dv-field-lbl">Notes</label><textarea class="dv-field-textarea" id="dvf-notes" placeholder="e.g. Drop-off seems highest after step 2...">${e(ev.notes||'')}</textarea></div>
+      <div class="dv-field"><label class="dv-field-lbl">Notes</label><textarea class="dv-field-textarea" id="dvf-notes" placeholder="e.g. Drop-off seems highest after step 2..." ${_canEditDvEv?'':'readonly'}>${e(ev.notes||'')}</textarea></div>
       <div class="dv-ev-strength-bar" style="background:${strBg[evStr]};border-color:${strBorder[evStr]};" id="dv-strength-bar">
         <div class="dv-ev-strength-lbl">Evidence strength</div>
         <div class="dv-ev-strength-val" style="color:${strColors[evStr]};" id="dv-strength-val">${evStr}</div>
         <div class="dv-ev-strength-desc" id="dv-strength-desc">${strDesc[evStr]}</div>
       </div>
     </div>
-    <div class="dv-drawer-footer">
+    ${_canEditDvEv?`<div class="dv-drawer-footer">
       <button class="dv-drawer-clear" onclick="dvClearEvidence()">Clear</button>
       <button class="dv-drawer-save" onclick="dvSaveEvidence()">Save Evidence</button>
-    </div>`;
+    </div>`:''}`;
   drawer.classList.add('open');
   if(typeof syncRightPanelBodyState==='function')syncRightPanelBodyState();
   // Live update strength as user types
@@ -452,6 +457,7 @@ function dvCloseEvidenceDrawer(){
 }
 
 function dvSaveEvidence(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!diagEvidenceDrawerMetricId)return;
   const session=diagnosticSessions.find(s=>s.id===activeDiagnosticId);
   if(!session)return;
@@ -563,6 +569,15 @@ async function dvAnalyze(){
     dvShowNoEvidenceWarning();
     return;
   }
+  // v8.133 fix (item 3): courtesy pre-check, for consistency with the
+  // other four canvases.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   // Build product context
   // Use productContext (populated after generation) — fallback to form fields for safety
   const productCtx=productContext||{
@@ -597,8 +612,19 @@ async function dvAnalyze(){
   if(_changedMetrics.length===0&&(productLeakAnalysis&&productLeakAnalysis.length>0)&&!window._dvForceRunFlag){
     return;
   }
-  // Show loading state
-  dvShowAnalyzeLoading(true);
+  // Phase 5 (v8.117): immediate button-disable, matching the same pattern
+  // used across all 10 wrapped functions — dvShowAnalyzeLoading(true) does
+  // BOTH the button-disable AND the overlay creation in one call, so
+  // calling it in full here (as the original code did) would show the
+  // rich "Analyzing..." overlay before the lock check even runs. Doing
+  // the button-disable inline here instead, and deferring the overlay
+  // itself into _dvRunAnalysis() (inside the lock callback).
+  const _diagBtn=document.getElementById('diag-run-btn');
+  if(_diagBtn){_diagBtn.disabled=true;_diagBtn.innerHTML=`<span class="dv-spin"></span> Analyzing...`;}
+  const _diagRefineBtn=document.getElementById('diag-refine-btn');
+  if(_diagRefineBtn){_diagRefineBtn.disabled=true;_diagRefineBtn.style.opacity='0.45';_diagRefineBtn.style.pointerEvents='none';}
+  const _diagRefineSend=document.getElementById('diag-refine-send');
+  if(_diagRefineSend){_diagRefineSend.disabled=true;}
   const _diagSignal=startAiGen('Your diagnostic analysis is running. Leaving now discards it — you\'ll need to re-run from scratch.');
   _dvRunAnalysis(stagesWithEvidence,_evSnap,_changedMetrics,false,_diagSignal);
 } // end dvAnalyze
@@ -611,6 +637,27 @@ async function _dvRunAnalysis(stagesWithEvidence,evSnap,changedMetrics,forceRun,
     problem:gv('f-problem'),icp:gv('f-icp'),
     industry:seg.industry,productType:seg.productType,measurementModelName:'',frameworks:[]};
   if(!_diagSignal)_diagSignal=startAiGen('Your diagnostic analysis is running. Leaving now discards it — you\'ll need to re-run from scratch.');
+  // Phase 5 (v8.117): attempt marker, stamped onto the overlay once it's
+  // created below (inside the lock callback, after acquisition confirmed).
+  const _attempt=newGenAttempt();
+  // Phase 5: withGenerationLock wraps callAPI through the productLeakAnalysis
+  // push and sessionStoreSave().
+  try{
+    await withGenerationLock(async (_lock) => {
+  // Lock confirmed — show the real loading overlay now (button was
+  // already disabled immediately in dvAnalyze(), before the lock check).
+  dvShowAnalyzeLoading(true);
+  var _dvOverlay=document.getElementById('dv-analyze-overlay');
+  if(_dvOverlay) _dvOverlay.setAttribute('data-gen-attempt',_attempt.id);
+  // Phase 5 (v8.117): local helper for the self-attribute marker check —
+  // NOT the standard getIfCurrentAttempt helper, which checks DESCENDANTS
+  // via querySelector and would never match an attribute set directly on
+  // the container itself (confirmed via the same querySelector-scope
+  // issue caught and fixed in kpi-tree.js's generateConfirmed()).
+  function _dvOverlayStillCurrent(){
+    var el=document.getElementById('dv-analyze-overlay');
+    return !!(el&&el.getAttribute('data-gen-attempt')===_attempt.id);
+  }
   try{
     const promptTxt=buildProductLeakPrompt(productCtx,session.tree.nsm,stagesWithEvidence,readiness,changedMetrics);
     const txt=await callAPI(
@@ -669,21 +716,66 @@ async function _dvRunAnalysis(stagesWithEvidence,evSnap,changedMetrics,forceRun,
     parsed.runTimestamp=_runTs;
     parsed.runCustomName=false;
     parsed.evidenceSnapshot=evSnap||{};
+    // v9.11 (Outcome Pulse Iteration Loop): explicit provenance marker, added
+    // for symmetry with the new outcome-pulse-sourced synthetic runs
+    // (outcome-pulse.js). Every run-source READ elsewhere must still default
+    // missing source to 'diagnostic' — legacy saved sessions have runs with
+    // no source field at all, predating this change.
+    parsed.source='diagnostic';
     productLeakAnalysis.push(parsed);
     // New run becomes active; reset selection state
     if(typeof _laActiveRunId!=='undefined') _laActiveRunId=_runId;
     leakSelectedIds=new Set();
-    dvShowAnalyzeLoading(false);
+    // Phase 5 (v8.117): marker-guarded via the local self-attribute helper above.
+    if(_dvOverlayStillCurrent()){dvShowAnalyzeLoading(false);}
     endAiGen();
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save.
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'la','diagnostic_generated',null,null);
+      }
+    }
     // Reveal Product Leak Analysis tab and navigate
     revealAndSwitchTab('la');
   }catch(err){
-    dvShowAnalyzeLoading(false);
-    if(err.name==='AbortError'){endAiGen();return;}
+    // Phase 5 (v8.117): marker-guarded — a stale attempt's failure must
+    // not tear down a newer attempt's own loading overlay.
+    if(_dvOverlayStillCurrent()){dvShowAnalyzeLoading(false);}
+    if(err.name==='AbortError'){
+      endAiGen();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1).
+      throw err;
+    }
+    if(err.message==='generation_lock_lost'){
+      endAiGen();
+      throw err;
+    }
     endAiGen();
     const errEl=document.getElementById('dv-analyze-error');
     if(errEl){errEl.textContent='Error: '+err.message;errEl.style.display='block';}
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 (v8.117): since the overlay is only ever created/stamped
+    // INSIDE the lock callback now, a pre-flight rejection
+    // (generation_lock_not_acquired/unknown/already_running_locally)
+    // never created an overlay for THIS attempt at all — calling
+    // dvShowAnalyzeLoading(false) unconditionally here would tear down
+    // whatever overlay happens to exist right now, which could belong to
+    // a genuinely different, currently-running attempt. Only the button-
+    // disable state set in dvAnalyze() (before the lock check) needs
+    // resetting here — but since that was done via direct DOM manipulation
+    // rather than dvShowAnalyzeLoading's own button logic, re-query and
+    // reset those specific buttons directly instead.
+    var _lockErrBtn=document.getElementById('diag-run-btn');
+    if(_lockErrBtn){_lockErrBtn.disabled=false;_lockErrBtn.innerHTML='<i class="ti ti-microscope" style="font-size:12px;" aria-hidden="true"></i> Run Diagnostics';}
+    var _lockErrRefineBtn=document.getElementById('diag-refine-btn');
+    if(_lockErrRefineBtn){_lockErrRefineBtn.disabled=false;_lockErrRefineBtn.style.opacity='';_lockErrRefineBtn.style.pointerEvents='';}
+    var _lockErrRefineSend=document.getElementById('diag-refine-send');
+    if(_lockErrRefineSend){_lockErrRefineSend.disabled=false;}
   }
 }
 

@@ -14,6 +14,7 @@ function applyFeats(){
   featDiag = appSettings.featDiag;
   featMI   = appSettings.featMI;
   featPI   = appSettings.featPI;
+  featOutcomePulse = appSettings.featOutcomePulse;
 
   // #tab-dd retired — no longer a tab. DD is download-only panel triggered from KPI tree.
   document.querySelectorAll('.cap-trigger').forEach(function(b){b.style.display='';});
@@ -60,6 +61,26 @@ function applyFeats(){
       if(curTab==='pi')switchTab('mm');
     } else if(typeof piPlan!=='undefined'&&piPlan){
       piTabEl.classList.add('revealed');
+    }
+  }
+  // Outcome Verification Loop (v9.10.00 feedback item 8): Outcome Pulse
+  // reveals only once BOTH the feature flag is on AND a Discovery Map has
+  // been generated (gData exists) — corrected from the original Phase C
+  // build, which reasoned this should reveal purely on the feature flag
+  // since the tab is "meaningful to view even with zero hypotheses
+  // logged." That reasoning didn't account for gData itself being absent
+  // pre-generation — without a Discovery Map, Outcome Breakdown has no
+  // value-chain stages to derive rows from at all, so the tab would show
+  // an empty/broken screen, not a legitimately-empty one. Matches PI's
+  // existing "only reveal once real data exists" pattern rather than
+  // Market Intelligence's "reveal purely on flag" pattern.
+  const opTabEl=document.getElementById('tab-op');
+  if(opTabEl){
+    if(!featOutcomePulse||typeof gData==='undefined'||!gData){
+      opTabEl.style.display='none';
+      if(curTab==='op')switchTab('mm');
+    } else {
+      opTabEl.style.display='';
     }
   }
 }

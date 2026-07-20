@@ -52,6 +52,24 @@ function laRebuildSentIdsFromCanvas(){
   });
 }
 
+// ── laFindCanvasCardForExperiment — reverse lookup (Outcome Pulse Iteration
+// Loop, v9.11): the ONE direction this file never needed before. Every
+// existing lookup goes canvas → run (laRebuildSentIdsFromCanvas, for sent-
+// state dedup). Experiment Library needs the opposite direction — given a
+// specific experiment (runId + index), find its scCanvas card, if any, so
+// the panel can show live status ("In Experiment Canvas" vs "In Feature
+// Canvas · N stories") without storing that status anywhere. Always queries
+// scCanvas fresh — no cache, so a card deleted from Feature Canvas is
+// reflected on the very next call with no separate invalidation step.
+function laFindCanvasCardForExperiment(runId,expIdx){
+  if(!scCanvas||!scCanvas.length||!runId||expIdx==null)return null;
+  return scCanvas.find(function(item){
+    if(item.origin!=='diagnostic')return false;
+    const dc=item.diagnosticContext||{};
+    return dc.runId===runId&&dc.experimentIndex===expIdx;
+  })||null;
+}
+
 // ── laGetActiveRun — central resolver ──
 // Returns the active run object, or null in All view / if not found.
 function laGetActiveRun(){
@@ -153,7 +171,7 @@ function laRenderAnalysis(){
   const session=diagnosticSessions&&diagnosticSessions.find(function(s){return s.id===activeDiagnosticId;});
   const laLeftHtml=laRenderLeftPanelInner(session,false);
   const activeRun=laGetActiveRun();
-  const mainTitle=activeRun?activeRun.runLabel+' — diagnostic detail':'Product Diagnostics';
+  const mainTitle=activeRun?activeRun.runLabel+' — diagnostic detail':'Experiment Canvas';
   const mainSub=activeRun
     ?(activeRun.experiments.length+' experiments \u00b7 '+e(activeRun.leakingStage||'')+' identified as primary leak')
     :(productLeakAnalysis.length+' diagnostic run'+(productLeakAnalysis.length!==1?'s':'')+' \u00b7 aggregate view');
@@ -170,7 +188,7 @@ function laRenderAnalysis(){
                 <div class="la-sub">${mainSub}</div>
               </div>
               <div class="la-toolbar-right">
-                <button class="export-cta-btn" onclick="laDownloadDocx()"><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export Diagnosis</button>
+                <button class="export-cta-btn" onclick="laDownloadDocx()"><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
               </div>
             </div>
             <div class="la-cards-row" id="la-cards-row">${laRenderSummaryCards()}</div>
@@ -210,7 +228,7 @@ function laRenderLeftPanelInner(session,isCollapsed){
   if(!session){
     return `<div class="dv-lp-header">
       <div class="dv-lp-text-wrap">
-        <div class="dv-lp-eyebrow">Product Diagnostics</div>
+        <div class="dv-lp-eyebrow">Experiment Canvas</div>
         <div class="dv-lp-sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Identify leaks and prioritise experiments</div>
       </div>
       <button class="dv-collapse-btn" onclick="laToggleLeftPanel()" title="${isCollapsed?'Expand':'Collapse'} panel">
@@ -286,7 +304,7 @@ function laRenderLeftPanelInner(session,isCollapsed){
   return `
     <div class="dv-lp-header">
       <div class="dv-lp-text-wrap">
-        <div class="dv-lp-eyebrow">Product Diagnostics</div>
+        <div class="dv-lp-eyebrow">Experiment Canvas</div>
         <div class="dv-lp-sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Identify leaks and prioritise experiments</div>
       </div>
       <button class="dv-collapse-btn" onclick="laToggleLeftPanel()" title="${isCollapsed?'Expand':'Collapse'} panel">
@@ -452,12 +470,13 @@ function laRenderTable(){
     const sent=laIsSent(run.runId,origIdx);
     const rowCls=sent?'la-row-sent':sel?'la-row-sel':'';
     // Use data attributes for run-scoped identity — avoids encoding in onclick strings
-    h+=`<tr class="${rowCls}" data-run-id="${e(run.runId)}" data-exp-idx="${origIdx}" onclick="laToggleExperimentByRow(this)">`;
+    const _canEditPdRow=(typeof canEditSession!=='function')||canEditSession();
+    h+=`<tr class="${rowCls}" data-run-id="${e(run.runId)}" data-exp-idx="${origIdx}" ${_canEditPdRow?`onclick="laToggleExperimentByRow(this)"`:''}>`;
     h+=`<td style="min-width:26px;padding-left:8px;">`;
     if(sent){
       h+=`<div class="la-cb-sent" title="Already sent to Feature Canvas">&#10003;</div>`;
     }else{
-      h+=`<div class="la-cb${sel?' la-cb-checked':''}" onclick="event.stopPropagation();laToggleExperimentByRow(this.closest('tr'))"></div>`;
+      h+=`<div class="la-cb${sel?' la-cb-checked':''}${_canEditPdRow?'':' la-cb-disabled'}" ${_canEditPdRow?`onclick="event.stopPropagation();laToggleExperimentByRow(this.closest('tr'))"`:''}></div>`;
     }
     h+=`</td>`;
     cols.forEach(function(col){
@@ -496,6 +515,7 @@ function laRenderTable(){
 
 // ── Row interaction helpers (read runId + expIdx from data attributes) ──
 function laToggleExperimentByRow(tr){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!tr)return;
   const runId=tr.dataset.runId;
   const idx=parseInt(tr.dataset.expIdx);
@@ -548,6 +568,13 @@ function laUpdateSentCounter(){
 function laUpdateSendBtn(){
   const btn=document.getElementById('la-send-btn');
   if(!btn)return;
+  // v9.08: hidden for view-only sessions rather than left disabled — this
+  // button has nothing to enable toward for a viewer.
+  if(typeof canEditSession==='function'&&!canEditSession()){
+    btn.style.display='none';
+    return;
+  }
+  btn.style.display='';
   const selected=Array.from(leakSelectedIds);
   if(selected.length===0){
     btn.disabled=true;
@@ -577,6 +604,7 @@ function laUpdateSendBtn(){
 
 // ── Toggle experiment (legacy — kept for any remaining direct calls) ──
 function laToggleExperiment(idx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   // In single-run view only — find active run
   const run=laGetActiveRun();
   if(!run)return;
@@ -649,9 +677,11 @@ function laOpenDetailPanel(runId,idx){
     <div class="la-dp-footer">
       ${sent
         ?`<div class="la-dp-sent-state"><i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> Already on Feature Canvas</div>`
-        :`<button class="la-dp-add-btn${sel?' la-dp-add-sel':''}" data-run-id="${e(runId)}" data-exp-idx="${idx}" onclick="laToggleExperimentByRow(this.closest('[data-run-id]')||this);laOpenDetailPanel('${e(runId)}',${idx})">
+        :((typeof canEditSession!=='function')||canEditSession())
+          ?`<button class="la-dp-add-btn${sel?' la-dp-add-sel':''}" data-run-id="${e(runId)}" data-exp-idx="${idx}" onclick="laToggleExperimentByRow(this.closest('[data-run-id]')||this);laOpenDetailPanel('${e(runId)}',${idx})">
           <i class="ti ti-${sel?'minus':'plus'}" style="font-size:10px;" aria-hidden="true"></i> ${sel?'Remove from selection':'Add to selection'}
          </button>`
+          :''
       }
     </div>`;
   panel.classList.add('open');
@@ -746,10 +776,12 @@ function _laResolveStageFromMetric(metricName){
 }
 
 function laSendToStoryCanvas(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!productLeakAnalysis||!productLeakAnalysis.length)return;
   // Build run lookup map for efficient resolution
   var runsById=new Map(productLeakAnalysis.map(function(r){return[r.runId,r];}));
   var added=0;
+  var _laSentFids=[];
 
   for(var key of leakSelectedIds){
     var parsed=laParseSelectedExperimentKey(key);
@@ -763,6 +795,7 @@ function laSendToStoryCanvas(){
     var linkedMetric=exp.linkedMetricName||'Unknown Metric';
     var capLabel='Diagnostic Experiments — '+linkedMetric;
     var fid=scMakeFeatureId(linkedMetric,capLabel+':'+parsed.runId,exp.experimentTitle||'');
+    _laSentFids.push(fid);
     if(!scCanvas.some(function(f){return f.id===fid;})){
       var sm=exp.successMetric||{};
       var successCtx=sm.metricName?(sm.metricName+(sm.currentValue?' ('+sm.currentValue+'→'+(sm.targetValue||'target')+')':'')):'';
@@ -781,7 +814,7 @@ function laSendToStoryCanvas(){
       var capStoreKey='diag||'+linkedMetric;
       if(!capStore[capStoreKey]){
         capStore[capStoreKey]={
-          metricName:linkedMetric,stageLabel:'Product Diagnostics',stageId:'diag',_diagCap:true,
+          metricName:linkedMetric,stageLabel:'Experiment Canvas',stageId:'diag',_diagCap:true,
           capabilities:[{name:capLabel,why:(run.problemStatement||'Diagnostic experiments linked to '+linkedMetric),
             subCaps:null,featStore:{top:[]}}]
         };
@@ -792,7 +825,7 @@ function laSendToStoryCanvas(){
       var featTop=capEntry.capabilities[0].featStore.top;
       if(!featTop.some(function(x){return x.name===(exp.experimentTitle||'');})){
         featTop.push({name:exp.experimentTitle||'',why:exp.hypothesis||exp.description||'',
-          selected:false,metric:linkedMetric,stage:'Product Diagnostics',cap:capLabel,_diagSent:true});
+          selected:false,metric:linkedMetric,stage:'Experiment Canvas',cap:capLabel,_diagSent:true});
       }
     }
     laMarkSent(parsed.runId,parsed.idx);
@@ -821,7 +854,15 @@ function laSendToStoryCanvas(){
     laUpdateSentCounter();
     laUpdateSendBtn();
     laShowSentConfirmation(added);
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      // v8.147 fix: confirmed missing entirely — a third file (besides CC
+      // and Feature Canvas itself) writing new feature entries directly
+      // to scCanvas. Same coarse target shape as CC's own send action.
+      sessionStoreSave(_activeSessionId).then(function(ok){
+        if(!ok||typeof _lsMarkManualEdit!=='function')return;
+        _laSentFids.forEach(function(fid){ _lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+      });
+    }
   }
 }
 

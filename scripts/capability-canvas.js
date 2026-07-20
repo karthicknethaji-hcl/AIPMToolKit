@@ -16,7 +16,6 @@ function ccSetCapFilter(val){
   else{ccCapFilter.add(val);}
   ccSelectedCapIds.clear(); // selection is view-scoped — same convention as FC's fcSetStoriesFilter, prevents now-hidden capabilities from feeding ccGenerateFeaturesForSelected
   if(capActiveMetricKey===null)ccRenderAllCaps();
-  else if(capActiveMetricKey.startsWith('pi||'))ccRenderPICapView();
   else ccRenderMainContent();
   // Re-open dropdown after re-render (checkbox selections should keep it open)
   if(_dropWasOpen){
@@ -40,6 +39,10 @@ function ccToggleGroup(metricKey){
 // "Single capability" (existing modal) and "Upload from file" (new, B3-B5).
 // btnClass: 'cc-tb-btn-add' (toolbar) or 'cc-ghost-btn' (empty-state variant)
 function ccAddCapBtnHTML(btnClass,btnStyle){
+  // v9.08: gated at the single definition point rather than at each call
+  // site — this function is called from both the toolbar and the
+  // empty-state variant, so hiding it here covers both automatically.
+  if(typeof canEditSession==='function'&&!canEditSession())return'';
   const cls=btnClass||'cc-tb-btn-add';
   const style=btnStyle||'';
   return `<div class="cc-addcap-wrap" style="position:relative;">
@@ -124,7 +127,12 @@ function ccGetAllL1Metrics(){
   if(gData){
     gData.stages.forEach(st=>{
       st.l1_metrics.forEach(m=>{
-        out.push({stageId:st.id,stageLabel:st.label,metricName:m.name,metricKey:ccMetricKey(st.id,m.name)});
+        // v9.06.02: bucketId included for pi-stage entries — the render
+        // loop needs it to synthesize a virtual "entry" by merging every
+        // capStore['pi||'+capName] key sharing this bucketId (a bucket
+        // maps to MANY capStore keys, one per capability, unlike ordinary
+        // metrics where metricKey IS the capStore key directly).
+        out.push({stageId:st.id,stageLabel:st.label,metricName:m.name,metricKey:ccMetricKey(st.id,m.name),bucketId:m.bucketId});
       });
     });
   }
@@ -132,7 +140,7 @@ function ccGetAllL1Metrics(){
   Object.keys(capStore).filter(k=>k.startsWith('pi||')).forEach(k=>{
     const entry=capStore[k];
     if(entry&&!out.find(m=>m.metricKey===k)){
-      out.push({stageId:'pi',stageLabel:'PI Plan',metricName:entry.metricName,metricKey:k});
+      out.push({stageId:'pi',stageLabel:(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage'),metricName:entry.metricName,metricKey:k,bucketId:entry.bucketId});
     }
   });
   return out;
@@ -141,6 +149,27 @@ function ccGetAllL1Metrics(){
 function ccCountGenerated(){
   // Exclude mi|| and diag|| entries — these are injected from MI/PD sends, not CC-generated
   return Object.keys(capStore).filter(k=>!k.startsWith('mi||')&&!k.startsWith('diag||')).length;
+}
+
+// ── FIX 2.1 (v9.03): Migration for old sessions with removed prev-pi type ──
+function ccMigrateLegacyPIInputs(piInputs){
+  // Safety: does NOT clear imported data, only normalizes type value
+  if(!piInputs)return;
+  
+  // Whitelist of allowed types
+  var allowedTypes={
+    'caps-only':true,
+    'caps-features':true
+    // 'prev-pi' deliberately absent — removed feature
+  };
+  
+  // If type is not allowed, normalize to default
+  if(!allowedTypes[piInputs.type]){
+    console.warn('[CC] Normalizing legacy piInputs.type from "'+piInputs.type+'" to "caps-only"');
+    piInputs.type='caps-only';
+    // CRITICAL: Do NOT clear parsedCaps, parsedFeatures, or any imported work
+    // Migration is ONLY about the removed UI option, not data loss
+  }
 }
 
 // ── Tab switch entry point (called from api.js switchTab) ──
@@ -161,10 +190,12 @@ function ccOnTabEnter(){
   const done=ccCountGenerated(); // KPI/PI caps only — used by ccOpenMetricNav remaining count
   // Stricter guard: capActiveMetricKey must point to an entry with actual capabilities
   // Avoids routing to KPI metric view when only injected caps (mi||/diag||) exist
-  const activeEntryHasCaps=capActiveMetricKey&&
-    capStore[capActiveMetricKey]&&
-    Array.isArray(capStore[capActiveMetricKey].capabilities)&&
-    capStore[capActiveMetricKey].capabilities.length>0;
+  // v9.06.02: uses the shared resolver so a bucket:<id> selection is
+  // correctly recognized as valid — a direct capStore[capActiveMetricKey]
+  // check would always be undefined for a bucket tag, incorrectly
+  // treating a legitimate bucket selection as stale and clearing it.
+  const _activeGroup=typeof ccResolveCapGroup==='function'?ccResolveCapGroup(capActiveMetricKey):null;
+  const activeEntryHasCaps=capActiveMetricKey&&_activeGroup&&_activeGroup.cards.length>0;
   if(hasAnyCaps&&activeEntryHasCaps){ccOpenNavigator();return;}
   if(hasAnyCaps){
     // Clear stale active metric state so ccOpenMetricNav routes to ccRenderAllCaps
@@ -193,9 +224,10 @@ function ccEnter(){ccOnTabEnter();}
 function ccShowDualEntry(){
   const el=document.getElementById('cc-main');
   if(!el)return;
+  const _isCap=typeof gData!=='undefined'&&gData&&gData.approach==='capability-based';
   el.innerHTML=`<div class="cc-empty-wrap">
     <div class="cc-empty-icon"><i class="ti ti-layers-subtract" aria-hidden="true"></i></div>
-    <div class="cc-empty-title" style="font-family:var(--font);font-size:22px;">Capability Canvas</div>
+    <div class="cc-empty-title" style="font-family:var(--font);font-size:22px;">${_isCap?'Process Areas':'Capability Canvas'}</div>
     <div class="cc-empty-sub">Map every capability your product needs. Start from your KPI metrics, or paste a plan you already have.</div>
     <div class="cc-dual-entry">
       <div class="cc-entry-card">
@@ -323,17 +355,73 @@ function ccRenderGenerateOneError(mainArea,err,retryArgs){
   }
 }
 
-async function ccGenerateOne(metricKey,metricName,stageLabel,stageId){
+async function ccGenerateOne(metricKey,metricName,stageLabel,stageId,triggerEl){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const key=getKey();
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
+  // v8.133 fix (item 3): courtesy pre-check, for consistency with the
+  // other four canvases.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   const safeKey=metricKey.replace(/[^a-z0-9]/gi,'_');
   const expEl=document.getElementById('ccexp-'+safeKey);
   const refinement=document.getElementById('ccinput-'+safeKey)?document.getElementById('ccinput-'+safeKey).value.trim():'';
-  // Show loader in main area (Fix 7)
-  const mainArea=document.getElementById('cc-main-area');
-  if(mainArea){
-    const stageColor=ccStageColor(stageId||'');
-    mainArea.innerHTML=`<div style="display:flex;flex:1;overflow:hidden;min-height:0;">
+  // Phase 5 (v8.117): immediate visual acknowledgment on click — disable
+  // the button synchronously, before ANY async work (including the lock
+  // check) starts. Confirmed via UI/UX review as the right pattern here:
+  // a lock-check RPC round-trip is a real network delay, not instant, and
+  // showing nothing at all until it resolves reads as broken/unresponsive.
+  // The RICH loader ("Generating Capabilities...") is deliberately NOT
+  // shown yet — that only appears once the lock is actually confirmed
+  // acquired (inside withGenerationLock's callback below), since showing
+  // it earlier would misleadingly claim generation started when the app
+  // is still only checking whether it's ALLOWED to start.
+  //
+  // Phase 5 fix (v8.118): the disable above only ever reached the GLOBAL
+  // "Generate for All Metrics" button — never the actual empty-state
+  // "Generate Capabilities" button the user visibly clicked (confirmed via
+  // live testing: clicking it showed no immediate feedback at all during
+  // the lock-check delay, leading to a double-click and a confusing "still
+  // running in this tab" toast). That button has no unique ID (a shared
+  // .gen-btn class used generically across the app), so the fix is to pass
+  // the clicked element itself via `this` at the call site and disable it
+  // directly here — works regardless of which markup renders it.
+  ccSetGenAllBtnDisabled(true);
+  if(triggerEl&&typeof triggerEl==='object'&&triggerEl.disabled!==undefined){
+    triggerEl.disabled=true;
+  }
+  if(expEl){expEl.style.display='none';}
+  const _ctx1=getFullProductCtx();
+  _ctx1.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
+  const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
+  const _capInfo1=ccFindMetricInGData(metricKey);
+  const capDescription1=_capInfo1&&_capInfo1.why?_capInfo1.why:'';
+  const _docGrounded1=String(_ctx1.docContext||'').trim().length>0;
+
+  // Phase 5 (v8.117): a unique attempt marker for THIS call, created here
+  // and threaded through every later write. Found via adversarial review:
+  // a bare "re-query by element ID, then overwrite" fix for the stuck-
+  // loader bug is unsafe in this no-virtual-DOM app — a slow, stale
+  // attempt (e.g. this exact call, failing late) can otherwise clobber
+  // whatever the user is CURRENTLY looking at (a different metric they've
+  // since navigated to), or clobber a NEWER, already-succeeded attempt on
+  // this same metric. Every write below checks getIfCurrentAttempt() first
+  // and silently skips itself if something newer has already replaced the
+  // content this attempt was writing into.
+  const _attempt=newGenAttempt();
+
+  try{
+    await withGenerationLock(async (_lock) => {
+  try{
+    // Lock confirmed acquired — NOW show the real loader, marker-stamped.
+    const mainArea=document.getElementById('cc-main-area');
+    if(mainArea){
+      mainArea.innerHTML=markGenAttempt(_attempt,`<div style="display:flex;flex:1;overflow:hidden;min-height:0;">
       <div class="cc-cap-grid-wrap">
         <div class="cc-cap-grid-hdr">
           <div>
@@ -348,25 +436,15 @@ async function ccGenerateOne(metricKey,metricName,stageLabel,stageId){
           <div class="load-sub">${(gData&&gData.approach==='capability-based')?'Identifying capabilities under '+e(metricName):'Mapping product capabilities that drive '+e(metricName)}</div>
         </div>
       </div>
-    </div>`;
-  }
-  // Show inline loading state on the row
-  const safeKeyL=metricKey.replace(/[^a-z0-9]/gi,'_');
-  const rowEl=document.getElementById('ccrow-'+safeKeyL);
-  if(rowEl){
-    rowEl.querySelector('.cc-metric-status').innerHTML=`<span style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--color-text-secondary);"><div class="cc-spin-sm"></div> Generating...</span>`;
-  }
-  if(expEl){expEl.style.display='none';}
-  const _ctx1=getFullProductCtx();
-  _ctx1.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
-  const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
-  const _capInfo1=ccFindMetricInGData(metricKey);
-  const capDescription1=_capInfo1&&_capInfo1.why?_capInfo1.why:'';
-  const _docGrounded1=String(_ctx1.docContext||'').trim().length>0;
+    </div>`);
+    }
+    const rowEl=document.getElementById('ccrow-'+safeKey);
+    if(rowEl){
+      var _statusEl=rowEl.querySelector('.cc-metric-status');
+      if(_statusEl)_statusEl.innerHTML=markGenAttempt(_attempt,`<span style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--color-text-secondary);"><div class="cc-spin-sm"></div> Generating...</span>`);
+    }
 
-  try{
     const _signal=startAiGen(`Capabilities for "${metricName}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`);
-    ccSetGenAllBtnDisabled(true);
     const txt=await callAPI(
       'You are a senior product strategist. Specific, opinionated, product-native. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
       (gData&&gData.approach==='capability-based')
@@ -400,26 +478,66 @@ async function ccGenerateOne(metricKey,metricName,stageLabel,stageId){
     capStoreInvalidated=false;
     ccUpdateTabBadge();
     ccSetGenAllBtnDisabled(false);
-    ccOpenNavigator();
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5 (v8.117): only navigate to the navigator view if THIS
+    // attempt still owns the main area — if the user has since switched
+    // to a different metric, don't yank them back to this one just
+    // because its (now-stale) generation happened to finish.
+    if(getIfCurrentAttempt('cc-main-area',_attempt)){
+      ccOpenNavigator();
+    }
+    // Phase 5: checkpoint immediately before the save.
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      // Phase 2 fix (v8.125): AWAITED, not .then()'d. withGenerationLock
+      // releases the lock as soon as this enclosing callback's promise
+      // resolves — a .then() chain let the release race ahead of (and
+      // usually win against) the emit's own insert, which requires the
+      // session's active_user_id to still be the current holder. Confirmed
+      // live: every emit was being silently rejected by RLS as a result.
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'cc','capabilities_generated',metricKey,null);
+      }
+      // Item 2: this metric's capability list was just regenerated — clear
+      // any pending manual-edit target for it (whole-list AND any narrower
+      // feature-level targets under it), no pause step needed since CC's
+      // own generation isn't destructive across the whole canvas the way a
+      // full plan/DM regeneration is.
+      if(typeof _lsClearManualEditAfterRegeneration==='function')_lsClearManualEditAfterRegeneration('cc',metricKey+_LS_CC_TARGET_SEP);
+    }
     endAiGen();
   }catch(err){
     ccSetGenAllBtnDisabled(false);
+    // Phase 5 fix (v8.118): re-enable the specific button the user clicked
+    // too, not just the global batch button — this branch's error state
+    // typically leaves the empty-state view in place (unlike the success
+    // path, which replaces it entirely via ccOpenNavigator/error render,
+    // making the button moot there), so it genuinely needs re-enabling
+    // here for the user to be able to retry via the same button.
+    if(triggerEl&&typeof triggerEl==='object'&&triggerEl.disabled!==undefined){
+      triggerEl.disabled=false;
+    }
     endAiGen();
     if(err.name==='AbortError'){
-      // Abort: user navigated away — re-render nav so row/loader is cleared if still visible
-      if(typeof ccOpenNavigator==='function')ccOpenNavigator();
-      return;
+      // Abort: user navigated away — only re-render nav if this attempt
+      // still owns the main area (per marker check), otherwise leave
+      // whatever the user has since navigated to alone.
+      if(getIfCurrentAttempt('cc-main-area',_attempt)&&typeof ccOpenNavigator==='function')ccOpenNavigator();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1).
+      throw err;
     }
-    // Show error in mainArea — re-query in case DOM shifted during async
-    var _errMainArea=document.getElementById('cc-main-area');
+    // Phase 5 (v8.117): every write below is guarded by getIfCurrentAttempt —
+    // if something newer has already replaced this content (a different
+    // metric selected, or a newer attempt on the SAME metric that already
+    // succeeded), this stale attempt's error must not clobber it.
+    var _errMainArea=getIfCurrentAttempt('cc-main-area',_attempt);
     if(_errMainArea){
       ccRenderGenerateOneError(_errMainArea,err,{metricKey,metricName,stageLabel,stageId});
     }
-    // Restore row status to retry state
-    var _errRowEl=document.getElementById('ccrow-'+safeKey);
-    var _errStatusEl=_errRowEl&&_errRowEl.querySelector('.cc-metric-status');
-    if(_errStatusEl){
+    var _errRowStatusHost=document.getElementById('ccrow-'+safeKey);
+    var _errStatusEl=_errRowStatusHost&&_errRowStatusHost.querySelector('.cc-metric-status');
+    if(_errStatusEl&&_errStatusEl.querySelector('[data-gen-attempt="'+_attempt.id+'"]')){
       _errStatusEl.innerHTML='<button class="gen-btn" type="button" style="font-size:10px;padding:3px 8px;" data-cc-row-retry>'
         +'<i class="ti ti-refresh" style="font-size:10px;" aria-hidden="true"></i> Retry</button>';
       var _rowRetryBtn=_errStatusEl.querySelector('[data-cc-row-retry]');
@@ -429,46 +547,114 @@ async function ccGenerateOne(metricKey,metricName,stageLabel,stageId){
         });
       }
     }
+    if(err.message==='generation_lock_lost'){
+      throw err;
+    }
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 fix (v8.118): REAL BUG found via live testing — this outer
+    // catch fires for a pre-flight lock rejection (exactly the "someone
+    // else is generating" case), and my earlier v8.117 comment's reasoning
+    // was wrong: I assumed this path was moot because "the DOM gets
+    // replaced anyway," based on the INNER catch's behavior (a real
+    // mid-generation failure, which DOES replace #cc-main-area via
+    // ccRenderGenerateOneError). But THIS outer catch never touches
+    // #cc-main-area at all — the original empty-state view, including the
+    // button the user clicked, is still sitting there completely
+    // untouched. Without this re-enable, that button stayed disabled
+    // forever, only recoverable by navigating to a different metric/tab
+    // and re-rendering the view some other way — confirmed exactly this
+    // symptom via live testing, not a hypothetical.
+    ccSetGenAllBtnDisabled(false);
+    if(triggerEl&&typeof triggerEl==='object'&&triggerEl.disabled!==undefined){
+      triggerEl.disabled=false;
+    }
   }
 }
 
 // ── Generate all metrics sequentially ──
 async function ccGenerateAll(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const key=getKey();
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
+  // v8.133 fix (item 3): courtesy pre-check, for consistency with the
+  // other four canvases.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   const metrics=ccGetAllL1Metrics().filter(m=>!capStore[m.metricKey]);
   if(!metrics.length){ccOpenNavigator();return;}
   // Ensure metric nav is open first (preserves cc-nav left panel)
   if(!document.getElementById('cc-main-area'))ccOpenMetricNav();
-  const mainArea=document.getElementById('cc-main-area');
-  if(!mainArea)return;
-  mainArea.innerHTML=`<div class="loading on" style="flex:1;height:100%;">
-    <div class="spin"></div>
-    <div class="load-txt">Generating Capabilities…</div>
-    <div class="load-sub" id="cc-progress-sub">Starting…</div>
-    <div class="load-steps" id="cc-progress-list"></div>
-  </div>`;
+  if(!document.getElementById('cc-main-area'))return;
   const _ctx2=getFullProductCtx();
   _ctx2.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
   const batchDocGrounded=String(_ctx2.docContext||'').trim().length>0;
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
 
-  const _signal=startAiGen(`Capabilities for ${metrics.length} metric${metrics.length!==1?'s':''} are being generated. Leaving now discards this batch, you'll need to start again.`);
+  // Phase 5 (v8.117): immediate button disable, no rich loader until the
+  // lock is confirmed acquired — same rationale as ccGenerateOne() above.
   ccSetGenAllBtnDisabled(true);
+  const _attempt=newGenAttempt();
+
+  // Phase 5: withGenerationLock wraps the ENTIRE batch loop below as ONE
+  // lock acquisition, not one per iteration — splitting it per-iteration
+  // would release the lock between metrics, reopening the exact collision
+  // window this lock exists to close, for a batch that can run for
+  // several minutes across many metrics.
+  try{
+    await withGenerationLock(async (_lock) => {
+
+  const _signal=startAiGen(`Capabilities for ${metrics.length} metric${metrics.length!==1?'s':''} are being generated. Leaving now discards this batch, you'll need to start again.`);
+  // Lock confirmed — now write the real batch loader, marker-stamped.
+  // Every per-iteration progress update below is guarded by re-checking
+  // this same marker via getIfCurrentAttempt() before writing, since the
+  // user can navigate to a different metric/view mid-batch (many other
+  // functions can replace #cc-main-area's content — confirmed via grep,
+  // not assumed), and a stale batch's own progress updates must not
+  // clobber whatever the user has since navigated to.
+  var _mainArea=document.getElementById('cc-main-area');
+  if(_mainArea){
+    _mainArea.innerHTML=markGenAttempt(_attempt,`<div class="loading on" style="flex:1;height:100%;">
+    <div class="spin"></div>
+    <div class="load-txt">Generating Capabilities…</div>
+    <div class="load-sub" id="cc-progress-sub">Starting…</div>
+    <div class="load-steps" id="cc-progress-list"></div>
+  </div>`);
+  }
 
   let i=0;
+  // Phase 2 (v8.123, live sync): tracks which metrics actually got a
+  // capability set generated in this loop, so one content event per metric
+  // can be emitted after the batch's single final save confirms — not one
+  // giant batch event, keeping the event shape identical to ccGenerateOne's
+  // single-metric case for downstream consumers.
+  var _genAllEventMetricKeys=[];
   for(const m of metrics){
     if(!aiGenInFlight.active)break; // aborted via "Leave anyway"
-    const sub=document.getElementById('cc-progress-sub');
-    const list=document.getElementById('cc-progress-list');
-    if(sub)sub.textContent=(gData&&gData.approach==='capability-based')?`Capability ${i+1} of ${metrics.length}: ${m.metricName}`:`Metric ${i+1} of ${metrics.length}: ${m.metricName}`;
-    if(list){
-      const row=document.createElement('div');
-      row.className='cc-progress-row';
-      row.id='ccprow-'+i;
-      row.innerHTML=`<div class="cc-spin-sm" style="flex-shrink:0;"></div><span style="font-size:11px;color:var(--t3);">${e(m.metricName)}</span>`;
-      row.style.cssText='display:flex;align-items:center;gap:8px;';
-      list.appendChild(row);
+    // Re-check the marker each iteration — if the user has navigated away
+    // from this batch's view, stop touching the DOM entirely (but keep
+    // generating and saving to capStore in the background, since the
+    // work itself is still valid, only the on-screen progress display
+    // is no longer relevant to show).
+    var _stillCurrent=!!getIfCurrentAttempt('cc-main-area',_attempt);
+    if(_stillCurrent){
+      const sub=document.getElementById('cc-progress-sub');
+      const list=document.getElementById('cc-progress-list');
+      if(sub)sub.textContent=(gData&&gData.approach==='capability-based')?`Capability ${i+1} of ${metrics.length}: ${m.metricName}`:`Metric ${i+1} of ${metrics.length}: ${m.metricName}`;
+      if(list){
+        const row=document.createElement('div');
+        row.className='cc-progress-row';
+        row.id='ccprow-'+i;
+        row.innerHTML=`<div class="cc-spin-sm" style="flex-shrink:0;"></div><span style="font-size:11px;color:var(--t3);">${e(m.metricName)}</span>`;
+        row.style.cssText='display:flex;align-items:center;gap:8px;';
+        list.appendChild(row);
+      }
     }
     try{
       const _capInfo2=ccFindMetricInGData(m.metricKey);
@@ -500,13 +686,21 @@ async function ccGenerateAll(){
             features:[]
           }))
         };
+        // Phase 2 (v8.123, live sync): only recorded here, inside the
+        // success branch — a metric that failed or returned nothing gets
+        // no event, matching what actually happened.
+        _genAllEventMetricKeys.push(m.metricKey);
       }
-      const row=document.getElementById('ccprow-'+i);
-      if(row)row.innerHTML=`<i class="ti ti-check" style="color:var(--green);font-size:12px;" aria-hidden="true"></i><span style="color:var(--t2);">${e(m.metricName)}</span>`;
+      if(getIfCurrentAttempt('cc-main-area',_attempt)){
+        const row=document.getElementById('ccprow-'+i);
+        if(row)row.innerHTML=`<i class="ti ti-check" style="color:var(--green);font-size:12px;" aria-hidden="true"></i><span style="color:var(--t2);">${e(m.metricName)}</span>`;
+      }
     }catch(err){
       if(err.name==='AbortError')break;
-      const row=document.getElementById('ccprow-'+i);
-      if(row)row.innerHTML=`<i class="ti ti-x" style="color:var(--red);font-size:12px;" aria-hidden="true"></i><span style="color:var(--red);">${e(m.metricName)} — failed</span>`;
+      if(getIfCurrentAttempt('cc-main-area',_attempt)){
+        const row=document.getElementById('ccprow-'+i);
+        if(row)row.innerHTML=`<i class="ti ti-x" style="color:var(--red);font-size:12px;" aria-hidden="true"></i><span style="color:var(--red);">${e(m.metricName)} — failed</span>`;
+      }
     }
     i++;
   }
@@ -514,9 +708,46 @@ async function ccGenerateAll(){
   ccSetGenAllBtnDisabled(false);
   capStoreInvalidated=false;
   ccUpdateTabBadge();
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
-  // Auto-open navigator after generation
-  setTimeout(()=>ccOpenNavigator(),600);
+  // Phase 5: checkpoint before the batch's final save. If the lock was
+  // lost partway through the batch, whatever was generated so far is
+  // discarded rather than saved — the person sees a toast and can retry;
+  // this matches the same "don't persist under an uncertain lock" rule
+  // used everywhere else, just applied once at the end of a batch instead
+  // of per-iteration (per-iteration checkpoints would abandon an
+  // otherwise-successful batch over a transient mid-batch heartbeat blip,
+  // which is a worse trade for a multi-minute operation than checking once
+  // at the natural save point).
+  _lock.throwIfLost();
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    var _sessIdForEvent=_activeSessionId;
+    var _metricKeysForEvent=_genAllEventMetricKeys.slice();
+    // Phase 2 fix (v8.125): awaited, not .then()'d — see ccGenerateOne's
+    // matching fix for the full explanation of the lock-release race this
+    // closes. Promise.all here since a batch can emit several events.
+    const _ok=await sessionStoreSave(_sessIdForEvent);
+    if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+      await Promise.all(_metricKeysForEvent.map(function(mk){
+        return _lsEmitContentEvent(_sessIdForEvent,'cc','capabilities_generated',mk,null);
+      }));
+    }
+  }
+  // Auto-open navigator after generation — only if this attempt still
+  // owns the view; don't yank the user back if they've navigated away.
+  if(getIfCurrentAttempt('cc-main-area',_attempt)){
+    setTimeout(()=>ccOpenNavigator(),600);
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 (v8.117): since the batch loader is only ever written INSIDE
+    // the lock callback now (after acquisition is confirmed), a pre-flight
+    // rejection never wrote anything to the DOM in the first place —
+    // nothing to clean up there. A rethrown lock_lost from the checkpoint
+    // already left whatever progress rows were showing (marker-guarded
+    // writes above already stopped touching the DOM once this attempt
+    // was superseded, if that ever happened). Button/flag reset only.
+    ccSetGenAllBtnDisabled(false);
+    endAiGen();
+  }
 }
 
 // ── View a metric from partial list ──
@@ -556,7 +787,7 @@ function ccOpenMetricNav(){
   },0);
   const allActive=capActiveMetricKey===null&&hasAnyCaps;
   // All capabilities item — badge shows total FEATURE count (same unit as cap node badges)
-  let navHtml=hasAnyCaps?`<div class="cc-nav-all${allActive?' active':''}" onclick="ccMNSelectAll()">
+  let navHtml=hasAnyCaps?`<div class="cc-nav-all${allActive?' active':''}" onclick="ccMNSelectAll()" data-metric-key="__all__">
     <i class="ti ti-layout-grid" style="font-size:11px;" aria-hidden="true"></i>
     <span class="cc-nav-all-text">All Capabilities</span>
     <span class="cc-nav-count${allActive?' active':''}">${totalCaps}</span>
@@ -575,26 +806,43 @@ function ccOpenMetricNav(){
       const isMetricActive=capActiveMetricKey===m.metricKey||(injectedKey&&capActiveMetricKey===injectedKey);
       const _metricCapCount=capCount;
       const _isMetricActive=isMetricActive;
-      navHtml+=`<div class="cc-nav-metric cc-nav-metric-clickable${_isMetricActive?' cc-nav-metric-active':''}" onclick="ccMNSelectMetric('${e(m.metricKey)}')" title="${isDone?'View capabilities':'Click to generate capabilities'}">${e(m.metricName)}${isDone?`<span class="cc-nav-count">${_metricCapCount}</span>`:''}</div>`;
+      navHtml+=`<div class="cc-nav-metric cc-nav-metric-clickable${_isMetricActive?' cc-nav-metric-active':''}" onclick="ccMNSelectMetric('${e(m.metricKey)}')" title="${isDone?'View capabilities':'Click to generate capabilities'}" data-metric-key="${e(m.metricKey)}">${e(m.metricName)}${isDone?`<span class="cc-nav-count">${_metricCapCount}</span>`:''}</div>`;
     });
   });
   // Combined nav: always show KPI metrics + Custom Capabilities if pi|| keys exist
   const isPIFirst=(typeof piMode!=='undefined'&&piMode)||(typeof piFirstBuilt!=='undefined'&&piFirstBuilt);
   const piKeys=Object.keys(capStore).filter(k=>k.startsWith('pi||'));
   const hasPICaps=piKeys.length>0;
+  // v9.05 fix: previously this rendered ONE combined nav row for ALL pi||
+  // capabilities regardless of how many distinct custom process areas/
+  // metrics actually existed (bucketId was introduced for the main content
+  // area's grouping but this sidebar was never updated to match) — causing
+  // a visible mismatch immediately after adding a capability to a NEW
+  // bucket (sidebar showed 1 combined row, main area showed 2+ separate
+  // bucket groups) until an unrelated full re-render happened to paper
+  // over it. Now renders one row per distinct bucketId, exactly mirroring
+  // ccRenderAllCaps()'s/ccRenderPICapView()'s own grouping.
+  const _piBucketNavGroups={};
+  piKeys.forEach(k=>{
+    const entry=capStore[k];
+    if(!entry)return;
+    const _bId=entry.bucketId||(typeof PI_BUCKET_LEGACY_ID!=='undefined'?PI_BUCKET_LEGACY_ID:'__legacy_unbucketed__');
+    if(!_piBucketNavGroups[_bId])_piBucketNavGroups[_bId]={bucketId:_bId,metricName:entry.metricName||'Custom Process Area',keys:[],capCount:0};
+    _piBucketNavGroups[_bId].keys.push(k);
+    _piBucketNavGroups[_bId].capCount+=(entry.capabilities||[]).length;
+  });
   const piTotalCaps=piKeys.reduce((a,k)=>a+(capStore[k].capabilities?capStore[k].capabilities.length:0),0);
   // Combined nav: KPI nav + PI Plan section (if PI caps exist) + Market Intelligence section (if mi|| caps exist)
   let leftNavContent=navHtml||'';
   if(hasPICaps){
-    const piMetricActive=piKeys.some(k=>capActiveMetricKey===k);
     leftNavContent+=`<div class="cc-nav-stage">
       <div class="cc-nav-stage-bar" style="background:var(--green);"></div>
-      <span class="cc-nav-stage-lbl" style="color:var(--green);">PI Plan</span>
-    </div>
-    <div class="cc-nav-metric cc-nav-metric-clickable${piMetricActive?' cc-nav-metric-active':''}" onclick="ccMNSelectPIAll()" title="View custom capabilities">Custom Capabilities${piTotalCaps>0?`<span class="cc-nav-count">${piTotalCaps}</span>`:''}</div>
-    <div style="padding:4px 12px 2px;">
-      <button class="cc-pi-ctx-edit-btn" onclick="ccEditCustomPlan()"><i class="ti ti-edit" style="font-size:10px;" aria-hidden="true"></i> Edit Custom Plan</button>
+      <span class="cc-nav-stage-lbl" style="color:var(--green);">${e(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage')}</span>
     </div>`;
+    Object.values(_piBucketNavGroups).forEach(bucketGroup=>{
+      const _bucketActive=capActiveMetricKey===('bucket:'+bucketGroup.bucketId);
+      leftNavContent+=`<div class="cc-nav-metric cc-nav-metric-clickable${_bucketActive?' cc-nav-metric-active':''}" onclick="ccMNSelectPIBucket('${e(bucketGroup.bucketId)}')" title="View this custom process area">${e(bucketGroup.metricName)}${bucketGroup.capCount>0?`<span class="cc-nav-count">${bucketGroup.capCount}</span>`:''}</div>`;
+    });
   }
   // Market Intelligence section — single mi||capabilities key, one "MI Capabilities" nav item
   const miEntry=capStore['mi||capabilities'];
@@ -618,8 +866,8 @@ function ccOpenMetricNav(){
       <div class="cc-nav${_wasCollapsed?' collapsed':''}" id="cc-nav">
         <div class="ph" style="flex-shrink:0;">
           <div class="ph-text">
-            <div class="ph-title">Capability Canvas</div>
-            <div class="ph-sub">Map capabilities across your product</div>
+            <div class="ph-title">${(typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Process Areas':'Outcome Metrics'}</div>
+            <div class="ph-sub">${(typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Align capabilities across the process areas':'Align capabilities across the KPIs'}</div>
           </div>
           <button class="collapse-btn" onclick="ccToggleNav()" title="${_wasCollapsed?'Expand panel':'Collapse panel'}">
             ${_wasCollapsed
@@ -663,14 +911,18 @@ function ccMNSelectAll(){
   ccOpenMetricNav(); // ccOpenMetricNav calls ccRenderAllCaps when capActiveMetricKey=null
 }
 
-function ccMNSelectPIAll(){
-  // Select first PI key — ccRenderPICapView shows all PI caps grouped together
-  const piKeys=Object.keys(capStore).filter(k=>k.startsWith('pi||'));
-  if(!piKeys.length)return;
-  capActiveMetricKey=piKeys[0];
+// v9.06.02: replaces the old ccMNSelectPIAll(), which always showed ALL
+// pi buckets combined regardless of which one was clicked — inconsistent
+// with the established, correct behavior for AI-generated process areas
+// (clicking one shows only that one). Now takes a specific bucketId and
+// sets the bucket:<id> tagged selection, routed through the same
+// ccRenderMainContent() used for KPI-linked metrics.
+function ccMNSelectPIBucket(bucketId){
+  if(!bucketId)return;
+  capActiveMetricKey='bucket:'+bucketId;
   capActiveCapIdx=null;capActiveSubCapIdx=null;
   ccOpenMetricNav();
-  ccRenderPICapView();
+  ccRenderMainContent();
 }
 
 function ccMNSelectCap(metricKey,capIdx){
@@ -678,12 +930,10 @@ function ccMNSelectCap(metricKey,capIdx){
   capActiveCapIdx=capIdx;
   capActiveSubCapIdx=null;
   ccOpenMetricNav();
-  // PI keys → sequential PI cap view; KPI keys → metric view
-  if(metricKey&&metricKey.startsWith('pi||')&&typeof piMode!=='undefined'&&piMode){
-    ccRenderPICapView();
-  } else {
-    ccRenderMainContent();
-  }
+  // v9.06.02: ccRenderPICapView() removed — Custom Value Stage buckets
+  // are now selected via ccMNSelectPIBucket() (bucket:<id> tagged
+  // selection), not by passing an individual pi|| capability key here.
+  ccRenderMainContent();
 }
 
 // ── Select a Market Intelligence cap from the MI nav section ──
@@ -710,12 +960,11 @@ function ccMNSelectMetric(metricKey){
   capActiveCapIdx=null;capActiveSubCapIdx=null;
   ccPanelCapKey=null; // close right panel when switching metrics
   ccSelectedCapIds.clear(); // selection is view-scoped — same convention as FC's scSetCapFilter/fcSetStoriesFilter/fcClearFilter, prevents stale cross-metric selections feeding ccGenerateFeaturesForSelected
-  // If PI key selected and Path B active, show all PI caps together
-  if(metricKey&&metricKey.startsWith('pi||')&&typeof piMode!=='undefined'&&piMode){
-    ccOpenMetricNav();
-    ccRenderPICapView();
-    return;
-  }
+  // v9.06.02: removed unreachable pi|| branch that called ccRenderPICapView()
+  // — this function's only caller (the KPI-metrics nav loop) explicitly
+  // filters out pi|| keys before ever invoking this, confirmed via
+  // grep. Custom Value Stage buckets are now selected via the separate
+  // ccMNSelectPIBucket() function, routed through ccRenderMainContent().
   // Always rebuild full layout for reliable rendering
   ccOpenMetricNav();
 }
@@ -823,13 +1072,10 @@ function ccRenderAllCaps(){
     return;
   }
   // v8.56: iterate in DM stage→metric order (matches left nav) instead of capStore insertion order
-  const piCaps=[];
   const miCaps=[];
-  // Collect pi|| and mi|| caps for unified groups at bottom
-  Object.keys(capStore).filter(k=>k.startsWith('pi||')).forEach(mk=>{
-    const entry=capStore[mk];if(!entry)return;
-    (entry.capabilities||[]).forEach((cap,ci)=>{piCaps.push({metricKey:mk,capIdx:ci,cap,entry});});
-  });
+  // Collect mi|| caps for unified group at bottom (pi|| is now handled
+  // directly by the generic per-process-area loop below, via
+  // ccGetAllL1Metrics() — see v9.06.02 note further down)
   Object.keys(capStore).filter(k=>k.startsWith('mi||')).forEach(mk=>{
     const entry=capStore[mk];if(!entry)return;
     (entry.capabilities||[]).forEach((cap,ci)=>{miCaps.push({metricKey:mk,capIdx:ci,cap,entry});});
@@ -838,14 +1084,50 @@ function ccRenderAllCaps(){
   const diagMetrics=[];
   Object.keys(capStore).filter(k=>k.startsWith('diag||')).forEach(mk=>{
     const entry=capStore[mk];
-    if(entry)diagMetrics.push({metricKey:mk,metricName:entry.metricName,stageLabel:entry.stageLabel||'Product Diagnostics',stageId:entry.stageId||'diag',entry});
+    if(entry)diagMetrics.push({metricKey:mk,metricName:entry.metricName,stageLabel:entry.stageLabel||'Experiment Canvas',stageId:entry.stageId||'diag',entry});
   });
-  // Build ordered list: DM metrics first (gData.stages order), then diag
-  const _orderedDMMetrics=ccGetAllL1Metrics().filter(m=>!m.metricKey.startsWith('pi||'));
+  // v9.06.02: Custom Value Stage buckets now render through this SAME
+  // generic per-process-area loop as every other stage — matching the
+  // confirmed reference behavior (one unconditional, standalone header row
+  // per process area, never a special two-level "outer stage wrapper").
+  // ccGetAllL1Metrics() returns one row PER CAPABILITY for pi|| entries
+  // (each capability has its own capStore key) — dedupe down to one row
+  // PER BUCKET (matching the AI-generated case, where one row = one
+  // process area, not one row per capability).
+  const _allL1=ccGetAllL1Metrics();
+  const _seenBucketIds={};
+  const _orderedDMMetrics=_allL1.filter(m=>{
+    if(!m.metricKey.startsWith('pi||'))return true;
+    const bId=m.bucketId||'__legacy_unbucketed__';
+    if(_seenBucketIds[bId])return false;
+    _seenBucketIds[bId]=true;
+    return true;
+  });
   const _allOrderedMetrics=[..._orderedDMMetrics,...diagMetrics];
   let html='<div class="cc-all-caps-wrap">';
-  _allOrderedMetrics.forEach(({metricKey:mk,metricName:_mn,stageLabel,stageId,entry:_e})=>{
-    const entry=_e||capStore[mk];
+  _allOrderedMetrics.forEach(({metricKey:mk,metricName:_mn,stageLabel,stageId,entry:_e,bucketId:_bucketId})=>{
+    // v9.06.02: for pi-stage buckets, synthesize a virtual "entry" by
+    // merging every capStore['pi||'+capName] key sharing this bucketId —
+    // a bucket maps to MANY capStore keys (one per capability), unlike an
+    // ordinary metric where metricKey IS the capStore key directly.
+    let entry=_e||capStore[mk];
+    let _displayMetricKey=mk; // used for onclick handlers below — for pi buckets this must stay a REAL capStore key per-capability, resolved inside the per-cap loop, not this synthetic one
+    if(mk.startsWith('pi||')&&_bucketId){
+      const _mergedCaps=[];
+      Object.keys(capStore).forEach(k=>{
+        const e2=capStore[k];
+        if(e2&&e2.bucketId===_bucketId){
+          (e2.capabilities||[]).forEach((cap,ci)=>{_mergedCaps.push({_realKey:k,_realIdx:ci,cap});});
+        }
+      });
+      entry={
+        metricName:(entry&&entry.metricName)||_mn||'Custom Process Area',
+        stageLabel:(entry&&entry.stageLabel)||stageLabel||'',
+        stageId:'pi',
+        capabilities:_mergedCaps.map(x=>x.cap),
+        _piMergedRefs:_mergedCaps // real {key, idx} pairs, positionally aligned with capabilities[] above
+      };
+    }
     if(!entry)return; // metric not yet generated — skip
     const metricName=entry.metricName||_mn||'';
     const _stageLabel=entry.stageLabel||stageLabel||'';
@@ -882,38 +1164,48 @@ function ccRenderAllCaps(){
         return true;
       });
       if(filteredCaps.length===0)return;
-      const _isCollapsed=ccCollapsedGroups.has(mk);
-      html+=`<div class="cc-all-group-hdr" style="border-left:3px solid ${_stageColor}"><span class="cc-all-stage-pill" style="background:${_stageColor}">${e(_stageLabel)}</span><span class="cc-all-metric-name">${e(metricName)}</span><span class="cc-all-metric-count">${caps.length} cap${caps.length!==1?'s':''}</span><button class="nsc-chevron" onclick="ccToggleGroup('${e(mk)}')" title="${_isCollapsed?'Expand':'Collapse'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${_isCollapsed?'<polyline points="9 18 15 12 9 6"/>':'<polyline points="18 15 12 9 6 15"/>'}</svg></button></div>`;
+      const _groupToggleKey=(mk.startsWith('pi||')&&_bucketId)?('bucket:'+_bucketId):mk;
+      const _isCollapsed=ccCollapsedGroups.has(_groupToggleKey);
+      html+=`<div class="cc-all-group-hdr" style="border-left:3px solid ${_stageColor}"><span class="cc-all-stage-pill" style="background:${_stageColor}">${e(_stageLabel)}</span><span class="cc-all-metric-name">${e(metricName)}</span><span class="cc-all-metric-count">${caps.length} cap${caps.length!==1?'s':''}</span><button class="nsc-chevron" onclick="ccToggleGroup('${e(_groupToggleKey)}')" title="${_isCollapsed?'Expand':'Collapse'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${_isCollapsed?'<polyline points="9 18 15 12 9 6"/>':'<polyline points="18 15 12 9 6 15"/>'}</svg></button></div>`;
       if(_isCollapsed){
         html+=`<div class="nsc-collapsed-hint" style="margin:0 22px;">Capabilities hidden — click ▶ to expand</div>`;
       } else {
         html+=`<div class="cc-cap-cards-grid" style="padding:0 22px 12px;">`;
       filteredCaps.forEach((cap)=>{
         const ci=caps.indexOf(cap);
+        // v9.06.02: for a pi-bucket's MERGED virtual entry, mk/ci above are
+        // synthetic (mk is just the first capability's real key) — each
+        // individual card must resolve to ITS OWN real capStore key+index
+        // via _piMergedRefs, or actions (open panel, edit, remove, select)
+        // would silently operate on the wrong capability.
+        const _realRef=(entry._piMergedRefs&&entry._piMergedRefs[ci])?entry._piMergedRefs[ci]:null;
+        const _cardKey=_realRef?_realRef._realKey:mk;
+        const _cardIdx=_realRef?_realRef._realIdx:ci;
         const features=cap.featStore?cap.featStore.top:null;
         const featCount=features?features.length:0;
         const stageColor=ccStageColor(entry.stageId);
         const _acFeat=cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0;
-        const _acActive=capActiveMetricKey===mk&&capActiveCapIdx===ci;
+        const _acActive=capActiveMetricKey===_cardKey&&capActiveCapIdx===_cardIdx;
         const _acState=_acActive?' cc-cap-card-active':_acFeat?' cc-cap-card-done':'';
-        const _acIsPi=mk.startsWith('pi||');
+        const _acIsPi=_cardKey.startsWith('pi||');
         const _acIsManual=!!(cap._manual);
         const _acOriginIcon=entry._docGrounded?'ti-file-text':(_acIsPi||_acIsManual)?'ti-clipboard-list':'ti-hierarchy-2';
         const _acOriginColor=entry._docGrounded?'var(--orange)':(_acIsPi||_acIsManual)?'var(--green)':'var(--blue)';
-        const _acMetricLbl=_acIsPi?'PI Plan':e(metricName);
-        const _acIsSel=ccSelectedCapIds.has(mk+'|'+ci);
+        const _acMetricLbl=_acIsPi?(entry&&entry.metricName?entry.metricName:'Custom Process Area'):e(metricName);
+        const _acIsSel=ccSelectedCapIds.has(_cardKey+'|'+_cardIdx);
         const _acFeatSelState=ccGetFeatSelState(cap);
         const _acCardState=_acActive?' cc-cap-card-done cc-cap-card-active':_acFeat?' cc-cap-card-done':_acIsSel?' cc-cap-card-sel':'';
-        const _acCardId='cc-cap-'+mk.replace(/[^a-z0-9|]/gi,'_')+'-'+ci;
+        const _acCardId='cc-cap-'+_cardKey.replace(/[^a-z0-9|]/gi,'_')+'-'+_cardIdx;
         const _acChkContent=_acFeat?(_acFeatSelState==='all'?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':_acFeatSelState==='partial'?'<div style=\"width:7px;height:2px;background:#fff;border-radius:1px;\"></div>':''):(_acIsSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':'');
         const _acChkSel=_acFeat?(_acFeatSelState!=='none'):_acIsSel;
-        html+=`<div class="cc-cap-card${_acCardState}" id="${_acCardId}" onclick="ccOpenCapPanel('${e(mk)}',${ci})" style="cursor:pointer;" title="">
+        const _canEditCcCard1=(typeof canEditSession!=='function')||canEditSession();
+        html+=`<div class="cc-cap-card${_acCardState}" id="${_acCardId}" onclick="ccOpenCapPanel('${e(_cardKey)}',${_cardIdx})" style="cursor:pointer;" title="">
           <div class="cc-card-top">
             <span class="cc-card-mlbl">${_acMetricLbl}</span>
             <div class="cc-card-actions">
-              <button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(mk)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
-              <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}" onclick="event.stopPropagation();ccToggleCapSelect('${e(mk)}',${ci})">${_acChkContent}</div>
-              <button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(mk)}',${ci})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>
+              ${_canEditCcCard1?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+              <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard1?'':' cc-card-chk-disabled'}" ${_canEditCcCard1?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_acChkContent}</div>
+              ${_canEditCcCard1?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
             </div>
           </div>
           <div class="cc-cap-card-name-row"><i class="ti ${_acOriginIcon}" style="font-size:10px;color:${_acOriginColor};flex-shrink:0;margin-top:2px;" aria-hidden="true"></i><div class="cc-cap-card-name">${e(cap.name)}</div></div>
@@ -966,13 +1258,14 @@ function ccRenderAllCaps(){
           const _acCardState=_acActive?' cc-cap-card-done cc-cap-card-active':_acFeat?' cc-cap-card-done':_acIsSel?' cc-cap-card-sel':'';
           const _acCardId='cc-cap-'+metricKey.replace(/[^a-z0-9|]/gi,'_')+'-'+ci;
           const _miInFCCount=features?features.filter(f=>{const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';return fid&&scCanvas&&scCanvas.find(x=>x.id===fid);}).length:0;
+          const _canEditCcCard2=(typeof canEditSession!=='function')||canEditSession();
           html+=`<div class="cc-cap-card${_acCardState}" id="${_acCardId}" onclick="ccOpenCapPanel('${e(metricKey)}',${ci})" style="cursor:pointer;" title="">
             <div class="cc-card-top">
               <span class="cc-card-mlbl" style="color:${miColor};">Market Intel</span>
               <div class="cc-card-actions">
-                <button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(metricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
-                <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}" onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})">${_acChkContent}</div>
-                <button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(metricKey)}',${ci})" title="Remove"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                ${_canEditCcCard2?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(metricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+                <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard2?'':' cc-card-chk-disabled'}" ${_canEditCcCard2?`onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})"`:''}>${_acChkContent}</div>
+                ${_canEditCcCard2?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(metricKey)}',${ci})" title="Remove"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`:''}
               </div>
             </div>
             <div class="cc-cap-card-name-row"><i class="ti ti-world-search" style="font-size:10px;color:${miColor};flex-shrink:0;margin-top:2px;" aria-hidden="true"></i><div class="cc-cap-card-name">${e(cap.name)}</div></div>
@@ -986,59 +1279,15 @@ function ccRenderAllCaps(){
       }
     }
   }
-  // Add PI caps as single unified group at bottom
-  if(piCaps.length>0){
-    const filteredPiCaps=piCaps.filter(({metricKey,capIdx:ci,cap})=>{
-      const hasFeat=!!(cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0);
-      const _wWith=ccCapFilter.has('with-features');
-      const _wWithout=ccCapFilter.has('without-features');
-      if(_wWith&&_wWithout)return true;
-      if(_wWith)return hasFeat;
-      if(_wWithout)return !hasFeat;
-      return true;
-    });
-    if(filteredPiCaps.length>0){
-    const _piCollapsed=ccCollapsedGroups.has('pi||custom');
-    html+=`<div class="cc-all-group-hdr" style="border-left:3px solid var(--green)"><span class="cc-all-stage-pill" style="background:var(--green)">PI Plan</span><span class="cc-all-metric-name">Custom Capabilities</span><span class="cc-all-metric-count">${piCaps.length} cap${piCaps.length!==1?'s':''}</span><button class="nsc-chevron" onclick="ccToggleGroup('pi||custom')" title="${_piCollapsed?'Expand':'Collapse'}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${_piCollapsed?'<polyline points="9 18 15 12 9 6"/>':'<polyline points="18 15 12 9 6 15"/>'}</svg></button></div>`;
-    if(_piCollapsed){
-      html+=`<div class="nsc-collapsed-hint" style="margin:0 22px;">Capabilities hidden — click ▶ to expand</div>`;
-    } else {
-    html+=`<div class="cc-cap-cards-grid" style="padding:0 22px 12px;">`;
-    filteredPiCaps.forEach(({metricKey,capIdx:ci,cap,entry})=>{
-      const features=cap.featStore?cap.featStore.top:null;
-      const featCount=features?features.length:0;
-      const _acFeat=!!(features&&featCount>0);
-      const _acActive=capActiveMetricKey===metricKey&&capActiveCapIdx===ci;
-      const _acIsSel=ccSelectedCapIds.has(metricKey+'|'+ci);
-      const _acFeatSelState2=ccGetFeatSelState(cap);
-      const _acChkContent2=_acFeat?(_acFeatSelState2==='all'?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':_acFeatSelState2==='partial'?'<div style=\"width:7px;height:2px;background:#fff;border-radius:1px;\"></div>':''):(_acIsSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':'');
-      const _acChkSel2=_acFeat?(_acFeatSelState2!=='none'):_acIsSel;
-      const _acCardState=_acActive?' cc-cap-card-done cc-cap-card-active':_acFeat?' cc-cap-card-done':_acIsSel?' cc-cap-card-sel':'';
-      const _acCardId='cc-cap-'+metricKey.replace(/[^a-z0-9|]/gi,'_')+'-'+ci;
-      html+=`<div class="cc-cap-card${_acCardState}" id="${_acCardId}" onclick="ccOpenCapPanel('${e(metricKey)}',${ci})" style="cursor:pointer;" title="">
-        <div class="cc-card-top">
-          <span class="cc-card-mlbl" style="color:var(--green);">Custom</span>
-          <div class="cc-card-actions">
-            <button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(metricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
-            <div class="cc-card-chk${_acChkSel2?' cc-card-chk-sel':''}" onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})">${_acChkContent2}</div>
-            <button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(metricKey)}',${ci})" title="Remove"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-          </div>
-        </div>
-        <div class="cc-cap-card-name-row"><i class="ti ti-clipboard-list" style="font-size:10px;color:var(--green);flex-shrink:0;margin-top:2px;" aria-hidden="true"></i><div class="cc-cap-card-name">${e(cap.name)}</div></div>
-        <div class="cc-cap-card-why">${e(cap.why||'')}</div>
-        <div class="cc-cap-card-footer">
-          ${(()=>{
-            const _piInFCCount=features?features.filter(f=>{const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';return fid&&scCanvas&&scCanvas.find(x=>x.id===fid);}).length:0;
-            if(_acFeat)return '<div class="cc-cap-status-done"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg><span class="cc-feat-badge">'+featCount+' feature'+(featCount!==1?'s':'')+'</span></div>'+(_piInFCCount>0?'<div class="cc-feat-insc-tag"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> '+_piInFCCount+' in Feature Canvas</div>':'');
-            return '<div class="cc-cap-status-none"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg> No features yet</div>';
-          })()}
-        </div>
-      </div>`;
-    });
-    if(!_piCollapsed){html+=`</div>`;}
-    } // end else (not collapsed)
-    } // end filteredPiCaps.length>0
-  }
+  // v9.06.02: the redundant hand-rolled "piCaps" special-case block that
+  // used to render here (a two-level "outer stage wrapper + inner bucket
+  // sub-header" structure) has been REMOVED — Custom Value Stage buckets
+  // now render through the SAME generic per-process-area loop above as
+  // every other stage, producing one unconditional, standalone header row
+  // per bucket, exactly matching the confirmed reference behavior for
+  // AI-generated process areas (e.g. "Organic Discovery & Signup Flow"
+  // and "Referral Program Integration" each get their own full header,
+  // never merged under a shared "Acquisition" wrapper).
   // Empty state when filter matches nothing
   const _filterLabels={'without-features':'Without features','with-features':'With features'};
   if(ccCapFilter.size&&!html.includes('cc-cap-card')){
@@ -1118,12 +1367,31 @@ function ccRenderMainContent(){
     const _isCap=gData&&gData.approach==='capability-based';
     el.innerHTML=`<div class="cc-cap-grid-empty">
       <i class="ti ti-layers-subtract" style="font-size:32px;color:var(--label);" aria-hidden="true"></i>
-      <div style="font-size:14px;font-weight:600;color:var(--t2);margin-top:12px;">${_isCap?'Select a parent capability':'Select a metric'}</div>
-      <div style="font-size:12px;color:var(--t3);max-width:280px;line-height:1.5;margin-top:4px;">${_isCap?'Choose a parent capability from the left panel to view its capabilities.':'Choose a metric from the left panel to view its capabilities.'}</div>
+      <div style="font-size:14px;font-weight:600;color:var(--t2);margin-top:12px;">${_isCap?'Select a process area':'Select a metric'}</div>
+      <div style="font-size:12px;color:var(--t3);max-width:280px;line-height:1.5;margin-top:4px;">${_isCap?'Choose a process area from the left panel to view its capabilities.':'Choose a metric from the left panel to view its capabilities.'}</div>
     </div>`;
     return;
   }
-  if(!capStore[capActiveMetricKey]){
+  // v9.06.02: bucket-aware resolution via the shared resolver, checked
+  // BEFORE the "not yet generated" KPI-only empty-state below — a
+  // manually-created custom bucket is never "not yet generated" (it
+  // always exists the moment a capability is added to it), so that
+  // empty-state branch structurally doesn't apply here.
+  const _isBucketSelection=capActiveMetricKey.indexOf('bucket:')===0;
+  let _group=null;
+  if(_isBucketSelection){
+    _group=typeof ccResolveCapGroup==='function'?ccResolveCapGroup(capActiveMetricKey):null;
+    if(!_group){
+      // Bucket is empty/deleted (e.g. last capability just removed by
+      // another action, or a stale selection from before a live-sync
+      // apply) — clear the stale selection and fall back to the empty
+      // "select a process area" state rather than showing broken UI.
+      capActiveMetricKey=null;capActiveCapIdx=null;
+      ccRenderMainContent();
+      return;
+    }
+  }
+  if(!_isBucketSelection&&!capStore[capActiveMetricKey]){
     // Metric selected but not yet generated
     const pendingMetric=ccGetAllL1Metrics().find(m=>m.metricKey===capActiveMetricKey);
     const _isCap=gData&&gData.approach==='capability-based';
@@ -1142,11 +1410,11 @@ function ccRenderMainContent(){
           <i class="ti ti-sparkles" style="font-size:32px;color:var(--label);" aria-hidden="true"></i>
           <div style="font-size:14px;font-weight:600;color:var(--t2);margin-top:12px;">Generate Capabilities</div>
           <div style="font-size:12px;color:var(--t3);max-width:280px;line-height:1.5;margin-top:4px;margin-bottom:16px;">${_isCap?'AI will identify the capabilities that make up <strong>'+e(pendingName)+'</strong>.':'AI will identify the key product capabilities that drive <strong>'+e(pendingName)+'</strong>.'}</div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap;">
-            <button class="gen-btn" style="font-size:11px;padding:8px 16px;width:auto;white-space:nowrap;" onclick="ccGenerateOne('${e(capActiveMetricKey)}','${e(pendingName)}','${e(pendingStage)}','${pendingMetric?e(pendingMetric.stageId):''}','')"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Capabilities</button>
+          ${((typeof canEditSession!=='function')||canEditSession())?`<div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap;">
+            <button class="gen-btn" style="font-size:11px;padding:8px 16px;width:auto;white-space:nowrap;" onclick="ccGenerateOne('${e(capActiveMetricKey)}','${e(pendingName)}','${e(pendingStage)}','${pendingMetric?e(pendingMetric.stageId):''}',this)"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Capabilities</button>
             <button class="cc-ghost-btn" style="font-size:11px;padding:8px 14px;white-space:nowrap;" onclick="ccGenerateAll()"><i class="ti ti-table" style="font-size:10px;" aria-hidden="true"></i> ${_isCap?'Generate for All Capabilities':'Generate for All Metrics'}</button>
             ${ccAddCapBtnHTML('cc-ghost-btn','font-size:11px;padding:8px 14px;white-space:nowrap;')}
-          </div>
+          </div>`:`<div style="font-size:11px;color:var(--label);font-style:italic;">No capabilities have been generated yet for this ${_isCap?'capability':'metric'}.</div>`}
         </div>
         <div class="cc-bottom-bar">
           <input type="text" class="cc-bottom-refine" placeholder="Refine or regenerate capabilities…" disabled style="opacity:0.4;cursor:not-allowed;">
@@ -1156,20 +1424,36 @@ function ccRenderMainContent(){
     </div>`;
     return;
   }
-  const entry=capStore[capActiveMetricKey];
+  // v9.06.02: for a bucket selection, entry/caps are the MERGED virtual
+  // view from the resolver — caps[] here is used ONLY for counting/
+  // iteration structure below; every per-card ACTION uses the resolved
+  // real key/idx from _group.cards[i], never capActiveMetricKey+ci
+  // directly, since those would be synthetic/wrong for a merged bucket.
+  const entry=_isBucketSelection
+    ?{metricName:_group.groupLabel,stageLabel:_group.stageLabel,stageId:_group.stageId,capabilities:_group.cards.map(c=>c.cap),_piMergedCards:_group.cards}
+    :capStore[capActiveMetricKey];
   const caps=entry.capabilities||[];
-  const isPIFirst=!!(entry._piFirst);
+  const isPIFirst=!!(entry._piFirst)||_isBucketSelection;
   const stageLabel=entry.stageLabel||'';
   const metricName=entry.metricName||'';
   // Build capability cards
   let cardsHtml='';
   caps.forEach((cap,ci)=>{
+    // v9.06.02: for a bucket selection, ci is an index into the MERGED
+    // virtual capabilities[] array — each card must resolve its OWN
+    // real capStore key + index (via entry._piMergedCards, positionally
+    // aligned) for every action. Using capActiveMetricKey+ci directly
+    // here (as the old code did) would misidentify/corrupt the wrong
+    // capability for any card past the first one in a merged bucket.
+    const _realRef=_isBucketSelection&&entry._piMergedCards&&entry._piMergedCards[ci]?entry._piMergedCards[ci]:null;
+    const _cardKey=_realRef?_realRef.realKey:capActiveMetricKey;
+    const _cardIdx=_realRef?_realRef.realIdx:ci;
     const featKey='top';
     const features=cap.featStore?cap.featStore[featKey]:null;
     const featCount=features?features.length:0;
     const selectedCount=features?features.filter(f=>f.selected).length:0;
     const isFromPlan=isPIFirst&&features&&features.length>0;
-    const _capKey=capActiveMetricKey+'|'+ci;
+    const _capKey=_cardKey+'|'+_cardIdx;
     const _hasFeat=!!(features&&featCount>0);
     const _isSel=ccSelectedCapIds.has(_capKey);
     const _isPanelOpen=ccPanelCapKey===_capKey;
@@ -1180,7 +1464,7 @@ function ccRenderMainContent(){
     if(_isPanelOpen)_cardState=' cc-cap-card-done cc-cap-card-active';
     const _originIcon=entry._docGrounded?'ti-file-text':(isPIFirst||cap._manual)?'ti-clipboard-list':'ti-hierarchy-2';
     const _originColor=entry._docGrounded?'var(--orange)':(isPIFirst||cap._manual)?'var(--green)':'var(--blue)';
-    const _metricLbl=isPIFirst?'PI Plan':e(metricName);
+    const _metricLbl=isPIFirst?(entry&&entry.metricName?entry.metricName:'Custom Process Area'):e(metricName);
     // Card click: open panel (has features) or toast (no features). Checkbox handles selection only.
     const _featSelState3=ccGetFeatSelState(cap);
     const _chkContent3=_hasFeat?(_featSelState3==='all'?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':_featSelState3==='partial'?'<div style=\"width:7px;height:2px;background:#fff;border-radius:1px;\"></div>':''):(_isSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':'');
@@ -1190,13 +1474,14 @@ function ccRenderMainContent(){
       const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';
       return fid&&scCanvas&&scCanvas.find(x=>x.id===fid);
     }).length:0;
-    cardsHtml+=`<div class="cc-cap-card${_cardState}" id="cc-cap-${capActiveMetricKey.replace(/[^a-z0-9|]/gi,'_')}-${ci}" onclick="ccOpenCapPanel('${e(capActiveMetricKey)}',${ci})" style="cursor:pointer;" title="">
+    const _canEditCcCard3=(typeof canEditSession!=='function')||canEditSession();
+    cardsHtml+=`<div class="cc-cap-card${_cardState}" id="cc-cap-${_cardKey.replace(/[^a-z0-9|]/gi,'_')}-${_cardIdx}" onclick="ccOpenCapPanel('${e(_cardKey)}',${_cardIdx})" style="cursor:pointer;" title="">
       <div class="cc-card-top">
         <span class="cc-card-mlbl">${_metricLbl}</span>
         <div class="cc-card-actions">
-          <button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(capActiveMetricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
-          <div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}" onclick="event.stopPropagation();ccToggleCapSelect('${e(capActiveMetricKey)}',${ci})">${_chkContent3}</div>
-          <button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(capActiveMetricKey)}',${ci})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>
+          ${_canEditCcCard3?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+          <div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}${_canEditCcCard3?'':' cc-card-chk-disabled'}" ${_canEditCcCard3?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_chkContent3}</div>
+          ${_canEditCcCard3?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
         </div>
       </div>
       <div class="cc-cap-card-name-row"><i class="ti ${_originIcon}" style="font-size:10px;color:${_originColor};flex-shrink:0;margin-top:2px;" aria-hidden="true"></i><div class="cc-cap-card-name">${e(cap.name)}</div></div>
@@ -1212,14 +1497,26 @@ function ccRenderMainContent(){
     </div>`;
   });
   // Right panel — only open when ccPanelCapKey set (explicit done-card click)
+  // v9.06.02: for a bucket selection, ccPanelCapKey holds a REAL capStore
+  // key (set by ccOpenCapPanel() using the resolved _cardKey/_cardIdx —
+  // see the card loop above), which will never equal capActiveMetricKey
+  // itself (that's 'bucket:<id>', a different string entirely). Resolve
+  // by finding which position in the merged caps[] array this real
+  // key+idx corresponds to, via entry._piMergedCards, instead of a
+  // direct string-equality check against capActiveMetricKey.
   let rpCapIdx=null;
   if(ccPanelCapKey){
     const _parts=ccPanelCapKey.split('|');
     const _pci=parseInt(_parts[_parts.length-1]);
     const _pmk=_parts.slice(0,-1).join('|');
-    if(_pmk===capActiveMetricKey&&!isNaN(_pci)&&_pci<caps.length)rpCapIdx=_pci;
+    if(_isBucketSelection&&entry._piMergedCards){
+      const _foundPos=entry._piMergedCards.findIndex(function(r){return r.realKey===_pmk&&r.realIdx===_pci;});
+      if(_foundPos>=0)rpCapIdx=_foundPos;
+    } else if(_pmk===capActiveMetricKey&&!isNaN(_pci)&&_pci<caps.length){
+      rpCapIdx=_pci;
+    }
   }
-  const rp=rpCapIdx!==null?ccBuildFeatPanel(entry,caps[rpCapIdx],rpCapIdx):null;
+  const rp=rpCapIdx!==null?ccBuildFeatPanel(entry,caps[rpCapIdx],rpCapIdx,_isBucketSelection&&entry._piMergedCards&&entry._piMergedCards[rpCapIdx]?entry._piMergedCards[rpCapIdx].realKey:capActiveMetricKey):null;
   const capsWithoutFeats=(caps.filter(c=>!c.featStore||!c.featStore.top||c.featStore.top.length===0)).length;
   el.innerHTML=`
     <div style="display:flex;flex:1;overflow:hidden;min-height:0;">
@@ -1288,11 +1585,12 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   const totalOnCanvas=scCanvas?scCanvas.length:0;
   let featHtml='';
   if(!features){
+    const _canEditCcEmptyGen=(typeof canEditSession!=='function')||canEditSession();
     featHtml=`<div class="cc-feat-panel-empty" style="flex:1;">
       <i class="ti ti-layout-grid" style="font-size:24px;color:var(--label);margin-bottom:8px;" aria-hidden="true"></i>
       <div style="font-size:12px;font-weight:600;color:var(--t2);">No features yet</div>
       <div style="font-size:11px;color:var(--t3);max-width:180px;line-height:1.4;margin-top:4px;margin-bottom:14px;">AI will generate a feature set for this capability.</div>
-      <button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="ccGenerateFeaturesForCap('${e(_mk)}',${capIdx},'')"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>
+      ${_canEditCcEmptyGen?`<button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},'',null,{triggerEl:this})"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>`:''}
     </div>`;
   } else {
     const fromPlan=isPIFirst&&features.length>0&&features.every(f=>!f._aiAdded);
@@ -1310,20 +1608,24 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       const isSel=f.selected||false;
       const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';
       const isInSC=fid&&scCanvas&&scCanvas.find(x=>x.id===fid);
-      featHtml+=`<div class="cc-feat-item${isInSC?' cc-feat-item-insc':isSel?' cc-feat-item-sel':''}" onclick="ccToggleFeatPanel(${capIdx},${fi})" style="cursor:pointer;">
-        <div class="cc-feat-item-chk${isInSC?' done':isSel?' sel':''}" onclick="event.stopPropagation();ccToggleFeatPanel(${capIdx},${fi})">
+      const _canEditCcFeatItem=(typeof canEditSession!=='function')||canEditSession();
+      featHtml+=`<div class="cc-feat-item${isInSC?' cc-feat-item-insc':isSel?' cc-feat-item-sel':''}" ${_canEditCcFeatItem?`onclick="ccToggleFeatPanel(${capIdx},${fi})" style="cursor:pointer;"`:'style="cursor:default;"'}>
+        <div class="cc-feat-item-chk${isInSC?' done':isSel?' sel':''}${_canEditCcFeatItem?'':' cc-feat-item-chk-disabled'}" ${_canEditCcFeatItem?`onclick="event.stopPropagation();ccToggleFeatPanel(${capIdx},${fi})"`:''}>
           ${isInSC||isSel?'<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}
         </div>
         <div style="flex:1;min-width:0;">
           <div class="cc-feat-name-row">
             <div class="cc-feat-name" id="cc-feat-name-${capIdx}-${fi}">${e(f.name)}</div>
-            ${!isInSC?`<button class="cc-feat-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatName(${capIdx},${fi})" title="Edit feature name"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+            ${!isInSC&&_canEditCcFeatItem?`<button class="cc-feat-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatName(${capIdx},${fi})" title="Edit feature name"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
           </div>
           <div class="cc-feat-why-row">
             <div class="cc-feat-why" id="cc-feat-why-${capIdx}-${fi}">${e(f.why||'')}</div>
-            ${!isInSC?`<button class="cc-feat-edit-btn cc-feat-why-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatWhy(${capIdx},${fi})" title="Edit description"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+            ${!isInSC&&_canEditCcFeatItem?`<button class="cc-feat-edit-btn cc-feat-why-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatWhy(${capIdx},${fi})" title="Edit description"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
           </div>
-          ${isInSC?'<div class="cc-feat-insc-tag"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In Feature Canvas</div>':''}
+          ${(isInSC||f.outcomeHypothesis)?`<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+            ${isInSC?'<div class="cc-feat-insc-tag"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In Feature Canvas</div>':''}
+            ${ccBuildFeatHypChipHTML(f)}
+          </div>`:''}
         </div>
       </div>`;
     });
@@ -1370,18 +1672,18 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   <div class="cc-feat-panel-scroll">
     ${featHtml}
   </div>
-  <div class="cc-chat-bar" style="flex-shrink:0;">
+  ${((typeof canEditSession!=='function')||canEditSession())?`<div class="cc-chat-bar" style="flex-shrink:0;">
     <div class="cc-chat-lbl">${features?(isPIFirst?'Add AI features':'Refine features'):'Generate features with context'}</div>
     <div class="cc-chat-row">
       <textarea class="cc-chat-input" id="cc-feat-refine-txt" rows="2" placeholder="${features?(isPIFirst?'e.g. Add a feature for guest checkout...':'e.g. Focus on mobile only, avoid enterprise features...'):'e.g. Focus on self-serve setup, avoid enterprise-only features...'}"></textarea>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
         <span class="cc-chat-hint">↵ send</span>
-        <button class="cc-chat-send" onclick="ccGenerateFeaturesForCap('${e(_mk)}',${capIdx},document.getElementById('cc-feat-refine-txt').value.trim())" aria-label="Generate or refine features">
+        <button class="cc-chat-send" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},document.getElementById('cc-feat-refine-txt').value.trim(),null,{triggerEl:this})" aria-label="Generate or refine features">
           <i class="ti ti-arrow-up" style="font-size:12px;" aria-hidden="true"></i>
         </button>
       </div>
     </div>
-  </div>
+  </div>`:''}
   ${features?`<div class="cc-panel-footer-split">
     <div class="cc-panel-split-status">${statusTxt}</div>
     <div class="cc-panel-split-cta-wrap">
@@ -1410,11 +1712,28 @@ function ccSelectCapCard(metricKey,capIdx){
 async function ccGenerateFeatures(refinement){
   const key=getKey();
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
-  if(!capActiveMetricKey||!capStore[capActiveMetricKey])return;
-  const entry=capStore[capActiveMetricKey];
-  // Default capActiveCapIdx to 0 if not set
-  if(capActiveCapIdx===null)capActiveCapIdx=0;
-  const cap=entry.capabilities[capActiveCapIdx];
+  // v9.06.02: when capActiveMetricKey holds a bucket:<id> selection (the
+  // grid view), the panel-level "Generate Features" action still needs
+  // to operate on the ONE specific capability whose panel is actually
+  // open — resolved via ccPanelCapKey (which always holds a REAL
+  // capStore key + idx, per ccOpenCapPanel()'s fix), not capActiveMetricKey
+  // directly, since that would be the synthetic bucket tag, not a real key.
+  const _isBucketSel=typeof capActiveMetricKey==='string'&&capActiveMetricKey.indexOf('bucket:')===0;
+  let _genMetricKey=capActiveMetricKey;
+  let _genCapIdx=capActiveCapIdx;
+  if(_isBucketSel){
+    if(!ccPanelCapKey)return; // no specific card open — nothing to generate for
+    const _parts=ccPanelCapKey.split('|');
+    _genCapIdx=parseInt(_parts[_parts.length-1]);
+    _genMetricKey=_parts.slice(0,-1).join('|');
+  }
+  if(!_genMetricKey||!capStore[_genMetricKey])return;
+  const entry=capStore[_genMetricKey];
+  // Default capActiveCapIdx to 0 if not set (non-bucket path only —
+  // bucket path already resolved _genCapIdx above from ccPanelCapKey)
+  if(!_isBucketSel&&capActiveCapIdx===null)capActiveCapIdx=0;
+  if(!_isBucketSel)_genCapIdx=capActiveCapIdx;
+  const cap=entry.capabilities[_genCapIdx];
   if(!cap)return;
   const isSubCap=capActiveSubCapIdx!==null&&cap.subCaps&&cap.subCaps[capActiveSubCapIdx];
   const subCapName=isSubCap?cap.subCaps[capActiveSubCapIdx].name:null;
@@ -1423,21 +1742,34 @@ async function ccGenerateFeatures(refinement){
   _ctxFC1.docContext=(typeof buildDocContext==='function')?buildDocContext('fc'):'';
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
 
-  const featArea=document.getElementById('cc-feat-area');
-  if(featArea){
-    featArea.innerHTML=`<div class="cc-feat-loading" style="flex-direction:column;justify-content:center;align-items:center;min-height:160px;text-align:center;gap:12px;">
-      <div class="cc-spin" style="width:32px;height:32px;border-width:3px;"></div>
-      <span class="cc-load-txt">Generating Features for ${e(isSubCap?subCapName:cap.name)}…</span>
-    </div>`;
-  }
-  // Disable send button
+  // Phase 5 (v8.117): immediate disable, no rich loader until lock confirmed.
   const sendBtn=document.querySelector('.cc-chat-send');
   if(sendBtn)sendBtn.disabled=true;
+  ccSetGenAllBtnDisabled(true);
+  const _attempt=newGenAttempt();
 
+  // Phase 5: withGenerationLock wraps callAPI through applying results to
+  // cap.featStore. Note: unlike most other wrapped functions, this one has
+  // NO sessionStoreSave() call of its own — featStore changes get
+  // persisted by whichever LATER action saves next (e.g. Send to Story
+  // Canvas), a pre-existing app pattern, not something introduced here.
+  // No throwIfLost() checkpoint is needed before a save that doesn't exist
+  // in this function — the lock still has real value here, preventing two
+  // people from running simultaneous feature generation against the SAME
+  // capability, even though the eventual persistence happens elsewhere.
   try{
+    await withGenerationLock(async (_lock) => {
+  try{
+    // Lock confirmed — show the real loader, marker-stamped.
+    var _featArea=document.getElementById('cc-feat-area');
+    if(_featArea){
+      _featArea.innerHTML=markGenAttempt(_attempt,`<div class="cc-feat-loading" style="flex-direction:column;justify-content:center;align-items:center;min-height:160px;text-align:center;gap:12px;">
+      <div class="cc-spin" style="width:32px;height:32px;border-width:3px;"></div>
+      <span class="cc-load-txt">Generating Features for ${e(isSubCap?subCapName:cap.name)}…</span>
+    </div>`);
+    }
     const _capOrSubName=isSubCap?subCapName:cap.name;
     const _signal=startAiGen(`Features for "${_capOrSubName}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`);
-    ccSetGenAllBtnDisabled(true);
     const txt=await callAPI(
       'You are a senior product strategist. Specific, actionable, product-native. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
       buildCapFeaturesPrompt(_ctxFC1,nsm,entry.stageLabel,entry.metricName,cap.name,subCapName,refinement),
@@ -1455,32 +1787,82 @@ async function ccGenerateFeatures(refinement){
     }
     if(!parsed||!parsed.features)throw new Error('No features returned.');
     if(!cap.featStore)cap.featStore={};
+    // Outcome Verification Loop (A4): normalizeAIHypothesis() tolerates a
+    // missing/malformed f.hypothesis by returning null — a broken
+    // hypothesis sub-object never fails the whole feature-generation
+    // response (verified requirement, spec §6.5 Finding J).
     cap.featStore[featKey]=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,
-      metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:subCapName}));
-    ccRenderMainArea();
-    // Clear refine input
-    const txt2=document.getElementById('cc-feat-refine-txt');
-    if(txt2)txt2.value='';
+      metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:subCapName,
+      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null}));
+    // Only re-render the main area / clear the refine input if this
+    // attempt still owns the feature panel — otherwise the user has since
+    // navigated to a different capability and this stale success should
+    // not yank the view back or clobber the refine textbox they may have
+    // already started typing something new into.
+    if(getIfCurrentAttempt('cc-feat-area',_attempt)){
+      ccRenderMainArea();
+      const txt2=document.getElementById('cc-feat-refine-txt');
+      if(txt2)txt2.value='';
+    }
   }catch(err){
-    if(err.name==='AbortError'){endAiGen();return;}
-    if(featArea){
-      featArea.innerHTML=`<div class="cc-feat-empty">
+    if(err.name==='AbortError'){
+      endAiGen();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1).
+      throw err;
+    }
+    // Phase 5 (v8.117): every error write below is marker-guarded — a
+    // stale attempt's failure must not clobber a different capability's
+    // view the user has since navigated to, or a newer attempt's success.
+    var _errFeatArea=getIfCurrentAttempt('cc-feat-area',_attempt);
+    if(_errFeatArea){
+      _errFeatArea.innerHTML=`<div class="cc-feat-empty">
         <div style="color:var(--color-text-danger,var(--red));font-size:13px;margin-bottom:8px;">Generation failed</div>
         <div style="font-size:11px;color:var(--color-text-secondary);">${e(err.message)}</div>
         <button class="cc-btn-ghost" style="margin-top:12px;font-size:11px;" onclick="ccGenerateFeatures('')">Try again</button>
       </div>`;
+    }
+    if(err.message==='generation_lock_lost'){
+      throw err;
     }
   }finally{
     if(sendBtn)sendBtn.disabled=false;
     ccSetGenAllBtnDisabled(false);
     endAiGen();
   }
+    });
+  }catch(lockErr){
+    // Phase 5 (v8.117): since the loader is only ever written INSIDE the
+    // lock callback now, a pre-flight rejection never wrote anything to
+    // #cc-feat-area — nothing to clean up there. sendBtn/ccSetGenAllBtnDisabled
+    // still need resetting here since they're set BEFORE the lock check.
+    if(sendBtn)sendBtn.disabled=false;
+    ccSetGenAllBtnDisabled(false);
+  }
 }
 
 // ── Feature selection ──
+// v9.06.02: shared helper for the "resolve the ONE capability whose panel
+// is open, regardless of whether capActiveMetricKey is a bucket:<id> tag
+// or a real key" logic — used identically by ccToggleFeat() and
+// ccSelectAll(), avoiding a third copy of the same resolution pattern.
+function _ccResolveActivePanelCap(){
+  const _isBucketSel=typeof capActiveMetricKey==='string'&&capActiveMetricKey.indexOf('bucket:')===0;
+  let _mk=capActiveMetricKey;
+  let _ci=capActiveCapIdx;
+  if(_isBucketSel){
+    if(!ccPanelCapKey)return null;
+    const _parts=ccPanelCapKey.split('|');
+    _ci=parseInt(_parts[_parts.length-1]);
+    _mk=_parts.slice(0,-1).join('|');
+  }
+  if(!_mk||!capStore[_mk])return null;
+  const cap=capStore[_mk].capabilities[_ci];
+  return cap||null;
+}
+
 function ccToggleFeat(fi){
-  if(!capActiveMetricKey||!capStore[capActiveMetricKey])return;
-  const cap=capStore[capActiveMetricKey].capabilities[capActiveCapIdx];
+  const cap=_ccResolveActivePanelCap();
   if(!cap||!cap.featStore)return;
   const isSubCap=capActiveSubCapIdx!==null&&cap.subCaps&&cap.subCaps[capActiveSubCapIdx];
   const featKey=isSubCap?'sc'+capActiveSubCapIdx:'top';
@@ -1491,8 +1873,7 @@ function ccToggleFeat(fi){
 }
 
 function ccSelectAll(){
-  if(!capActiveMetricKey||!capStore[capActiveMetricKey])return;
-  const cap=capStore[capActiveMetricKey].capabilities[capActiveCapIdx];
+  const cap=_ccResolveActivePanelCap();
   if(!cap||!cap.featStore)return;
   const isSubCap=capActiveSubCapIdx!==null&&cap.subCaps&&cap.subCaps[capActiveSubCapIdx];
   const featKey=isSubCap?'sc'+capActiveSubCapIdx:'top';
@@ -1505,6 +1886,7 @@ function ccSelectAll(){
 
 // ── Send to Feature Canvas ──
 function ccSendToStoryCanvas(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   // Derive metricKey + capIdx from ccPanelCapKey (avoids stale capActiveCapIdx)
   if(!ccPanelCapKey)return;
   const _sk=ccPanelCapKey.split('|');
@@ -1529,7 +1911,13 @@ function ccSendToStoryCanvas(){
     const fid=scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name);
     if(!scCanvas.find(x=>x.id===fid)){
       const metricPath=typeof scGetMetricPath==='function'?scGetMetricPath(f.metric):f.metric;
-      scCanvas.push({id:fid,metric:f.metric,metricPath,stage:f.stage,cap:f.cap+(f.subCap?' › '+f.subCap:''),name:f.name,why:f.why,stories:null,origin:((typeof piMode!=='undefined'&&piMode)||f.stage==='PI Plan')?'pi':(f._docGrounded?'doc':'kpi')});
+      const _curPiLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
+      scCanvas.push({id:fid,metric:f.metric,metricPath,stage:f.stage,cap:f.cap+(f.subCap?' › '+f.subCap:''),name:f.name,why:f.why,stories:null,origin:((typeof piMode!=='undefined'&&piMode)||f.stage===_curPiLbl||f.stage==='PI Plan')?'pi':(f._docGrounded?'doc':'kpi'),
+        // Outcome Verification Loop (A2): cloned defensively — this
+        // scCanvas entry must never share a reference with capStore's own
+        // copy, since a later regeneration on the SAME capability could
+        // still mutate/replace capStore's copy independently.
+        outcomeHypothesis:(f.outcomeHypothesis&&typeof cloneOutcomeHypothesis==='function')?cloneOutcomeHypothesis(f.outcomeHypothesis):null});
     }
   });
   fcUpdateTabBadge();
@@ -1558,25 +1946,56 @@ function ccSendToStoryCanvas(){
     rp.innerHTML=ccBuildFeatPanel(entry2,entry2.capabilities[_sci],_sci,capActiveMetricKey||_smk);
   }
   showToast(`${_sendCount} feature${_sendCount!==1?'s':''} sent to Feature Canvas.`,'success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    // Coarse target — each sent feature is a whole new scCanvas entry, not
+    // an edit to an existing story, so this uses the coarse (empty story
+    // half) target for each one, same shape as a full feature-list sync.
+    var _sentFids=selected.map(function(f){ return scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name); });
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _sentFids.forEach(function(fid){ _lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+    });
+  }
 }
 
 // ── Generate features for ALL capabilities of the active metric ──
+// Phase 5: wraps the ENTIRE loop in ONE lock acquisition — passes its own
+// lockHandle to ccGenerateFeaturesForCap() via ctx.lockHandle so each
+// capability call JOINS this outer lock instead of acquiring its own,
+// which would release/reacquire between every capability in the batch.
 async function ccGenerateFeaturesForMetric(metricKey){
   if(!metricKey||!capStore[metricKey])return;
   const entry=capStore[metricKey];
   const caps=entry.capabilities||[];
   if(!caps.length)return;
   const key=getKey();
-  // Generate features only for caps without features (don't overwrite existing)
-  for(let ci=0;ci<caps.length;ci++){
-    const cap=caps[ci];
-    if(cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0)continue;
-    capActiveCapIdx=ci;
-    await ccGenerateFeaturesForCap(metricKey,ci,'');
+  try{
+    await withGenerationLock(async (lockHandle) => {
+      // Generate features only for caps without features (don't overwrite existing)
+      for(let ci=0;ci<caps.length;ci++){
+        const cap=caps[ci];
+        if(cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0)continue;
+        capActiveCapIdx=ci;
+        await ccGenerateFeaturesForCap(metricKey,ci,'',null,{lockHandle});
+      }
+    });
+  }catch(lockErr){
+    // Phase 5: pre-loop lock failure, or a rethrown AbortError/lock_lost
+    // from inside the loop — ccGenerateFeaturesForCap's own inner catch
+    // already reset its own UI state (marker-guarded, see the inner
+    // function's own writes) before rethrowing; this just stops the loop
+    // from continuing to the next capability.
   }
   capActiveCapIdx=null;
-  ccRenderMainContent();
+  // Phase 5 (v8.117): only re-render if the user is still viewing THIS
+  // metric — this batch's own loop never wrote directly to the DOM itself
+  // (each ccGenerateFeaturesForCap() call already marker-guards its own
+  // writes), but this final render was previously unconditional, which
+  // could yank the user back to metricKey's view even if they've since
+  // navigated to a different metric entirely while the batch was running.
+  if(capActiveMetricKey===metricKey||capActiveMetricKey===null){
+    ccRenderMainContent();
+  }
 }
 
 // ── Refine/regenerate ALL capabilities for a metric ──
@@ -1778,69 +2197,6 @@ async function ccExportDocx(){
   }
 }
 
-// ── CC Export — in-flight state, render helper, snapshot builder ──
-var ccExportInFlight=false;
-function ccRenderExportBtn(){
-  return'<button id="cc-export-btn" class="export-cta-btn" onclick="ccExportDocx()"'+(ccExportInFlight?' disabled':'')+'>'+
-    (ccExportInFlight?'<i class="ti ti-loader-2" style="font-size:11px;animation:spin 1s linear infinite;" aria-hidden="true"></i> Exporting\u2026':
-    '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export')+
-  '</button>';
-}
-function ccSyncExportBtn(){
-  var btn=document.getElementById('cc-export-btn');
-  if(!btn)return;
-  btn.disabled=!!ccExportInFlight;
-  btn.innerHTML=ccExportInFlight?
-    '<i class="ti ti-loader-2" style="font-size:11px;animation:spin 1s linear infinite;" aria-hidden="true"></i> Exporting\u2026':
-    '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export';
-}
-function _ccGetVisibleCapsSnapshot(){
-  var result=[];
-  if(!capStore)return result;
-  var stageOrder=(typeof gData!=='undefined'&&gData&&Array.isArray(gData.stages))?gData.stages.map(function(s){return s&&s.id;}).filter(Boolean):[];
-  var byStage={};
-  Object.keys(capStore).forEach(function(mk){
-    var en=capStore[mk];if(!en)return;
-    var sid=en.stageId||'other';
-    if(!byStage[sid])byStage[sid]=[];
-    byStage[sid].push({mk:mk,en:en});
-  });
-  var allIds=[].concat(stageOrder).concat(Object.keys(byStage).filter(function(s){return stageOrder.indexOf(s)===-1;}));
-  allIds.forEach(function(sid){
-    var group=byStage[sid];if(!group||!group.length)return;
-    group.forEach(function(item){
-      var mk=item.mk,en=item.en;
-      var isPi=mk.indexOf('pi||')===0,isDiag=mk.indexOf('diag||')===0,isMi=mk.indexOf('mi||')===0;
-      var stageLabel=en.stageLabel||sid;
-      var rawColor=(typeof ccStageColor==='function')?ccStageColor(sid):'#003087';
-      var origin=isMi?'market':isDiag?'diagnostic':isPi?'pi':(en._docGrounded?'doc':'kpi');
-      (en.capabilities||[]).forEach(function(cap){
-        var passes=isPi||isDiag||isMi
-          ?(typeof _ccPiCapPassesFilter==='function'?_ccPiCapPassesFilter(cap,en):true)
-          :(typeof _ccKpiCapPassesFilter==='function'?_ccKpiCapPassesFilter(cap,en):true);
-        if(!passes)return;
-        result.push({stageLabel:stageLabel,stageId:sid,stageColor:rawColor,metricName:en.metricName||'',cap:cap,origin:origin});
-      });
-    });
-  });
-  return result;
-}
-async function ccExportDocx(){
-  if(ccExportInFlight)return;
-  var snap=_ccGetVisibleCapsSnapshot();
-  if(!snap.length){showToast('No capabilities to export. Check your filter settings.','info');return;}
-  var productName=typeof getProductCtx==='function'?getProductCtx().name:'Product';
-  ccExportInFlight=true;ccSyncExportBtn();
-  try{
-    await ccDownloadBriefDOCX(snap,productName);
-  }catch(err){
-    showToast('Export failed: '+err.message,'error');
-    console.error('[CC Export]',err);
-  }finally{
-    ccExportInFlight=false;ccSyncExportBtn();
-  }
-}
-
 // ccOnTabLeave — MJ-7 fix: check state directly, not class
 function ccOnTabLeave(){
   if(capActiveMetricKey!==null){
@@ -1854,34 +2210,6 @@ function ccOnTabLeave(){
 
 // ── Show PI inputs form — rendered INSIDE cc-main as a sidebar layout ──
 // #left-panel is sc-hidden on CC tab, so we inject the entire layout into cc-main
-// ── Edit Custom Plan — pre-populate form with existing caps (append mode) ──
-function ccEditCustomPlan(){
-  // Pre-populate piInputs.parsedCaps with existing PI caps from capStore
-  const piKeys=Object.keys(capStore).filter(k=>k.startsWith('pi||'));
-  const existingCaps=[];
-  piKeys.forEach(k=>{
-    const entry=capStore[k];
-    if(entry&&entry.capabilities){
-      entry.capabilities.forEach(cap=>{
-        if(!existingCaps.find(x=>x.name===cap.name)){
-          existingCaps.push({name:cap.name,description:cap.why||''});
-        }
-      });
-    }
-  });
-  if(existingCaps.length>0){
-    if(typeof piInputs!=='undefined'){
-      // Merge: keep any existing parsed caps, add existing capStore caps
-      const merged=[...existingCaps];
-      (piInputs.parsedCaps||[]).forEach(p=>{
-        if(!merged.find(x=>x.name===p.name))merged.push(p);
-      });
-      piInputs.parsedCaps=merged;
-    }
-  }
-  piFirstBuilt=false;
-  ccShowPIFirstForm(true); // true = editing mode (show cancel button)
-}
 
 function ccShowPIFirstForm(isEditing){
   const main=document.getElementById('cc-main');
@@ -1928,12 +2256,6 @@ function ccShowPIFirstForm(isEditing){
                   onchange="ccPITypeChange(this.value)">
                 Capabilities + features
               </label>
-              <label class="cc-pi-type-opt">
-                <input type="radio" name="piInputType" value="prev-pi"
-                  ${type==='prev-pi'?'checked':''}
-                  onchange="ccPITypeChange(this.value)">
-                Previous PI / backlog
-              </label>
             </div>
           </div>
           <div class="fl">
@@ -1968,15 +2290,15 @@ function ccShowPIFirstForm(isEditing){
         <div class="gen-wrap">
           <button class="gen-btn" id="cc-pi-build-btn" onclick="ccBuildPICanvas()">
             <i class="ti ti-layers-subtract" style="font-size:13px;" aria-hidden="true"></i>
-            ${isEditing?'Add to Canvas':'Build Capability Canvas'}
+            ${isEditing?'Add to Canvas':'Build Process Areas'}
           </button>
         </div>
       </div>
       <div class="cc-pif-main" id="cc-pif-main">
         <div class="cc-pif-empty">
           <i class="ti ti-clipboard-list" style="font-size:32px;color:var(--label);" aria-hidden="true"></i>
-          <div class="cc-pif-empty-title">Your capability canvas will appear here</div>
-          <div class="cc-pif-empty-sub">Fill in the form on the left and click Build Capability Canvas.</div>
+          <div class="cc-pif-empty-title">Your process areas will appear here</div>
+          <div class="cc-pif-empty-sub">Fill in the form on the left and click Build Process Areas.</div>
         </div>
       </div>
     </div>`;
@@ -1997,12 +2319,11 @@ function ccPITypeChange(val){
   const ta=document.getElementById('cc-paste-area');
   if(!ta)return;
   const hints={'caps-only':'One capability per line\ne.g.\nCheckout redesign\nReturns flow\nLoyalty tier upgrade',
-    'caps-features':'Format: Capability: Feature name\ne.g.\nCheckout redesign: Fast checkout UX\nCheckout redesign: Address autocomplete\nReturns flow: Self-serve portal',
-    'prev-pi':'Paste previous PI summary or upload .xlsx with columns: Feature, Capability, Sprint, Status, Story Points'};
+    'caps-features':'Format: Capability: Feature name\ne.g.\nCheckout redesign: Fast checkout UX\nCheckout redesign: Address autocomplete\nReturns flow: Self-serve portal'};
   ta.placeholder=hints[val]||hints['caps-only'];
   const link=document.querySelector('.cc-template-link');
   if(link){
-    const maps={'caps-only':'assets/templates/capability-list-template.xlsx','caps-features':'assets/templates/capability-features-template.xlsx','prev-pi':'assets/templates/prev-pi-template.xlsx'};
+    const maps={'caps-only':'assets/templates/capability-list-template.xlsx','caps-features':'assets/templates/capability-features-template.xlsx'};
     link.href=maps[val]||maps['caps-only'];
   }
 }
@@ -2055,14 +2376,6 @@ function ccParseXLSX(arrayBuffer){
       if(!caps[capName])caps[capName]={name:capName,features:[]};
       if(featKey&&row[featKey]){
         caps[capName].features.push({name:(row[featKey]||'').trim(),why:''});
-      }
-      // prev-pi: carry-forward detection
-      const statusKey=Object.keys(firstRow).find(k=>k.toLowerCase()==='status');
-      if(statusKey&&row[statusKey]){
-        const status=(row[statusKey]||'').toLowerCase();
-        if(status!=='done'&&status!=='complete'&&status!=='completed'){
-          caps[capName]._carryForward=true;
-        }
       }
     });
     const parsed=Object.values(caps);
@@ -2181,7 +2494,7 @@ async function ccBuildPICanvas(){
   const pifMain=document.getElementById('cc-pif-main');
   if(pifMain){pifMain.innerHTML=`<div class="loading on" style="flex:1;">
     <div class="spin"></div>
-    <div class="load-txt" id="cc-pif-load-txt">Building your Capability Canvas…</div>
+    <div class="load-txt" id="cc-pif-load-txt">Building your Process Areas…</div>
     <div class="load-sub" id="cc-pif-load-sub">AI is generating capabilities for each item.</div>
     <div class="load-steps" id="cc-pif-load-steps"></div>
   </div>`;}
@@ -2207,9 +2520,35 @@ async function ccBuildPICanvas(){
     // If features were pasted, use them directly
     if(withFeatures){
       const feats=(piInputs.parsedFeatures||[]).filter(f=>f.capability===cap.name);
-      capStore[key2]={metricName:'',stageLabel:'PI Plan',stageId:'pi',_piFirst:true,
+      // v9.05: PI-first path treats each parsed capability as its own
+      // independent process area (unlike the Add Capability modal's shared
+      // default bucket) — each gets its OWN fresh bucketId, so Discovery
+      // Map shows one distinct custom process area per PI-first capability,
+      // matching how this flow already behaves conceptually (a full plan
+      // of independent capabilities, not repeated adds to one bucket).
+      //
+      // v9.05 fix: the capStore write and the l1_metrics write MUST share
+      // the exact same guard condition — a prior version of this code had
+      // them under different conditionals, meaning a capStore entry could
+      // be created with a bucketId that has no matching l1_metrics entry
+      // in gData.stages (orphaned, invisible in Discovery Map, fully
+      // functional in Capability Canvas — a split-brain state).
+      const _canBucket=(typeof makeBucketId==='function'&&typeof gData!=='undefined'&&gData);
+      const _bucketId=_canBucket?makeBucketId():null;
+      if(_canBucket){
+        if(!Array.isArray(gData.stages))gData.stages=[];
+        let _piStage=gData.stages.find(s=>s&&s.id==='pi');
+        if(!_piStage){
+          _piStage={id:'pi',label:'Custom Value Stage',description:'Captures process areas and capabilities added directly in Capability Canvas, outside the AI-generated stages above.',l1_metrics:[]};
+          gData.stages.push(_piStage);
+        }
+        if(!Array.isArray(_piStage.l1_metrics))_piStage.l1_metrics=[];
+        _piStage.l1_metrics.push({name:cap.name,why:'Auto-created from your PI-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
+      }
+      const _piLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
+      capStore[key2]={metricName:cap.name,stageLabel:_piLbl,stageId:'pi',bucketId:_bucketId,_piFirst:true,
         capabilities:[{name:cap.name,why:piGoal||'PI-first capability',subCaps:null,features:[],
-          featStore:{top:feats.map(f=>({name:f.name,why:f.why||'PI-first feature',selected:false,metric:'',stage:'PI Plan',cap:cap.name,subCap:null}))}}]};
+          featStore:{top:feats.map(f=>({name:f.name,why:f.why||'PI-first feature',selected:false,metric:'',stage:_piLbl,cap:cap.name,subCap:null}))}}]};
     } else {
       // AI generates capabilities for this name
       try{
@@ -2226,8 +2565,23 @@ async function ccBuildPICanvas(){
         try{parsed=JSON.parse(clean);}catch(pe){const s=clean.indexOf('{');const l=clean.lastIndexOf('}');if(s>=0&&l>s)try{parsed=JSON.parse(clean.substring(s,l+1));}catch(pe2){}}
         if(parsed&&parsed.capabilities&&parsed.capabilities.length>0){
           const c=parsed.capabilities[0];
-          capStore[key2]={metricName:'',stageLabel:'PI Plan',stageId:'pi',_piFirst:true,
-            capabilities:[{name:c.name||cap.name,why:c.why||piGoal||'PI-first capability',
+          const _capName=c.name||cap.name;
+          // v9.05: same independent-bucket-per-capability rationale, and
+          // same shared-guard fix, as the withFeatures branch above.
+          const _canBucket=(typeof makeBucketId==='function'&&typeof gData!=='undefined'&&gData);
+          const _bucketId=_canBucket?makeBucketId():null;
+          if(_canBucket){
+            if(!Array.isArray(gData.stages))gData.stages=[];
+            let _piStage=gData.stages.find(s=>s&&s.id==='pi');
+            if(!_piStage){
+              _piStage={id:'pi',label:'Custom Value Stage',description:'Captures process areas and capabilities added directly in Capability Canvas, outside the AI-generated stages above.',l1_metrics:[]};
+              gData.stages.push(_piStage);
+            }
+            if(!Array.isArray(_piStage.l1_metrics))_piStage.l1_metrics=[];
+            _piStage.l1_metrics.push({name:_capName,why:'Auto-created from your PI-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
+          }
+          capStore[key2]={metricName:_capName,stageLabel:(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage'),stageId:'pi',bucketId:_bucketId,_piFirst:true,
+            capabilities:[{name:_capName,why:c.why||piGoal||'PI-first capability',
               subCaps:c.sub_capabilities&&c.sub_capabilities.length>0?c.sub_capabilities:null,
               features:[],featStore:{}}]};
         }
@@ -2241,7 +2595,11 @@ async function ccBuildPICanvas(){
   piMode=true;
   piFirstBuilt=true;
   capStoreInvalidated=false;
-  if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-layers-subtract" style="font-size:13px;" aria-hidden="true"></i> Build Capability Canvas';}
+  if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-layers-subtract" style="font-size:13px;" aria-hidden="true"></i> Build Process Areas';}
+  // v9.05: normalize + sync local DM view — de-dupes any malformed
+  // l1_metrics entries and reflects the new PI-first buckets immediately.
+  if(typeof syncPiStageFromCapStore==='function')syncPiStageFromCapStore(gData,capStore);
+  if(typeof curTab!=='undefined'&&curTab==='mm'&&typeof renderMM==='function')renderMM(gData);
   // Show All Capabilities view automatically
   capActiveMetricKey=null;
   capActiveCapIdx=null;capActiveSubCapIdx=null;
@@ -2336,7 +2694,7 @@ function ccRenderDDPanel(metric,metricName,stageLabel){
   // Row-level hasDD: true if any DD field has usable data (not just global ddGenerated flag)
   const _usable=function(v){const s=String(v||'').trim();return s&&s!=='—';};
   const rowHasDD=_usable(def)||_usable(bm)||_usable(rf);
-  const hasDD=rowHasDD||(ddGenerated&&!!document.getElementById('dd-out'));
+  const hasDD=rowHasDD;
   const notGenerated='<span style="font-size:10px;color:var(--label);font-style:italic;">Generate to populate</span>';
   return`<div class="dd-panel-hdr">
     <div class="dd-panel-breadcrumb"><span class="dd-panel-stage">${e(stageLabel)}</span><span class="dd-panel-sep">›</span><span class="dd-panel-title">Dictionary</span></div>
@@ -2355,13 +2713,15 @@ function ccRenderDDPanel(metric,metricName,stageLabel){
     <div class="dd-panel-section-lbl">RED FLAG</div>
     <div class="dd-panel-section-val dd-panel-redflag">${rf&&rf!=='—'?e(rf):notGenerated}</div>
     <div class="dd-panel-gen-strip" id="dd-gen-strip">
-      ${ddGenerated&&document.getElementById('dd-out')
+      ${ddGenerated&&Array.isArray(window._ddRows)&&window._ddRows.length>0
         ?`<div class="dd-panel-gen-note" style="color:var(--green);margin-bottom:8px;"><i class="ti ti-check" style="font-size:11px;" aria-hidden="true"></i> Dictionary generated for all metrics</div>
            <button class="dl-btn" id="dd-panel-dl-btn" onclick="ccDDDownload()" style="width:100%;">↓ Download .xlsx</button>`
-        :`<div class="dd-panel-gen-note" style="margin-bottom:8px;">Want definitions for all metrics?</div>
+        :((typeof canEditSession!=='function')||canEditSession())
+          ?`<div class="dd-panel-gen-note" style="margin-bottom:8px;">Want definitions for all metrics?</div>
            <button class="gen-btn" style="font-size:11px;padding:8px;width:100%;" onclick="ccDDGenerateAll()">
              <i class="ti ti-table" style="font-size:12px;" aria-hidden="true"></i> Generate for All Metrics
            </button>`
+          :`<div class="dd-panel-gen-note" style="margin-bottom:0;">Dictionary not yet generated for all metrics.</div>`
       }
     </div>
   </div>
@@ -2485,7 +2845,7 @@ async function ccDDGenerateForMetricSafe(metricKey,metricName,stageLabel){
   }catch(err){
     if(!piDdPanelOpen||piDdPanelMetricKey!==startedKey)return;
     const currentStrip=document.querySelector('#dd-panel #dd-gen-strip');
-    if(currentStrip)currentStrip.innerHTML='<div class="cc-parse-error"><span>Generation failed: '+e(err.message||'unknown error')+'. <button onclick="ccDDGenerateForMetric(\''+e(metricName)+'\',\''+e(stageLabel)+'\')" style="display:inline;background:none;border:none;padding:0;font-size:inherit;color:inherit;text-decoration:underline;cursor:pointer;font-family:inherit;">Try again?</button></span></div>';
+    if(currentStrip)currentStrip.innerHTML='<div class="cc-parse-error"><span>Generation failed: '+e(err.message||'unknown error')+'. <button onclick="ccDDGenerateForMetric(\''+e(ejs(metricName))+'\',\''+e(ejs(stageLabel))+'\')" style="display:inline;background:none;border:none;padding:0;font-size:inherit;color:inherit;text-decoration:underline;cursor:pointer;font-family:inherit;">Try again?</button></span></div>';
   }
 }
 
@@ -2499,6 +2859,7 @@ async function ccDDGenerateForMetric(metricName,stageLabel){
 
 // ── DD Panel: generate for all metrics (stays on current tab — no switchTab) ──
 async function ccDDGenerateAll(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
   const strip=document.getElementById('dd-gen-strip');
   if(strip)strip.innerHTML='<div class="cc-parse-loading"><div class="cc-spin-sm"></div> Generating dictionary for all metrics…</div>';
@@ -2559,7 +2920,36 @@ async function ccDDGenerateAll(){
 }
 
 // ── Toggle feature in the right panel ──
+// ── Outcome Verification Loop (FC-4): read-only hypothesis chip for CC
+// drawer feature rows. Deliberately NOT reusing scBuildOutcomeHypChipHTML()
+// here — that function's empty-state click target opens Edit Feature via
+// scShowEditFeatModal(f.id), which assumes the feature already exists on
+// scCanvas. A capStore feature in this drawer may not have been sent to
+// Feature Canvas yet, so that click target would silently fail here.
+// This chip is purely informational in this context — no click action —
+// distinct in color from the existing stage-colored breadcrumb pill
+// (ccStageBg/ccStageText) already shown elsewhere on this screen, reusing
+// the same purple hypothesis-chip treatment already established in
+// Feature Canvas so the same KIND of information reads consistently
+// across both screens.
+function ccBuildFeatHypChipHTML(f){
+  if(!f||!f.outcomeHypothesis||!f.outcomeHypothesis.primary)return'';
+  const p=f.outcomeHypothesis.primary;
+  if(!p.metric)return'';
+  const arrow=p.direction==='decrease'?'↓':(p.direction==='increase'?'↑':'');
+  const label=(p.metric||'')+(arrow?' '+arrow:'');
+  const hasBT=p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined;
+  const tooltipText=(p.metric||'')+(hasBT?' | '+p.baseline+' \u2192 '+p.target:'');
+  // v9.10.02: kept in sync with scBuildOutcomeHypChipHTML's outer/inner
+  // split (Bug 1 fix) — this instance used max-width:none so it wasn't
+  // actually clipping its own tooltip before, but matching the pattern
+  // here anyway avoids a second divergent chip structure for the same
+  // visual component.
+  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}" style="margin-left:0;max-width:none;width:fit-content;"><span class="sc-hyp-chip-inner" style="max-width:none;">${e(label)}</span></span>`;
+}
+
 function ccToggleFeatPanel(capIdx,featIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   // Resolve metric key — capActiveMetricKey is null in All Caps view, use ccPanelCapKey instead
   let resolvedMetricKey=capActiveMetricKey;
   if(!resolvedMetricKey&&ccPanelCapKey){
@@ -2613,6 +3003,7 @@ function ccToggleFeatPanel(capIdx,featIdx){
 
 // ── Edit feature name inline (Path A + B) ──
 function ccEditFeatName(capIdx,featIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const nameEl=document.getElementById('cc-feat-name-'+capIdx+'-'+featIdx);
   if(!nameEl)return;
   const current=nameEl.textContent;
@@ -2628,6 +3019,7 @@ function ccEditFeatName(capIdx,featIdx){
 }
 
 function ccEditFeatWhy(capIdx,featIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const whyEl=document.getElementById('cc-feat-why-'+capIdx+'-'+featIdx);
   if(!whyEl)return;
   const current=whyEl.textContent;
@@ -2661,7 +3053,10 @@ function ccConfirmRemoveFromSC(fid,capIdx,featIdx){
   const rp=document.getElementById('cc-feat-panel');
   if(rp){rp.innerHTML=ccBuildFeatPanel(entry,cap,capIdx,_rmk);}
   if(capActiveMetricKey===null) ccRenderAllCaps(); else ccRenderMainContent();
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    // Coarse target — the whole scCanvas entry for this feature is gone.
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+  }
 }
 
 function ccSaveFeatName(capIdx,featIdx,newName){
@@ -2683,7 +3078,9 @@ function ccSaveFeatName(capIdx,featIdx,newName){
   }
   const rp=document.getElementById('cc-feat-panel');
   if(rp){rp.innerHTML=ccBuildFeatPanel(entry,cap,capIdx,_rmk);}
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('cc',_rmk+_LS_CC_TARGET_SEP+cap.name); });
+  }
 }
 
 function ccSaveFeatWhy(capIdx,featIdx,newWhy){
@@ -2703,11 +3100,77 @@ function ccSaveFeatWhy(capIdx,featIdx,newWhy){
   }
   const rp=document.getElementById('cc-feat-panel');
   if(rp){rp.innerHTML=ccBuildFeatPanel(entry,cap,capIdx,_rmk);}
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('cc',_rmk+_LS_CC_TARGET_SEP+cap.name); });
+  }
 }
 
 // ── Generate/refine features for specific cap in right panel ──
-async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride=null){
+// Phase 5: public, safe entry point. Direct callers (button clicks) call
+// this with no 4th argument — it acquires its own lock via
+// withGenerationLock(). Batch callers (ccGenerateFeaturesForMetric,
+// ccGenerateFeaturesForSelected) that already hold ONE lock around their
+// whole loop pass { lockHandle } so this function joins the EXISTING lock
+// instead of acquiring a new one per capability — acquiring per-capability
+// inside a multi-minute batch would release the lock between every
+// capability, reopening exactly the collision window the lock exists to
+// close. See api.js's _assertGenerationLockHandle for why the inner
+// function below requires a BRANDED handle, not just any object shaped
+// like one — vanilla JS has no enforced module privacy, so a leading
+// underscore alone isn't a reliable guard against a future caller
+// accidentally bypassing the lock.
+async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride=null,ctx=null){
+  // Phase 5 fix (v8.118): immediate visual acknowledgment for a DIRECT
+  // click (ctx.triggerEl), before the lock check even runs — same pattern
+  // as ccGenerateOne()'s fix. Skipped entirely for batch-invoked calls
+  // (ctx.lockHandle present instead), since those already have their own
+  // batch-level disable at their own caller's top, and this function's own
+  // disable would be redundant/momentary for each individual iteration.
+  if(ctx&&ctx.triggerEl&&typeof ctx.triggerEl==='object'&&ctx.triggerEl.disabled!==undefined){
+    ctx.triggerEl.disabled=true;
+  }
+  if (ctx && ctx.lockHandle) {
+    return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,ctx.lockHandle);
+  }
+  try {
+    return await withGenerationLock(async (lockHandle) => {
+      return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle);
+    });
+  } catch(err) {
+    // Phase 5 fix (v8.118): re-enable on any rejection/error path — the
+    // inner function's own error rendering (see below) typically replaces
+    // the DOM the trigger lived in anyway, but this is cheap, harmless
+    // insurance for any path that doesn't, same reasoning as ccGenerateOne().
+    if(ctx&&ctx.triggerEl&&typeof ctx.triggerEl==='object'&&ctx.triggerEl.disabled!==undefined){
+      ctx.triggerEl.disabled=false;
+    }
+    throw err;
+  }
+}
+
+// v8.133 fix (item 5): confirmed live — ccGenerateFeaturesForCap()
+// deliberately rethrows after its own cleanup (by design, so a caller
+// COULD react), but none of its 3 direct onclick callers ever did,
+// producing an unhandled promise rejection on every lock conflict. The
+// toast and button re-enable already happen inside the function itself
+// before the rethrow — this wrapper only exists to give the rejection
+// somewhere to land instead of surfacing as a console error. Every direct
+// onclick caller should use this wrapper, not the function directly.
+function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride,ctx){
+  if(typeof canEditSession==='function'&&!canEditSession())return Promise.resolve();
+  return ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride,ctx).catch(function(err){
+    console.warn('[cc] generate features click handler error:', err);
+  });
+}
+
+// Phase 5: NEVER call this directly. It does the real work but performs NO
+// lock acquisition of its own — it trusts the lockHandle it's given.
+// Asserts the handle is a genuine, branded one from withGenerationLock()
+// and throws immediately if not, turning an accidental unlocked call into
+// a loud error instead of a silent same-tab race. Always go through
+// ccGenerateFeaturesForCap() above.
+async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle){
+  _assertGenerationLockHandle(lockHandle,'_ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE');
   const _wasAllCaps=(capActiveMetricKey===null);
   capActiveMetricKey=metricKey;
   capActiveCapIdx=capIdx;
@@ -2723,14 +3186,25 @@ async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverrid
   const _ctxFC2=getFullProductCtx();
   _ctxFC2.docContext=(typeof buildDocContext==='function')?buildDocContext('fc'):'';
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
-  // Show loader in right panel feat area
+  // Phase 5 (v8.117): this inner function only ever runs AFTER a lock is
+  // already confirmed held (either its own caller's withGenerationLock,
+  // or a batch's already-acquired lock passed via ctx.lockHandle) — so
+  // unlike ccGenerateOne/ccGenerateAll/ccGenerateFeatures, there's no
+  // "loader before lock" timing problem to fix here. The marker-staleness
+  // problem (user navigates to a different capability, or a batch's later
+  // iteration supersedes an earlier one — not really possible within ONE
+  // batch since each iteration targets a different capability, but a
+  // DIRECT call on capability X racing a BATCH iteration also touching
+  // capability X is a real, if narrow, case) still applies regardless.
+  const _attempt=newGenAttempt();
+  // Show loader in right panel feat area, marker-stamped.
   const rp=document.getElementById('cc-feat-panel');
   if(rp){
     const scroll=rp.querySelector('.cc-feat-panel-scroll');
-    if(scroll){scroll.innerHTML=`<div class="cc-feat-panel-empty" style="flex:1;">
+    if(scroll){scroll.innerHTML=markGenAttempt(_attempt,`<div class="cc-feat-panel-empty" style="flex:1;">
       <div class="cc-spin" style="width:28px;height:28px;border-width:2px;margin-bottom:8px;"></div>
       <div style="font-size:11px;color:var(--t3);">Generating Features…</div>
-    </div>`;}
+    </div>`);}
   }
   try{
     const _signal=startAiGen(`Features for "${cap.name}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`);
@@ -2748,35 +3222,85 @@ async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverrid
     try{parsed=JSON.parse(clean);}catch(pe){const s=clean.indexOf('{');const l=clean.lastIndexOf('}');if(s>=0&&l>s){try{parsed=JSON.parse(clean.substring(s,l+1));}catch(pe2){throw new Error('Could not parse features.');}}}
     if(!parsed||!parsed.features)throw new Error('No features returned.');
     if(!cap.featStore)cap.featStore={};
-    const newFeats=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null}));
+    const newFeats=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null,
+      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null}));
     if(isPIFirst&&cap.featStore[featKey]&&cap.featStore[featKey].length>0){
       // Path B: ADD to existing features, don't replace
       cap.featStore[featKey]=[...cap.featStore[featKey],...newFeats];
     } else {
       // Path A: replace with new features but preserve existing selections
+      // AND, per Outcome Verification Loop: preserve an existing
+      // hypothesis if the PM already edited it (source==='ai-edited') —
+      // a fresh regeneration must not silently discard a manual edit just
+      // because the feature happened to be regenerated. An AI-sourced
+      // (never-edited) hypothesis IS safe to overwrite with fresh AI
+      // output, since nothing manual would be lost.
       const prevFeats=cap.featStore[featKey]||[];
       cap.featStore[featKey]=newFeats.map(f=>{
         const prev=prevFeats.find(p=>p.name===f.name);
-        return prev?{...f,selected:prev.selected}:f;
+        if(!prev)return f;
+        const _keepHyp=(prev.outcomeHypothesis&&prev.outcomeHypothesis.primary&&prev.outcomeHypothesis.primary.source==='ai-edited')
+          ?prev.outcomeHypothesis:f.outcomeHypothesis;
+        return{...f,selected:prev.selected,outcomeHypothesis:_keepHyp};
       });
     }
-    if(rp){rp.innerHTML=ccBuildFeatPanel(entry,cap,capIdx,metricKey);}
-    // Restore All Caps view if user was there before generation started.
-    // v8.35 fix: call ccRenderAllCaps() BEFORE resetting capActiveMetricKey to null —
-    // ccRenderAllCaps() reads capActiveMetricKey + ccPanelCapKey to rebuild the right
-    // panel. Resetting first caused the right panel to vanish after generation.
-    if(_wasAllCaps){ccRenderAllCaps();capActiveMetricKey=null;}else{ccRenderMainContent();}
+    // Phase 5 (v8.117): panel re-render is marker-guarded — if a different
+    // capability's panel is now showing (user navigated away, or the
+    // narrow direct-call-races-batch-iteration case above), don't yank
+    // the view back to this capability just because its generation
+    // happened to finish.
+    if(getIfCurrentAttempt('cc-feat-panel',_attempt)){
+      if(rp){rp.innerHTML=ccBuildFeatPanel(entry,cap,capIdx,metricKey);}
+      // Restore All Caps view if user was there before generation started.
+      // v8.35 fix: call ccRenderAllCaps() BEFORE resetting capActiveMetricKey to null —
+      // ccRenderAllCaps() reads capActiveMetricKey + ccPanelCapKey to rebuild the right
+      // panel. Resetting first caused the right panel to vanish after generation.
+      if(_wasAllCaps){ccRenderAllCaps();capActiveMetricKey=null;}else{ccRenderMainContent();}
+    }
     ccSetGenAllBtnDisabled(false);
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save.
+    lockHandle.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      // Phase 2 (v8.123, live sync): cap.name (not capIdx) travels with the
+      // event — capIdx is a positional array index and unsafe to rely on
+      // later if capabilities are added/removed before a viewer applies
+      // this event (found during adversarial review of this feature).
+      // This single instrumentation point covers ccGenerateFeaturesForMetric,
+      // ccGenerateFeaturesForAllPI, and ccGenerateFeaturesForSelected too —
+      // confirmed by reading each of their bodies, all three delegate to
+      // this exact function per-capability, none has its own separate save.
+      var _capNameForEvent=cap.name;
+      // Phase 2 fix (v8.125): awaited, not .then()'d — same lock-release
+      // race as ccGenerateOne/ccGenerateAll, closed the same way.
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'cc','features_generated',metricKey,_capNameForEvent);
+      }
+      // Item 2: this specific capability's features were just regenerated —
+      // clear any pending manual-edit target for it. Does NOT touch the
+      // metric's whole-list target, if one happens to also be dirty — a
+      // feature-level regeneration doesn't supersede an unrelated pending
+      // capability-list-level edit.
+      if(typeof _lsClearManualEditAfterRegeneration==='function')_lsClearManualEditAfterRegeneration('cc',metricKey+_LS_CC_TARGET_SEP+_capNameForEvent);
+    }
     endAiGen();
   }catch(err){
-    if(err.name==='AbortError'){ccSetGenAllBtnDisabled(false);endAiGen();return;}
+    if(err.name==='AbortError'){
+      ccSetGenAllBtnDisabled(false);endAiGen();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1). This matters even
+      // more here since a batch caller's loop needs to see this error to
+      // stop iterating, not silently continue to the next capability.
+      throw err;
+    }
     // v8.35 fix: restore All Caps state on error path too — capActiveMetricKey was
     // set to metricKey at function start and must be cleared when _wasAllCaps is true.
     if(_wasAllCaps)capActiveMetricKey=null;
     ccSetGenAllBtnDisabled(false);
     endAiGen();
-    if(rp){const scroll=rp.querySelector('.cc-feat-panel-scroll');if(scroll)scroll.innerHTML=`<div class="cc-feat-panel-empty" style="flex:1;"><div style="color:var(--red);font-size:12px;">${e(err.message)}</div><button class="cc-btn-ghost" style="font-size:11px;margin-top:8px;" onclick="ccGenerateFeaturesForCap('${e(metricKey)}',${capIdx},'',${modelOverride?`'${e(modelOverride)}'`:'null'})">Try again</button></div>`;}
+    var _errRp=getIfCurrentAttempt('cc-feat-panel',_attempt);
+    if(_errRp){const scroll=_errRp.querySelector('.cc-feat-panel-scroll');if(scroll)scroll.innerHTML=`<div class="cc-feat-panel-empty" style="flex:1;"><div style="color:var(--red);font-size:12px;">${e(err.message)}</div><button class="cc-btn-ghost" style="font-size:11px;margin-top:8px;" onclick="ccGenerateFeaturesForCapClick('${e(metricKey)}',${capIdx},'',${modelOverride?`'${e(modelOverride)}'`:'null'},{triggerEl:this})">Try again</button></div>`;}
+    throw err; // Phase 5: propagate so a batch caller's loop knows to stop, not just single-capability callers
   }
 }
 
@@ -2839,9 +3363,14 @@ function ccGetTotalCaps(){
 // when a single metric is being viewed, otherwise the full capStore (mirrors FC's
 // fcGetVisibleCanvas pattern; same fix applied here for the same selection-scoping bug).
 function ccGetVisibleCapKeys(){
-  if(capActiveMetricKey&&capStore[capActiveMetricKey]){
-    const entry=capStore[capActiveMetricKey];
-    return (entry.capabilities||[]).map((_,ci)=>capActiveMetricKey+'|'+ci);
+  // v9.06.02: uses the shared resolver so a bucket:<id> selection
+  // correctly scopes to just that bucket's merged cards — the previous
+  // direct capStore[capActiveMetricKey] check would always fail for a
+  // bucket tag, silently falling through to reporting EVERY capability
+  // in the entire app as "visible" while a bucket's detail view was open.
+  const _group=typeof ccResolveCapGroup==='function'?ccResolveCapGroup(capActiveMetricKey):null;
+  if(capActiveMetricKey&&_group){
+    return _group.cards.map(c=>c.cardSelectionKey);
   }
   const keys=[];
   Object.keys(capStore).forEach(mk=>{
@@ -2968,6 +3497,13 @@ function ccToggleSelectAll(chk){
 function ccUpdateActionBar(){
   const bar=document.getElementById('cc-action-bar');
   if(!bar)return;
+  // v9.08: view-only sessions have nothing this action bar exists to
+  // support (selecting capabilities to bulk-generate features) — hide the
+  // whole bar rather than leaving a dead "Select all" checkbox with
+  // nothing useful for it to trigger.
+  const _canEditCc=(typeof canEditSession!=='function')||canEditSession();
+  bar.style.display=_canEditCc?'':'none';
+  if(!_canEditCc)return;
   const visibleKeys=new Set(ccGetVisibleCapKeys());
   const n=Array.from(ccSelectedCapIds).filter(k=>visibleKeys.has(k)).length;
   const total=visibleKeys.size;
@@ -3120,15 +3656,22 @@ function ccOpenCapPanel(metricKey,capIdx){
   // Toggle-close: clicking the already-open capability closes the panel
   if(ccPanelCapKey===metricKey+'|'+capIdx){
     ccCloseFeatPanel();
-    // Re-render with correct function — All Caps view vs PI view vs metric view
+    // Re-render with correct function — All Caps view vs bucket/metric view
     if(capActiveMetricKey===null) ccRenderAllCaps();
-    else if(capActiveMetricKey.startsWith('pi||')) ccRenderPICapView();
     else ccRenderMainContent();
     return;
   }
   ccPanelCapKey=metricKey+'|'+capIdx;
-  // Only set active metric key if not in All Caps view (capActiveMetricKey===null means All Caps)
-  if(capActiveMetricKey!==null)capActiveMetricKey=metricKey;
+  // v9.06.02: do NOT overwrite capActiveMetricKey with the clicked card's
+  // real key when it currently holds a bucket:<id> selection — the grid
+  // view (showing ALL cards in that bucket) and the panel view (showing
+  // ONE specific card's detail) are separate concerns now. Overwriting
+  // would silently destroy the bucket context, making it impossible to
+  // return to the bucket's grid view. ccPanelCapKey alone tracks which
+  // card's panel is open; capActiveMetricKey keeps saying 'bucket:<id>'
+  // throughout, exactly as the resolver/render logic above expects.
+  const _curIsBucketSel=typeof capActiveMetricKey==='string'&&capActiveMetricKey.indexOf('bucket:')===0;
+  if(capActiveMetricKey!==null&&!_curIsBucketSel)capActiveMetricKey=metricKey;
   // Update active card
   document.querySelectorAll('.cc-cap-card').forEach(c=>{
     c.classList.remove('cc-cap-card-active');
@@ -3158,15 +3701,26 @@ function ccOpenCapPanel(metricKey,capIdx){
 
 // ── Generate features for selected caps ──
 async function ccGenerateFeaturesForSelected(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!ccSelectedCapIds.size)return;
   const key=getKey();
+  // Phase 5 fix (v8.118): immediate visual acknowledgment on click, before
+  // the lock check — same pattern as the other wrapped functions. Unlike
+  // several of them, this trigger genuinely has a stable, unique ID
+  // (cc-gen-sel-btn, confirmed via grep — used at two render call sites,
+  // both identical), so no triggerEl-threading is needed here at all.
+  const _selBtn=document.getElementById('cc-gen-sel-btn');
+  if(_selBtn)_selBtn.disabled=true;
   // Defensive: only generate for capabilities that are BOTH selected AND
   // currently visible — closes the "hidden batch generation" risk where a
   // stale selection from a previous metric/filter view could otherwise feed
   // generation for capabilities the user can no longer see on screen.
   const visibleKeys=new Set(ccGetVisibleCapKeys());
   const toGenerate=Array.from(ccSelectedCapIds).filter(k=>visibleKeys.has(k));
-  if(!toGenerate.length)return;
+  if(!toGenerate.length){
+    if(_selBtn)_selBtn.disabled=(ccSelectedCapIds.size===0);
+    return;
+  }
   const totalCount=toGenerate.length;
   const batchModel=(typeof resolveThresholdModel==='function')?resolveThresholdModel(totalCount):null;
   // Capture the scope the user was actually in BEFORE the loop starts — the
@@ -3187,15 +3741,33 @@ async function ccGenerateFeaturesForSelected(){
     }
   }
   let doneCount=0;
+  const _attempt=newGenAttempt();
+  // Phase 5: wraps the ENTIRE loop in ONE lock acquisition — same
+  // reasoning as ccGenerateFeaturesForMetric above. Setup (selection
+  // clear, panel creation) happens before the lock acquires; scope
+  // restoration happens after, regardless of how the loop exited.
+  try{
+    await withGenerationLock(async (lockHandle) => {
+  // Lock confirmed — stamp the panel with this batch's attempt marker now.
+  if(rp){
+    rp.innerHTML=markGenAttempt(_attempt,'<div class="cc-feat-panel-empty" style="flex:1;"><div style="text-align:center;padding:24px 16px;"><div class="cc-spin" style="width:28px;height:28px;border-width:2px;margin:0 auto 10px;"></div></div></div>');
+  }
   for(const capKey of toGenerate){
     const parts=capKey.split('|');
     const ci=parseInt(parts[parts.length-1]);
     const mk=parts.slice(0,-1).join('|');
     if(capStore[mk]&&capStore[mk].capabilities[ci]){
       const capName=capStore[mk].capabilities[ci].name;
-      // Show progress loader in right panel
-      if(rp){
-        rp.innerHTML=`<div class="cc-feat-panel-hdr">
+      // Phase 5 (v8.117): re-query the panel fresh each iteration and only
+      // write if this batch's marker is still present — a captured `rp`
+      // reference from before the loop started could be stale by the
+      // time later iterations run (the user could have closed/replaced
+      // the panel), and writing into a stale reference is exactly the
+      // "invisible write, silently wrong" case a plain re-query alone
+      // doesn't fully solve.
+      var _liveRp=getIfCurrentAttempt('cc-feat-panel',_attempt);
+      if(_liveRp){
+        _liveRp.innerHTML=markGenAttempt(_attempt,`<div class="cc-feat-panel-hdr">
           <div class="cc-panel-tag">Generating features</div>
           <div class="cc-feat-panel-cap-name">${e(capName)}</div>
         </div>
@@ -3205,13 +3777,20 @@ async function ccGenerateFeaturesForSelected(){
             <div style="font-size:11px;font-weight:600;color:var(--t1);margin-bottom:4px;">${e(capName)}</div>
             <div style="font-size:10px;color:var(--t3);">${doneCount+1} of ${totalCount} capabilities</div>
           </div>
-        </div>`;
+        </div>`);
       }
       capActiveMetricKey=mk;
       ccPanelCapKey=mk+'|'+ci;
-      await ccGenerateFeaturesForCap(mk,ci,'',batchModel);
+      await ccGenerateFeaturesForCap(mk,ci,'',batchModel,{lockHandle});
       doneCount++;
     }
+  }
+    });
+  }catch(lockErr){
+    // Phase 5: pre-loop lock failure, or a rethrown AbortError/lock_lost
+    // from inside the loop — ccGenerateFeaturesForCap's own inner catch
+    // already reset its own UI state before rethrowing; this just stops
+    // the loop from continuing, scope restoration below still runs.
   }
   // Restore the scope the user actually started from — fixes the bug where
   // capActiveMetricKey was left pointing at the last-processed capability
@@ -3222,86 +3801,10 @@ async function ccGenerateFeaturesForSelected(){
   ccUpdateActionBar();
 }
 
-// ── Path B: show all PI caps in sequential card view ──
-function ccRenderPICapView(){
-  const el=document.getElementById('cc-main-area')||document.getElementById('cc-main');
-  if(!el)return;
-  const piKeys=Object.keys(capStore).filter(k=>k.startsWith('pi||'));
-  if(!piKeys.length){el.innerHTML='<div class="cc-cap-grid-empty"><div>No capabilities yet</div></div>';return;}
-  const rp=capActiveCapIdx!==null&&capStore[capActiveMetricKey]?ccBuildFeatPanel(capStore[capActiveMetricKey],capStore[capActiveMetricKey].capabilities[capActiveCapIdx],capActiveCapIdx):null;
-  let cardsHtml='';
-  piKeys.forEach(mk=>{
-    const entry=capStore[mk];
-    const caps=entry.capabilities||[];
-    caps.forEach((cap,ci)=>{
-      const features=cap.featStore?cap.featStore.top:null;
-      const featCount=features?features.length:0;
-      const _hasFeat=!!(features&&featCount>0);
-      const _isActive=capActiveMetricKey===mk&&capActiveCapIdx===ci;
-      const _state=_isActive?' cc-cap-card-active':_hasFeat?' cc-cap-card-done':'';
-      const _isSel=ccSelectedCapIds.has(mk+'|'+ci);
-      const _featSelState=ccGetFeatSelState(cap);
-      const _chkContent=_hasFeat?(_featSelState==='all'?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':_featSelState==='partial'?'<div style="width:7px;height:2px;background:#fff;border-radius:1px;"></div>':''):(_isSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':'');
-      const _chkSel=_hasFeat?(_featSelState!=='none'):_isSel;
-      cardsHtml+=`<div class="cc-cap-card${_state}" id="cc-cap-${mk.replace(/[^a-z0-9|]/gi,'_')}-${ci}" onclick="ccOpenCapPanel('${e(mk)}',${ci})" style="cursor:pointer;" title="">
-        <div class="cc-card-top">
-          <span class="cc-card-mlbl" style="color:var(--green);">PI Plan</span>
-          <div class="cc-card-actions">
-            <button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(mk)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>
-            <div class="cc-card-chk${_chkSel?' cc-card-chk-sel':''}" onclick="event.stopPropagation();ccToggleCapSelect('${e(mk)}',${ci})">${_chkContent}</div>
-            <button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(mk)}',${ci})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>
-          </div>
-        </div>
-        <div class="cc-cap-card-name-row"><i class="ti ti-clipboard-list" style="font-size:10px;color:var(--green);flex-shrink:0;margin-top:2px;" aria-hidden="true"></i><div class="cc-cap-card-name">${e(cap.name)}</div></div>
-        <div class="cc-cap-card-why">${e(cap.why||'')}</div>
-        <div class="cc-cap-card-footer">
-          ${_hasFeat
-            ?`<div class="cc-cap-status-done"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg><span class="cc-feat-badge">${featCount} feature${featCount!==1?'s':''}</span></div>`
-            :_isSel
-              ?`<div class="cc-cap-status-none"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg> No features yet</div>`
-              :`<div class="cc-cap-status-none"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg> No features yet</div>`
-          }
-        </div>
-      </div>`;
-    });
-  });
-  const totalPICaps=piKeys.reduce((a,k)=>a+(capStore[k].capabilities?capStore[k].capabilities.length:0),0);
-  const capsWithoutFeats=piKeys.reduce((a,k)=>{const caps=(capStore[k].capabilities||[]);return a+caps.filter(c=>!c.featStore||!c.featStore.top||!c.featStore.top.length).length;},0);
-  el.innerHTML=`<div style="display:flex;flex:1;overflow:hidden;min-height:0;">
-    <div class="cc-cap-grid-wrap">
-      <div class="cc-cap-grid-hdr">
-        <div><div class="cc-breadcrumb"><span class="cc-ctx-pill" style="background:#EAF3DE;color:#27500A;">PI Plan</span></div><div style="font-size:11px;color:var(--t3);margin-top:2px;">${totalPICaps} capabilit${totalPICaps!==1?'ies':'y'}${ccCapFilter.size>0?` &nbsp;<span style="display:inline-flex;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;"><i class="ti ti-filter" style="font-size:9px;"></i> ${ccCapFilter.size} filter${ccCapFilter.size!==1?'s':''} <span onclick="ccSetCapFilter(null)" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span></span>`:''}</div></div>
-        <div style="display:flex;gap:7px;align-items:center;">
-          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
-          <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
-          ${ccAddCapBtnHTML('cc-tb-btn-add')}
-        </div>
-      </div>
-      <div class="cc-legend">
-        <span class="cc-legend-lbl">Card states</span>
-        <div class="cc-legend-item"><div class="cc-legend-bar lb-none"></div> No features yet</div>
-        <div class="cc-legend-item"><div class="cc-legend-bar lb-done"></div> Features generated</div>
-        <div class="cc-legend-item"><div class="cc-legend-bar lb-sel"></div> Selected</div>
-        <span class="cc-legend-sep"></span>
-        <div class="cc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
-        <div class="cc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
-        <div class="cc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
-        <div class="cc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
-        <div class="cc-legend-item"><i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</div>
-      </div>
-      <div class="cc-cap-cards-grid">${cardsHtml}</div>
-      <div class="cc-bottom-bar">
-        <input type="text" class="cc-bottom-refine" id="cc-cap-refine-txt" placeholder="Refine or regenerate capabilities…" onkeydown="if(event.key==='Enter')ccRefineCapabilities(capActiveMetricKey,this.value.trim())">
-        <button class="cc-bottom-send" onclick="ccRefineCapabilities(capActiveMetricKey,document.getElementById('cc-cap-refine-txt').value.trim())"><i class="ti ti-arrow-up" style="font-size:11px;" aria-hidden="true"></i></button>
-        ${rp===null&&capsWithoutFeats>0?'<button class="cc-bottom-cta" onclick="ccGenerateFeaturesForAllPI()"><i class="ti ti-stack" style="font-size:11px;" aria-hidden="true"></i> Generate features for all</button>':''}
-      </div>
-    </div>
-    ${rp!==null?`<div class="cc-feat-panel" id="cc-feat-panel">${rp}</div>`:''}
-  </div>`;
-}
 
 // ── Remove a capability from capStore ──
 function ccRemoveCapability(metricKey,capIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const entry=capStore[metricKey];
   if(!entry)return;
   const cap=entry.capabilities[capIdx];
@@ -3360,6 +3863,14 @@ function ccDoRemoveCapability(metricKey,capIdx){
   }
   ccUpdateTabBadge();
   ccOpenMetricNav();
+  // v8.142 fix (bundled with item 2): confirmed missing entirely — this
+  // destructive delete (which also cascades to remove associated features)
+  // was never persisted at all, same class of gap as item 7's functions,
+  // but worse given the cascading data loss. Added here, plus mark-after-
+  // success chaining for the whole-capability-list target.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('cc',metricKey+_LS_CC_TARGET_SEP); });
+  }
 }
 
 // ── Close feature right panel ──
@@ -3385,14 +3896,27 @@ function ccCloseFeatPanel(){
 
 // ── Add Capability manually ──
 function ccShowAddCapModal(){
-  // Build metric options: PI Plan first, then all KPI metrics sorted A→Z
+  // Build metric options: generic "pi" first (unchanged, permanent), then
+  // individual existing buckets, then all KPI metrics sorted A→Z.
   const allMetrics=ccGetAllL1Metrics().filter(m=>!m.metricKey.startsWith('pi||'));
   allMetrics.sort((a,b)=>a.metricName.toLowerCase().localeCompare(b.metricName.toLowerCase()));
-  // Pre-select current metric if user is in a specific metric view, else default to PI Plan
-  const _addDefaultPi=!capActiveMetricKey||capActiveMetricKey.startsWith('pi||');
-  let metricOpts=`<option value="pi"${_addDefaultPi?' selected':''}>PI Plan (Custom Capabilities)</option>`;
+  // v9.06.02: pre-selection now has 3 cases — a SPECIFIC bucket active
+  // (pre-select that bucket, a UX improvement identified during the
+  // capActiveMetricKey audit — "Add Capability" while viewing Compliance
+  // Process should default to adding into Compliance Process), the
+  // generic default (no selection, or a bucket that's since become
+  // invalid), or a specific KPI metric.
+  const _activeBucketId=typeof capActiveMetricKey==='string'&&capActiveMetricKey.indexOf('bucket:')===0
+    ?capActiveMetricKey.slice('bucket:'.length):null;
+  const _addDefaultPi=!capActiveMetricKey||(!_activeBucketId&&typeof capActiveMetricKey==='string'&&capActiveMetricKey.startsWith('pi||'));
+  let metricOpts=`<option value="pi"${_addDefaultPi?' selected':''}>${(typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Custom Process Area':'Custom Metric'}</option>`;
+  // v9.06.01: individual existing buckets, each separately selectable —
+  // per product decision, generic option stays first and unchanged.
+  if(typeof piBuildBucketDropdownOptions==='function'){
+    metricOpts+=piBuildBucketDropdownOptions(gData,_activeBucketId?('bucket:'+_activeBucketId):null);
+  }
   allMetrics.forEach(m=>{
-    const sel=(!_addDefaultPi&&m.metricKey===capActiveMetricKey)?' selected':'';
+    const sel=(!_addDefaultPi&&!_activeBucketId&&m.metricKey===capActiveMetricKey)?' selected':'';
     metricOpts+=`<option value="${e(m.metricKey)}"${sel}>${e(m.metricName)}</option>`;
   });
   const overlay=document.createElement('div');
@@ -3420,7 +3944,7 @@ function ccShowAddCapModal(){
           style="width:100%;height:60px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;"></textarea>
       </div>
       <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Metric / PI Group<span style="color:var(--red);margin-left:1px;">*</span></label>
+        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Metric / Process Area<span style="color:var(--red);margin-left:1px;">*</span></label>
         <div style="position:relative;">
           <select id="cc-add-cap-metric"
             style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);appearance:none;">
@@ -3486,11 +4010,39 @@ function ccDoAddCap(){
     return;
   }
   const newCap={name,why,subCaps:null,features:[],_manual:true};
-  if(metricVal==='pi'){
-    // Add to PI Plan — one cap per PI key
+  const _parsedTarget=typeof parsePiDropdownValue==='function'?parsePiDropdownValue(metricVal):{type:metricVal==='pi'?'pi-default':'metric-key',metricKey:metricVal};
+  // v9.06.02: hoisted so the post-add navigation block below can route to
+  // the SPECIFIC bucket that was actually resolved/targeted, instead of
+  // the old "just show all pi buckets" behavior.
+  let _resolvedBucketIdForNav=null;
+  if(_parsedTarget.type==='pi-default'||_parsedTarget.type==='pi-bucket'){
+    // Add to Custom Value Stage — one cap per PI key, grouped into a bucket via bucketId
     const piKey=ccPIKey(name);
+    // v9.06.01: explicit bucket targeting (dropdown value "bucket:<id>")
+    // uses that bucketId DIRECTLY — no default-resolution triggered, per
+    // the approved plan. Generic "pi" option still resolves via
+    // getOrCreateCurrentDefaultPiBucket() exactly as before.
+    const _bucketId=_parsedTarget.type==='pi-bucket'
+      ?_parsedTarget.bucketId
+      :(typeof getOrCreateCurrentDefaultPiBucket==='function'?getOrCreateCurrentDefaultPiBucket(gData,capStore):null);
+    _resolvedBucketIdForNav=_bucketId;
+    const _piStage=(typeof gData!=='undefined'&&gData&&Array.isArray(gData.stages))?gData.stages.find(s=>s&&s.id==='pi'):null;
+    const _bucketEntry=(_piStage&&Array.isArray(_piStage.l1_metrics))?_piStage.l1_metrics.find(l1=>l1&&l1.bucketId===_bucketId):null;
+    const _bucketDisplayName=_bucketEntry?_bucketEntry.name:'Custom Process Area';
+    const _piStageLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
     if(!capStore[piKey]){
-      capStore[piKey]={metricName:'',stageLabel:'PI Plan',stageId:'pi',_piFirst:true,capabilities:[]};
+      capStore[piKey]={metricName:_bucketDisplayName,stageLabel:_piStageLbl,stageId:'pi',bucketId:_bucketId,_piFirst:true,capabilities:[]};
+    } else {
+      // v9.05 fix: ccPIKey()'s slugification can collide for genuinely
+      // different names (e.g. "A/B Test" and "A-B Test" both slugify to
+      // 'pi||ab_test') even though the earlier duplicate-name check treats
+      // them as distinct — without this, the user's bucket selection for
+      // THIS add would be silently discarded in favour of whatever bucket
+      // the colliding earlier entry happened to have.
+      capStore[piKey].bucketId=_bucketId;
+      capStore[piKey].metricName=_bucketDisplayName;
+      capStore[piKey].stageId='pi';
+      capStore[piKey].stageLabel=_piStageLbl;
     }
     capStore[piKey].capabilities.push(newCap);
   } else {
@@ -3519,9 +4071,10 @@ function ccDoAddCap(){
   // Navigate to the metric group where cap was added
   // Preserve All Caps view if user was there; otherwise navigate to new metric
   const _wasAllCaps=capActiveMetricKey===null;
+  const _isPiTarget=(_parsedTarget.type==='pi-default'||_parsedTarget.type==='pi-bucket');
   if(!_wasAllCaps){
-    if(metricVal==='pi'){
-      ccMNSelectPIAll();
+    if(_isPiTarget){
+      ccMNSelectPIBucket(_resolvedBucketIdForNav);
     } else {
       capActiveMetricKey=metricVal;
       capActiveCapIdx=null;
@@ -3531,7 +4084,7 @@ function ccDoAddCap(){
     ccOpenMetricNav();
   }
   // Auto-scroll to new cap card and open its feature panel
-  const _mk=metricVal==='pi'?ccPIKey(name):metricVal;
+  const _mk=_isPiTarget?ccPIKey(name):metricVal;
   const _entry=capStore[_mk];
   if(_entry){
     const _ci=_entry.capabilities.findIndex(c=>c.name===name);
@@ -3546,9 +4099,19 @@ function ccDoAddCap(){
       });
     }
   }
-  const groupLabel=metricVal==='pi'?'PI Plan':(_entry?_entry.metricName:metricVal);
+  const groupLabel=_entry?_entry.metricName:(_isPiTarget?'Custom Process Area':metricVal);
   showToast(`"${name}" added to ${groupLabel}.`,'success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _lsMarkManualEdit('cc',_mk+_LS_CC_TARGET_SEP);
+      // v9.05: keep the local user's own Discovery Map view consistent —
+      // the receiving-collaborator side is handled separately in
+      // live-sync.js's CC-apply path, not here.
+      if(typeof syncPiStageFromCapStore==='function')syncPiStageFromCapStore(gData,capStore);
+      if(typeof curTab!=='undefined'&&curTab==='mm'&&typeof renderMM==='function')renderMM(gData);
+    });
+  }
 }
 
 // ── Upload Capabilities from file (B3-B5, v7.83) ──
@@ -3562,7 +4125,7 @@ function ccShowUploadCapModal(){
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
       <div style="font-size:13px;font-weight:500;color:var(--t1);">Upload Capabilities</div>
     </div>
-    <div class="modal-body" style="font-size:11px;color:var(--t3);line-height:1.5;">Upload a file of capabilities to add. Each row maps to a Parent Capability - rows without a match go to Custom Capabilities.</div>
+    <div class="modal-body" style="font-size:11px;color:var(--t3);line-height:1.5;">Upload a file of capabilities to add. Each row maps to a Process Area - rows without a match go to Custom Process Area.</div>
     <div style="padding:0 20px 4px;">
       <div class="cc-upload-row" id="cc-cap-upload-row" onclick="document.getElementById('cc-cap-upload-input').click()">
         <i class="ti ti-upload" style="font-size:13px;color:var(--purple);flex-shrink:0;" aria-hidden="true"></i>
@@ -3623,7 +4186,7 @@ function _ccParseCapXLSX(arrayBuffer){
     const keys=Object.keys(firstRow).map(k=>k.toLowerCase().trim());
     const capKey=Object.keys(firstRow)[keys.indexOf('capability')]||Object.keys(firstRow)[keys.indexOf('capabilities')];
     const descKey=Object.keys(firstRow)[keys.indexOf('description')];
-    const parentKeyIdx=keys.findIndex(k=>k.startsWith('parent capability'));
+    const parentKeyIdx=keys.findIndex(k=>k.startsWith('parent capability')||k.startsWith('process area'));
     const parentKey=parentKeyIdx>=0?Object.keys(firstRow)[parentKeyIdx]:null;
     if(!capKey){_ccShowCapUploadError('Could not find a "Capability" column.');return;}
     const rows=[];
@@ -3649,7 +4212,7 @@ function _ccParseCapCSV(text){
     const header=lines[0].split(',').map(h=>h.trim().toLowerCase());
     const capIdx=header.indexOf('capability')>=0?header.indexOf('capability'):header.indexOf('capabilities');
     const descIdx=header.indexOf('description');
-    const parentIdx=header.findIndex(h=>h.startsWith('parent capability'));
+    const parentIdx=header.findIndex(h=>h.startsWith('parent capability')||h.startsWith('process area'));
     if(capIdx<0){_ccShowCapUploadError('Could not find a "Capability" column.');return;}
     const rows=[];
     for(let i=1;i<lines.length;i++){
@@ -3696,16 +4259,24 @@ function _ccFinalizeCapUpload(rows){
 
 function ccShowCapReviewModal(){
   const parents=ccGetAllL1Metrics().filter(m=>!m.metricKey.startsWith('pi||'));
-  let parentOpts=`<option value="__custom__">Custom Capabilities</option>`;
+  let parentOpts=`<option value="__custom__">Custom Process Area</option>`;
+  // v9.06.01: individual existing buckets, each separately selectable —
+  // generic "__custom__" option stays first and unchanged, per product
+  // decision. Uses the same bucket: tagged value format as the single
+  // Add Capability modal, for consistency.
+  if(typeof piBuildBucketDropdownOptions==='function'){
+    parentOpts+=piBuildBucketDropdownOptions(gData,null);
+  }
   parents.forEach(p=>{parentOpts+=`<option value="${e(p.metricKey)}">${e(p.metricName)}</option>`;});
 
   const rowsHtml=_ccUploadCapRows.map((r,idx)=>{
     if(r.removed)return''; // removed rows are dropped from the table entirely (mirrors FC)
-    let opts=parentOpts;
-    // Re-render options with this row's selection marked
-    opts=`<option value="__custom__"${r.mapTo==='__custom__'?' selected':''}>Custom Capabilities</option>`;
+    let opts=`<option value="__custom__"${r.mapTo==='__custom__'?' selected':''}>Custom Process Area</option>`;
+    if(typeof piBuildBucketDropdownOptions==='function'){
+      opts+=piBuildBucketDropdownOptions(gData,r.mapTo);
+    }
     parents.forEach(p=>{opts+=`<option value="${e(p.metricKey)}"${r.mapTo===p.metricKey?' selected':''}>${e(p.metricName)}</option>`;});
-    const isCustom=r.mapTo==='__custom__';
+    const isCustom=(r.mapTo==='__custom__')||(typeof r.mapTo==='string'&&r.mapTo.indexOf('bucket:')===0);
     return `<div class="cc-cap-review-row${isCustom?' cc-cap-review-row-custom':''}">
       <div class="cc-cap-review-name">${e(r.name)}</div>
       <div class="cc-cap-review-desc">${e(r.description||'—')}</div>
@@ -3750,11 +4321,13 @@ function ccShowCapReviewModal(){
 
 function ccCapReviewSummaryText(){
   const remaining=_ccUploadCapRows.filter(r=>!r.removed);
-  const custom=remaining.filter(r=>r.mapTo==='__custom__').length;
+  // v9.06.01: count both generic "__custom__" AND bucket-specific rows as
+  // "custom" for this summary — they're all headed to Custom Value Stage.
+  const custom=remaining.filter(r=>r.mapTo==='__custom__'||(typeof r.mapTo==='string'&&r.mapTo.indexOf('bucket:')===0)).length;
   const mapped=remaining.length-custom;
   const parts=[];
-  if(mapped>0)parts.push(`${mapped} mapped to existing parent capabilit${mapped===1?'y':'ies'}`);
-  if(custom>0)parts.push(`${custom} will go to Custom Capabilities`);
+  if(mapped>0)parts.push(`${mapped} mapped to existing process area${mapped===1?'':'s'}`);
+  if(custom>0)parts.push(`${custom} will go to Custom Process Area`);
   return `<i class="ti ti-check" style="font-size:11px;" aria-hidden="true"></i> ${parts.join(' &middot; ')}`;
 }
 
@@ -3779,12 +4352,49 @@ function ccConfirmCapUpload(){
     return;
   }
   const affectedKeys=new Set();
+  // v9.05: resolve the default custom bucket ONCE for this whole upload batch —
+  // all rows mapped to the GENERIC "__custom__" option in a single upload
+  // session share the same bucket, rather than each row independently
+  // re-resolving (which could create multiple buckets in one batch).
+  // v9.06.01: rows mapped to a SPECIFIC existing bucket (value format
+  // "bucket:<id>") resolve DIRECTLY to that bucketId, per-row — no shared
+  // batch-level caching needed for those, since the bucketId is already
+  // known from the dropdown selection itself.
+  let _uploadBucketId=null;
+  let _uploadBucketName='Custom Process Area';
+  const _hasGenericCustomRows=remaining.some(r=>r.mapTo==='__custom__');
+  if(_hasGenericCustomRows&&typeof getOrCreateCurrentDefaultPiBucket==='function'){
+    _uploadBucketId=getOrCreateCurrentDefaultPiBucket(gData,capStore);
+    const _piStage=(typeof gData!=='undefined'&&gData&&Array.isArray(gData.stages))?gData.stages.find(s=>s&&s.id==='pi'):null;
+    const _bucketEntry=(_piStage&&Array.isArray(_piStage.l1_metrics))?_piStage.l1_metrics.find(l1=>l1&&l1.bucketId===_uploadBucketId):null;
+    if(_bucketEntry)_uploadBucketName=_bucketEntry.name;
+  }
+  const _uploadPiStageLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
   remaining.forEach(r=>{
     const newCap={name:r.name,why:r.description||'',subCaps:null,features:[],_manual:true};
-    if(r.mapTo==='__custom__'){
+    const _rowTarget=typeof parsePiDropdownValue==='function'
+      ?parsePiDropdownValue(r.mapTo==='__custom__'?'pi':r.mapTo)
+      :{type:r.mapTo==='__custom__'?'pi-default':'metric-key',metricKey:r.mapTo};
+    if(_rowTarget.type==='pi-default'||_rowTarget.type==='pi-bucket'){
       const piKey=ccPIKey(r.name);
+      // Specific bucket rows use THEIR OWN bucketId directly; generic rows
+      // share the one batch-level default resolved above.
+      const _rowBucketId=_rowTarget.type==='pi-bucket'?_rowTarget.bucketId:_uploadBucketId;
+      let _rowBucketName=_uploadBucketName;
+      if(_rowTarget.type==='pi-bucket'){
+        const _piStage2=(typeof gData!=='undefined'&&gData&&Array.isArray(gData.stages))?gData.stages.find(s=>s&&s.id==='pi'):null;
+        const _bucketEntry2=(_piStage2&&Array.isArray(_piStage2.l1_metrics))?_piStage2.l1_metrics.find(l1=>l1&&l1.bucketId===_rowBucketId):null;
+        _rowBucketName=_bucketEntry2?_bucketEntry2.name:'Custom Process Area';
+      }
       if(!capStore[piKey]){
-        capStore[piKey]={metricName:'',stageLabel:'PI Plan',stageId:'pi',_piFirst:true,capabilities:[]};
+        capStore[piKey]={metricName:_rowBucketName,stageLabel:_uploadPiStageLbl,stageId:'pi',bucketId:_rowBucketId,_piFirst:true,capabilities:[]};
+      } else {
+        // v9.05 fix: same slugification-collision fix as ccDoAddCap() —
+        // don't silently preserve a stale bucketId from a colliding name.
+        capStore[piKey].bucketId=_rowBucketId;
+        capStore[piKey].metricName=_rowBucketName;
+        capStore[piKey].stageId='pi';
+        capStore[piKey].stageLabel=_uploadPiStageLbl;
       }
       capStore[piKey].capabilities.push(newCap);
       affectedKeys.add(piKey);
@@ -3807,7 +4417,8 @@ function ccConfirmCapUpload(){
   });
 
   const total=remaining.length;
-  const customCount=remaining.filter(r=>r.mapTo==='__custom__').length;
+  // v9.06.01: count both generic and bucket-specific custom rows together
+  const customCount=remaining.filter(r=>r.mapTo==='__custom__'||(typeof r.mapTo==='string'&&r.mapTo.indexOf('bucket:')===0)).length;
   const mappedCount=total-customCount;
 
   // Close modal
@@ -3818,6 +4429,12 @@ function ccConfirmCapUpload(){
   ccUpdateTabBadge();
   capStoreInvalidated=false;
   ccOpenMetricNav();
+  // v9.05: keep local Discovery Map view consistent with any new custom
+  // bucket(s) just created via bulk upload — mirrors ccDoAddCap()'s same
+  // sync call. NOTE: this function has no sessionStoreSave() call today
+  // (pre-existing, unrelated to this feature) — flagging as out of scope.
+  if(typeof syncPiStageFromCapStore==='function')syncPiStageFromCapStore(gData,capStore);
+  if(typeof curTab!=='undefined'&&curTab==='mm'&&typeof renderMM==='function')renderMM(gData);
 
   let msg=`${total} capabilit${total===1?'y':'ies'} added`;
   const parts=[];
@@ -3830,6 +4447,10 @@ function ccConfirmCapUpload(){
 
 // ── Edit Capability modal ──
 function ccShowEditCapModal(metricKey, capIdx){
+  // v9.08: gated here covers both Capability Canvas and Market
+  // Intelligence, since MI reuses this exact modal for its own capability
+  // cards rather than having a separate one.
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const entry=capStore[metricKey];
   if(!entry)return;
   const cap=entry.capabilities[capIdx];
@@ -3837,7 +4458,16 @@ function ccShowEditCapModal(metricKey, capIdx){
 
   const allMetrics=ccGetAllL1Metrics().filter(m=>!m.metricKey.startsWith('pi||'));
   allMetrics.sort((a,b)=>a.metricName.toLowerCase().localeCompare(b.metricName.toLowerCase()));
-  let metricOpts=`<option value="pi"${metricKey.startsWith('pi||')?' selected':''}>PI Plan</option>`;
+  // v9.06.01: pre-select the SPECIFIC bucket this capability currently
+  // belongs to (if any), not just the generic "pi" fallback — so re-
+  // opening Edit Capability on a capability already in "Compliance
+  // Process" shows that bucket selected, not just "Custom Process Area".
+  const _curBucketId=(entry&&entry.bucketId)?entry.bucketId:null;
+  const _isPiEntry=metricKey.startsWith('pi||');
+  let metricOpts=`<option value="pi"${(_isPiEntry&&!_curBucketId)?' selected':''}>${(typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Custom Process Area':'Custom Metric'}</option>`;
+  if(typeof piBuildBucketDropdownOptions==='function'){
+    metricOpts+=piBuildBucketDropdownOptions(gData,_curBucketId?('bucket:'+_curBucketId):null);
+  }
   allMetrics.forEach(m=>{
     const sel=(m.metricKey===metricKey)?' selected':'';
     metricOpts+=`<option value="${e(m.metricKey)}"${sel}>${e(m.metricName)}</option>`;
@@ -3887,10 +4517,10 @@ function ccShowEditCapModal(metricKey, capIdx){
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Why It Matters <span style="font-size:9px;color:var(--label);">(Optional)</span></label>
         <textarea id="cc-edit-cap-why"
           style="width:100%;height:60px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;"
-          oninput="(function(){var s=document.getElementById('cc-edit-warn-strip');if(s)s.style.display='';var f=document.getElementById('cc-edit-cap-footer');if(f)f.style.display='none';})()">${e(cap.why||'')}</textarea>
+          oninput="(function(){var s=document.getElementById('cc-edit-warn-strip');if(s){s.style.display='';var f=document.getElementById('cc-edit-cap-footer');if(f)f.style.display='none';}})()">${e(cap.why||'')}</textarea>
       </div>
       <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Metric / PI Group<span style="color:var(--red);margin-left:1px;">*</span></label>
+        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Metric / Process Area<span style="color:var(--red);margin-left:1px;">*</span></label>
         <div style="position:relative;">
           <select id="cc-edit-cap-metric"
             style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);appearance:none;">
@@ -3933,6 +4563,7 @@ function ccEditCapValidate(originalName){
 }
 
 function ccDoEditCap(metricKey, capIdx, mode){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const entry=capStore[metricKey];
   if(!entry)return;
   const cap=entry.capabilities[capIdx];
@@ -3978,17 +4609,59 @@ function ccDoEditCap(metricKey, capIdx, mode){
   }
 
   // Handle metric/PI group reassignment
-  if(newMetricVal!==metricKey){
+  const _newTarget=typeof parsePiDropdownValue==='function'?parsePiDropdownValue(newMetricVal):{type:newMetricVal==='pi'?'pi-default':'metric-key',metricKey:newMetricVal};
+  // v9.06.01: "did the target actually change" now needs to compare against
+  // the CAPABILITY'S CURRENT LOCATION, not just a raw string equality
+  // against the old metricKey — since newMetricVal can be 'pi',
+  // 'bucket:<id>', or a raw metricKey, none of which match metricKey's OWN
+  // format directly. Re-selecting the bucket a capability is ALREADY in
+  // (now correctly pre-selected in the dropdown) must be a no-op, not a
+  // pointless remove-and-re-add cycle.
+  const _curEntryBucketId=entry.bucketId||null;
+  let _targetUnchanged=false;
+  if(_newTarget.type==='pi-bucket'){
+    _targetUnchanged=(_curEntryBucketId===_newTarget.bucketId);
+  } else if(_newTarget.type==='pi-default'){
+    _targetUnchanged=(metricKey.startsWith('pi||')&&!_curEntryBucketId);
+  } else {
+    _targetUnchanged=(newMetricVal===metricKey);
+  }
+  if(!_targetUnchanged){
     // Remove from old key
     entry.capabilities.splice(capIdx,1);
     if(entry.capabilities.length===0)delete capStore[metricKey];
 
     // Add to new key
-    if(newMetricVal==='pi'){
+    if(_newTarget.type==='pi-default'||_newTarget.type==='pi-bucket'){
       const piKey=ccPIKey(newName);
-      if(!capStore[piKey])capStore[piKey]={metricName:newName,stageLabel:'PI Plan',stageId:'pi',_piFirst:true,capabilities:[]};
+      // Specific bucket target uses that bucketId DIRECTLY; generic default
+      // resolves via getOrCreateCurrentDefaultPiBucket() exactly as before.
+      const _bucketId=_newTarget.type==='pi-bucket'
+        ?_newTarget.bucketId
+        :(typeof getOrCreateCurrentDefaultPiBucket==='function'?getOrCreateCurrentDefaultPiBucket(gData,capStore):null);
+      const _piStage=(typeof gData!=='undefined'&&gData&&Array.isArray(gData.stages))?gData.stages.find(s=>s&&s.id==='pi'):null;
+      const _bucketEntry=(_piStage&&Array.isArray(_piStage.l1_metrics))?_piStage.l1_metrics.find(l1=>l1&&l1.bucketId===_bucketId):null;
+      const _bucketDisplayName=_bucketEntry?_bucketEntry.name:'Custom Process Area';
+      const _reassignPiStageLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
+      if(!capStore[piKey]){
+        capStore[piKey]={metricName:_bucketDisplayName,stageLabel:_reassignPiStageLbl,stageId:'pi',bucketId:_bucketId,_piFirst:true,capabilities:[]};
+      } else {
+        // v9.05 fix: same slugification-collision fix as ccDoAddCap().
+        capStore[piKey].bucketId=_bucketId;
+        capStore[piKey].metricName=_bucketDisplayName;
+        capStore[piKey].stageId='pi';
+        capStore[piKey].stageLabel=_reassignPiStageLbl;
+      }
       capStore[piKey].capabilities.push(cap);
     } else {
+      // v9.06.01: reassigning OUT of the pi stage to an ordinary KPI
+      // metric — explicitly clear bucketId-related identity from the
+      // MOVED capability's context. Note: bucketId lives on the capStore
+      // ENTRY (wrapper), not on the individual cap object itself (verified
+      // via code read), so there is no stale field on `cap` to clear here
+      // — the target capStore[newMetricVal] entry (existing or freshly
+      // created below) simply never has a bucketId field, which is
+      // correct by construction.
       if(capStore[newMetricVal]){
         capStore[newMetricVal].capabilities.push(cap);
       } else {
@@ -4016,9 +4689,27 @@ function ccDoEditCap(metricKey, capIdx, mode){
   ccOpenMetricNav();
 
   if(mode==='clear'){
-    showToast(`Capability updated. Features cleared — select the card to regenerate.`,'success');
+    showToast(`Capability updated. Features cleared. Select the card to regenerate.`,'success');
   } else {
     showToast(`Capability updated.`,'success');
   }
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    // A metric/PI-group reassignment changes TWO capability lists (the one
+    // it left, the one it joined) — mark both if that happened, otherwise
+    // just the one list that was actually edited in place.
+    // v9.06.01: reuse the same _newTarget/_targetUnchanged computed above
+    // (during the actual reassignment) rather than re-deriving with the
+    // old newMetricVal==='pi' check, which no longer correctly identifies
+    // a "pi-bucket" targeted value.
+    var _newResolvedKey=(_newTarget.type==='pi-default'||_newTarget.type==='pi-bucket')?ccPIKey(newName):newMetricVal;
+    var _wasReassigned=!_targetUnchanged;
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _lsMarkManualEdit('cc',metricKey+_LS_CC_TARGET_SEP);
+      if(_wasReassigned)_lsMarkManualEdit('cc',_newResolvedKey+_LS_CC_TARGET_SEP);
+      // v9.05: local Discovery Map consistency, same pattern as ccDoAddCap()
+      if(typeof syncPiStageFromCapStore==='function')syncPiStageFromCapStore(gData,capStore);
+      if(typeof curTab!=='undefined'&&curTab==='mm'&&typeof renderMM==='function')renderMM(gData);
+    });
+  }
 }

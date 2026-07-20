@@ -7,6 +7,27 @@
 //        Section 3 (Output Depth) and Section 4 (PI Defaults) store values in appSettings
 //        but prompt/PI wiring is deferred to v6.76.
 
+// ── Phase 3: central permission helper ──
+// Single source of truth for "can this person edit admin-only things" —
+// used everywhere instead of scattering currentUserRole === 'admin'
+// comparisons throughout this file, per external adversarial review.
+// Defaults to false on anything but an exact 'admin' match, so an
+// unexpected/undefined currentUserRole (shouldn't happen given the boot
+// gate, but checked independently anyway) falls through to the restrictive
+// UI, never the permissive one.
+function _spIsAdmin(){
+  return (typeof currentUserRole !== 'undefined') && currentUserRole === 'admin';
+}
+
+// v9.09 — mirrors _spIsAdmin() exactly. Read Only gets identical Settings
+// access to Power User by design (confirmed decision) — this helper exists
+// for use OUTSIDE Settings (Home launch-block, canEditSession()), not for
+// any new Settings-section branching. Defaults to false on anything but an
+// exact 'readonly' match — fails toward showing more restrictive UI, never less.
+function _spIsReadOnly(){
+  return (typeof currentUserRole !== 'undefined') && currentUserRole === 'readonly';
+}
+
 // ── Current section tracker ──
 let _spSection = 0;
 // ── Dirty state tracker ──
@@ -17,8 +38,90 @@ let _spOldDocMigrationDirty = false;
 // ── Profile persistence helpers ──
 // companyProfile and productProfiles are in-memory vars (state.js).
 // These helpers sync them to localStorage (fast cache) and Supabase (authoritative).
-const _SP_CO_KEY  = 'pgt_company_profile';
-const _SP_PP_KEY  = 'pgt_product_profiles';
+// Phase 2 (v8.104): cache keys and DB reads/writes are now scoped by the
+// active company id, not the user — company/product data belongs to a
+// company, not to whoever happens to be looking at it. Falls back to an
+// unscoped suffix if no active company is set yet (should only happen in
+// the brief window before company resolution completes).
+function _spGetActiveCompanyId() {
+  try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; }
+}
+function _spCoKey(companyId)  { return 'pgt_company_profile_'  + (companyId || 'none'); }
+function _spPpKey(companyId)  { return 'pgt_product_profiles_' + (companyId || 'none'); }
+function _spSettingsKey(companyId) { return 'pgt_company_settings_' + (companyId || 'none'); }
+
+// ── Translation layer — DB row shape <-> in-app profile shape ──
+// One place each field gets renamed, per adversarial review: scattering
+// manual Object.assign renames across restore/save/sync is exactly how this
+// class of bug recurs the next time a field is added to either table.
+function _spMapCompanyFromDB(row) {
+  if (!row) return {};
+  return {
+    companyName:     row.name || '',
+    companyIndustry: row.industry || '',
+    companyUrl:      row.url || '',
+    companyRefLink:  row.ref_link || '',
+    companyStrategy: row.strategy || '',
+    companyContext:  row.context || '',
+    companyDocs:     row.docs || []
+  };
+}
+function _spMapCompanyToDB(profile) {
+  const stripped = _spStripCoDocs(profile);
+  return {
+    name:     stripped.companyName || '',
+    industry: stripped.companyIndustry || '',
+    url:      stripped.companyUrl || '',
+    ref_link: stripped.companyRefLink || '',
+    strategy: stripped.companyStrategy || '',
+    context:  stripped.companyContext || '',
+    docs:     stripped.companyDocs || []
+  };
+}
+// mt_products has no columns for icp/kpis/problem/additionalContext/refLink
+// — a gap found only while writing this mapping, not present in the
+// original Phase 0 schema. Rather than adding five more individual text
+// columns (the exact mistake already made and fixed once for mt_companies),
+// these are bundled into one JSONB catch-all column, `extra` — see
+// phase2-1-add-mt-products-extra-column.sql, required before this code runs.
+function _spMapProductFromDB(row) {
+  if (!row) return {};
+  const extra = row.extra || {};
+  return {
+    id:                row.id,
+    productName:       row.name || '',
+    productDesc:       row.description || '',
+    productType:       row.type || '',
+    industry:          row.industry || '',
+    docs:              row.docs || [],
+    kpis:              extra.kpis || '',
+    problem:           extra.problem || '',
+    icp:               extra.icp || '',
+    additionalContext: extra.additionalContext || '',
+    refLink:           extra.refLink || ''
+  };
+}
+function _spMapProductToDB(profile, companyId) {
+  const stripped = _spStripDocs(profile);
+  return {
+    company_id:  companyId,
+    name:        stripped.productName || '',
+    description: stripped.productDesc || '',
+    type:        stripped.productType || '',
+    industry:    stripped.industry || '',
+    docs:        stripped.docs || [],
+    extra: {
+      kpis:              stripped.kpis || '',
+      problem:           stripped.problem || '',
+      icp:               stripped.icp || '',
+      additionalContext: stripped.additionalContext || '',
+      refLink:           stripped.refLink || ''
+    }
+  };
+}
+
+// (old unscoped _SP_CO_KEY/_SP_PP_KEY constants removed in v8.104 — replaced
+// by the company-scoped _spCoKey()/_spPpKey() functions above)
 
 // ── Strip helpers (hoisted — used by both persist and sync functions) ──
 // Remove extractedText before any persistence: too large for localStorage (5MB limit)
@@ -48,34 +151,11 @@ function _spStripCoDocs(co) {
   return c;
 }
 
-function _spPersistProfiles() {
-  // Write-through: localStorage first (synchronous), then Supabase async.
-  try {
-    localStorage.setItem(_SP_CO_KEY, JSON.stringify(_spStripCoDocs(companyProfile)));
-    localStorage.setItem(_SP_PP_KEY, JSON.stringify(productProfiles.map(_spStripDocs)));
-  } catch(e) {
-    console.warn('Profile localStorage persist failed:', e);
-  }
-
-  // Async DB write — fire and forget, does not block callers
-  (async function() {
-    try {
-      const client = (typeof authInit === 'function') ? authInit() : null;
-      if (!client) return;
-      const uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
-      if (!uid) return;
-      const { error } = await client.from('profiles').upsert({
-        user_id:  uid,
-        company:  _spStripCoDocs(companyProfile),
-        products: productProfiles.map(_spStripDocs)
-      }, { onConflict: 'user_id' });
-      if (error) console.warn('Profile DB upsert failed:', error.message);
-    } catch(e) {
-      console.warn('Profile DB upsert exception:', e);
-    }
-  })();
-}
-
+// _spPersistProfiles() removed in v8.104 — it did one blanket upsert of the
+// entire company object and entire products array together, the semantics
+// of a JSONB blob, not a relational table. Its three call sites now do
+// their own targeted per-row saves directly: spSaveCompanyProfile() below,
+// and spP5SaveProfile()/spP5ConfirmDelete() further down this file.
 
 // ── Old-format doc migration ──
 // Removes docs missing summaryStatus (old schema pre-v8.58) from all profiles.
@@ -115,8 +195,9 @@ function _spMigrateOldDocs(){
   if(changed){
     _spOldDocMigrationDirty=true;
     try{
-      localStorage.setItem(_SP_CO_KEY,JSON.stringify(_spStripCoDocs(companyProfile)));
-      localStorage.setItem(_SP_PP_KEY,JSON.stringify(productProfiles.map(_spStripDocs)));
+      var _companyId=_spGetActiveCompanyId();
+      localStorage.setItem(_spCoKey(_companyId),JSON.stringify(_spStripCoDocs(companyProfile)));
+      localStorage.setItem(_spPpKey(_companyId),JSON.stringify(productProfiles.map(_spStripDocs)));
     }catch(ex){console.warn('_spMigrateOldDocs local persist failed:',ex);}
     console.info('_spMigrateOldDocs: removed old-format docs locally; Supabase cleanup will occur on next explicit settings save.');
   }
@@ -124,12 +205,20 @@ function _spMigrateOldDocs(){
 }
 
 function _spRestoreProfiles() {
-  // Fast-path: reads from localStorage only — called synchronously at script load
-  // before DOMContentLoaded, so Supabase is not available yet.
-  // spSyncProfilesFromDB() handles the async Supabase top-up after auth resolves.
+  // Fast-path: reads from localStorage only — called synchronously at script
+  // load, before company resolution completes. Per Phase 2 adversarial
+  // review, this means the active company id may not be trustworthy yet —
+  // _spGetActiveCompanyId() may return '' (the "none" cache slot) or a
+  // stale value left over from a previous session. This is an accepted,
+  // brief window: main.js's boot gate (restored in v8.104, see main.js)
+  // now physically blocks interaction until spSyncProfilesFromDB() below
+  // has corrected this with authoritative data, so a stale read here can
+  // only ever be *displayed* briefly, never *saved* — nothing capable of
+  // triggering a save exists yet at this point in boot.
   try {
-    const co = localStorage.getItem(_SP_CO_KEY);
-    const pp = localStorage.getItem(_SP_PP_KEY);
+    var _companyId = _spGetActiveCompanyId();
+    const co = localStorage.getItem(_spCoKey(_companyId));
+    const pp = localStorage.getItem(_spPpKey(_companyId));
     if (co) {
       const parsed = JSON.parse(co);
       Object.assign(companyProfile, parsed);
@@ -145,58 +234,75 @@ function _spRestoreProfiles() {
   _spMigrateOldDocs();
 }
 
-// ── Sync profiles + appSettings from Supabase ──
+// ── Sync company profile, product profiles, and company settings from
+// Supabase (Phase 2, v8.104) ──
 // Called once on login from main.js (in Promise.all with sessionStoreSyncFromDB).
-// Runs after auth resolves — updates in-memory state and localStorage cache.
-// On error: logs warning and leaves current state unchanged.
+// Runs after auth resolves and company is known — updates in-memory state
+// and the company-scoped localStorage cache. Three independent queries,
+// replacing the single profiles-table query — company/product/settings data
+// now lives in mt_companies/mt_products/mt_company_settings, scoped by the
+// active company, not the user. On error: logs a warning and leaves current
+// state unchanged for that one piece — a failure on one query doesn't block
+// the other two from completing.
 async function spSyncProfilesFromDB() {
+  const client = (typeof authInit === 'function') ? authInit() : null;
+  if (!client) return;
+  const companyId = _spGetActiveCompanyId();
+  if (!companyId) return; // no active company (zero-company state) — nothing to sync
+
+  // Company profile
   try {
-    const client = (typeof authInit === 'function') ? authInit() : null;
-    if (!client) return;
-    const uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
-    if (!uid) return;
-
     const { data, error } = await client
-      .from('profiles')
-      .select('company, products, settings')
-      .eq('user_id', uid)
+      .from('mt_companies')
+      .select('name, industry, url, ref_link, strategy, context, docs')
+      .eq('id', companyId)
       .maybeSingle();
-
     if (error) {
-      // PGRST116 = no rows found (new user, no profile row yet) — not a real error
-      if (error.code !== 'PGRST116') {
-        console.warn('spSyncProfilesFromDB: query failed:', error.message);
-      }
-      return;
+      console.warn('spSyncProfilesFromDB: mt_companies query failed:', error.message);
+    } else if (data) {
+      Object.assign(companyProfile, _spMapCompanyFromDB(data));
+      try { localStorage.setItem(_spCoKey(companyId), JSON.stringify(_spStripCoDocs(companyProfile))); } catch(e) {}
     }
-    if (!data) return;
-
-    // Company profile — merge into in-memory state + update localStorage cache
-    if (data.company && typeof data.company === 'object') {
-      Object.assign(companyProfile, data.company);
-      try { localStorage.setItem(_SP_CO_KEY, JSON.stringify(data.company)); } catch(e) {}
-    }
-
-    // Product profiles — replace array + update localStorage cache
-    if (data.products && Array.isArray(data.products)) {
-      productProfiles = data.products;
-      try { localStorage.setItem(_SP_PP_KEY, JSON.stringify(data.products)); } catch(e) {}
-    }
-
-    // appSettings — merge (Object.assign preserves state.js defaults for missing keys)
-    // Never overwrite with null/undefined — only merge if settings object is non-empty
-    if (data.settings && typeof data.settings === 'object' && Object.keys(data.settings).length > 0) {
-      Object.assign(appSettings, data.settings);
-      // Re-sync featMI alias — appSettings.featMI may have changed
-      if (typeof featMI !== 'undefined') featMI = appSettings.featMI;
-    }
-
-    // Run migration after Supabase sync in case old-format docs came down from DB
-    _spMigrateOldDocs();
-
   } catch(e) {
-    console.warn('spSyncProfilesFromDB exception:', e);
+    console.warn('spSyncProfilesFromDB: mt_companies exception:', e);
   }
+
+  // Product profiles
+  try {
+    const { data, error } = await client
+      .from('mt_products')
+      .select('id, name, type, description, industry, docs, extra')
+      .eq('company_id', companyId);
+    if (error) {
+      console.warn('spSyncProfilesFromDB: mt_products query failed:', error.message);
+    } else if (data) {
+      productProfiles = data.map(_spMapProductFromDB);
+      try { localStorage.setItem(_spPpKey(companyId), JSON.stringify(productProfiles.map(_spStripDocs))); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('spSyncProfilesFromDB: mt_products exception:', e);
+  }
+
+  // Company settings (appSettings)
+  try {
+    const { data, error } = await client
+      .from('mt_company_settings')
+      .select('settings')
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (error) {
+      console.warn('spSyncProfilesFromDB: mt_company_settings query failed:', error.message);
+    } else if (data && data.settings && typeof data.settings === 'object' && Object.keys(data.settings).length > 0) {
+      Object.assign(appSettings, data.settings);
+      if (typeof featMI !== 'undefined') featMI = appSettings.featMI;
+      try { localStorage.setItem(_spSettingsKey(companyId), JSON.stringify(appSettings)); } catch(e) {}
+    }
+  } catch(e) {
+    console.warn('spSyncProfilesFromDB: mt_company_settings exception:', e);
+  }
+
+  // Run migration after Supabase sync in case old-format docs came down from DB
+  _spMigrateOldDocs();
 }
 
 // Restore profiles immediately on script load (before DOMContentLoaded)
@@ -245,8 +351,46 @@ function closeSettingsPage() {
   if(curTab==='home'&&typeof homeOnTabEnter==='function') homeOnTabEnter();
 }
 
-// ── Save settings ──
-function settingsPageSave() {
+// ── Save company settings (Phase 2, v8.104) ──
+// Replaces the direct profiles.settings upsert that used to live inline
+// inside settingsPageSave() — a fourth write-site to the old table, found
+// only by reading that function line by line rather than trusting its name.
+// Single upsert on the one mt_company_settings row for the active company.
+async function _spSaveCompanySettings(){
+  const companyId = _spGetActiveCompanyId();
+  if(!companyId) return { ok:false, message:'No active company. Cannot save.' };
+
+  const client = (typeof authInit === 'function') ? authInit() : null;
+  if(!client) return { ok:false, message:'Not connected. Check your network and try again.' };
+
+  try {
+    const { error } = await client.from('mt_company_settings').upsert({
+      company_id: companyId,
+      settings:   JSON.parse(JSON.stringify(appSettings))
+    }, { onConflict: 'company_id' });
+    if(error){
+      return { ok:false, message:error.message };
+    }
+    try { localStorage.setItem(_spSettingsKey(companyId), JSON.stringify(appSettings)); } catch(e) {}
+    return { ok:true };
+  } catch(e) {
+    return { ok:false, message:'Check your network and try again.' };
+  }
+}
+
+// ── Save settings (Phase 2, v8.104) ──
+// Now async. Company profile and company settings are two independent
+// writes to two independent tables — sequential, not parallel: settings is
+// only attempted if the company save succeeds, since both require the same
+// admin role on the same company, so if the first fails for a permission
+// reason the second failing identically right after it is a near-certainty,
+// not new information. Neither failure closes the page or discards typed
+// values — the person stays in Settings and can retry. This is a real
+// behavior change from the old single-table model (which was closer to
+// atomic by accident, not by design): partial success is now a reachable
+// state, and it's surfaced honestly rather than silently treated as
+// complete.
+async function settingsPageSave() {
   // Section 1 — API & Access
   const modelEl = document.getElementById('sp-model-select');
   if(modelEl) appSettings.model = modelEl.value;
@@ -256,10 +400,12 @@ function settingsPageSave() {
   const togPd = document.getElementById('sp-tog-pd');
   const togMi = document.getElementById('sp-tog-mi');
   const togPi = document.getElementById('sp-tog-pi');
+  const togOp = document.getElementById('sp-tog-op');
   if(togMd) appSettings.featDD   = _spTogState('md');
   if(togPd) appSettings.featDiag = _spTogState('pd');
   if(togMi) appSettings.featMI   = _spTogState('mi');
   if(togPi) appSettings.featPI   = _spTogState('pi');
+  if(togOp) appSettings.featOutcomePulse = _spTogState('op');
 
   // Section 3 — Output Depth
   const vkdEl = document.getElementById('sp-vkd');
@@ -299,42 +445,58 @@ function settingsPageSave() {
   if(keyEl){
     const k = keyEl.value.trim();
     if(k && typeof isValidApiKeyFormat==='function' && isValidApiKeyFormat(k)){
-      sessionStorage.setItem('hcl_ak', k);
+      sessionStorage.setItem(typeof _byokKey==='function'?_byokKey():'hcl_ak', k);
     } else {
-      sessionStorage.removeItem('hcl_ak');
+      sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
       if(k) keyEl.value=''; // clear an invalid value from the field itself, don't leave it sitting there
     }
   }
 
-  // Save company profile fields — returns false if validation fails
-  if(typeof spSaveCompanyProfile==='function'){
-    if(spSaveCompanyProfile()===false) return;
+  // Disable Save/Cancel for the duration of the awaited writes below — a
+  // second click mid-save would otherwise fire a duplicate request now that
+  // saves genuinely take a network round-trip instead of feeling instant.
+  _spSetFooterBtns(false);
+
+  // Phase 3 (v8.107): Regular Users have nothing for this button to save.
+  // My Profile's own fields (display name, API key) already auto-save
+  // independently the moment they change — they never depended on this
+  // button. Without this check, clicking Save & Exit while innocently
+  // editing My Profile would still attempt the company/settings writes
+  // below in the background, correctly rejected by RLS but surfacing a
+  // confusing error for something the person never touched or has any
+  // rights to change.
+  if(!_spIsAdmin()){
+    _spSetFooterBtns(true);
+    spResetDirty();
+    closeSettingsPage();
+    return;
+  }
+
+  // Step 1 — company profile. Stop here entirely on failure; don't attempt
+  // settings at all (see function comment above for why).
+  const coResult = await spSaveCompanyProfile();
+  if(!coResult.ok){
+    _spSetFooterBtns(true);
+    if(typeof showToast==='function') showToast(coResult.message || 'Couldn\u2019t save company profile.', 'error');
+    return;
   }
 
   // Apply feature flags to the live app
   if(typeof applyFeats === 'function') applyFeats();
 
-  // Async DB write — persist appSettings to Supabase profiles.settings column
-  (async function() {
-    try {
-      const client = (typeof authInit === 'function') ? authInit() : null;
-      if (!client) return;
-      const uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
-      if (!uid) return;
-      const { error } = await client.from('profiles').upsert({
-        user_id:  uid,
-        settings: JSON.parse(JSON.stringify(appSettings))
-      }, { onConflict: 'user_id' });
-      if (error) console.warn('appSettings DB upsert failed:', error.message);
-    } catch(e) {
-      console.warn('appSettings DB upsert exception:', e);
-    }
-  })();
+  // Step 2 — company settings (mt_company_settings), only attempted after
+  // company profile succeeded.
+  const settingsResult = await _spSaveCompanySettings();
+  _spSetFooterBtns(true);
+  if(!settingsResult.ok){
+    if(typeof showToast==='function') showToast('Company profile saved. ' + (settingsResult.message || 'Couldn\u2019t save settings.'), 'error');
+    return; // stay in Settings — company profile succeeded, but don't claim full success
+  }
 
   // Refresh header org name in case company name was changed
   if(typeof updateHeaderOrg==='function') updateHeaderOrg();
 
-  // Save complete — close settings and navigate back
+  // Both writes succeeded — close settings and navigate back
   spResetDirty();
   closeSettingsPage();
   if(typeof showToast === 'function') showToast('Settings saved.', 'success');
@@ -369,8 +531,8 @@ function spConfirmDiscard(){
   const keyEl=document.getElementById('api-key');
   if(keyEl){
     keyEl.value=_spKeySnapshot;
-    if(_spKeySnapshot) sessionStorage.setItem('hcl_ak',_spKeySnapshot);
-    else sessionStorage.removeItem('hcl_ak');
+    if(_spKeySnapshot) sessionStorage.setItem(typeof _byokKey==='function'?_byokKey():'hcl_ak',_spKeySnapshot);
+    else sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
     if(typeof checkKey==='function') checkKey();
   }
   spResetDirty();
@@ -411,11 +573,19 @@ function spRefreshKeyStatus() {
 function spRender() {
   const page = document.getElementById('settings-page');
   if(!page) return;
+  // v8.113: guards every render, not just explicit spNav() clicks — company
+  // membership can change in the background (another tab, a session ending)
+  // between when Settings was opened and when it re-renders, and _spSection
+  // could be pointing at a section that's no longer visible. Never leave
+  // state/focus pointed at a hidden panel.
+  if (!_spVisibleSections().includes(_spSection)) {
+    _spSection = 0;
+  }
   spResetDirty();
   // Snapshot the persisted key before any edits - checkKey() live-writes to
   // sessionStorage on every keystroke, so this is the only point we can
   // capture the "before" value for Discard to revert to.
-  _spKeySnapshot = sessionStorage.getItem('hcl_ak')||'';
+  _spKeySnapshot = sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak')||'';
   page.innerHTML = spBuildHTML();
   // Restore stepper values and toggle states from appSettings
   spPopulate();
@@ -430,10 +600,31 @@ function spRender() {
   },{capture:true});
   // If on Section 1 and the API key is unset, scroll the field into view —
   // the persistent purple ring (rendered inline above) already marks it.
-  if(_spSection===1 && !_spKeySnapshot){
+  if(_spSection===0 && !_spKeySnapshot){
     const wrap=document.getElementById('api-key-wrap');
     if(wrap) wrap.scrollIntoView({block:'center'});
   }
+  // Team Management (Section 6) fetches and renders itself — not baked into
+  // spBuildHTML()'s server-rendered string like other sections, since it
+  // needs a live proxy call every time it becomes visible.
+  if(_spSection===6 && typeof tmLoad==='function') tmLoad();
+}
+
+// ── Phase 3: which sections exist for the current role ──
+// Single source of truth, used by spBuildHTML() and spNav() — per external
+// adversarial review, confirmed via grep these are the only two places a
+// hardcoded section list existed, so this fully replaces both rather than
+// leaving one on the old literal.
+function _spVisibleSections(){
+  // v8.113: zero-company users (membership count 0, distinct from "Regular
+  // User of a real company") lose Company Profile and Product Profiles too,
+  // not just the admin-only sections — there's nothing coherent to show for
+  // a company that doesn't exist. Checked before the admin/non-admin branch
+  // since it's a stricter condition that applies regardless of role.
+  if (typeof _pgtMembershipCount !== 'undefined' && _pgtMembershipCount === 0) {
+    return [0];
+  }
+  return _spIsAdmin() ? [0,1,2,3,4,5,6] : [0,1,2];
 }
 
 function spBuildHTML() {
@@ -441,7 +632,7 @@ function spBuildHTML() {
   <div style="font-family:'DM Sans',sans-serif;font-size:12px;color:#1a1a1a;background:#EAEEF4;display:flex;flex-direction:column;height:100%;overflow:hidden;">
 
     <div style="padding:10px 16px 0;flex-shrink:0;">
-      <span style="font-size:9px;font-weight:700;color:#6b6b68;font-family:'DM Sans',sans-serif;text-transform:uppercase;letter-spacing:0.7px;">Admin Settings</span>
+      <span style="font-size:9px;font-weight:700;color:#6b6b68;font-family:'DM Sans',sans-serif;text-transform:uppercase;letter-spacing:0.7px;">Settings</span>
     </div>
 
     <div style="display:flex;flex:1;min-height:0;padding:6px 8px 8px;gap:8px;overflow:hidden;">
@@ -449,10 +640,10 @@ function spBuildHTML() {
       <!-- Left nav card -->
       <div style="width:240px;min-width:240px;background:#fff;border:1px solid #D0D5E8;border-radius:7px;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;">
         <div style="flex:1;display:flex;flex-direction:column;padding-top:4px;">
-          ${[0,1,2,3,4,5].map(n => spNavItem(n)).join('')}
+          ${_spVisibleSections().map(n => spNavItem(n)).join('')}
         </div>
         <div style="height:44px;display:flex;align-items:center;padding:0 14px;border-top:1px solid #D0D5E8;flex-shrink:0;">
-          <span style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">Admin config</span>
+          <span style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">Settings</span>
         </div>
       </div>
 
@@ -471,13 +662,14 @@ function spBuildHTML() {
         </div>
 
         <!-- Scrollable content -->
-        <div style="flex:1;overflow-y:auto;min-height:0;" id="sp-scroll-wrap">
+        <div style="flex:1;overflow-y:auto;min-height:0;scrollbar-gutter:stable;" id="sp-scroll-wrap">
           <div id="sp-p0" style="display:${_spSection===0?'block':'none'};padding:2px 20px 16px;">${spP0()}</div>
           <div id="sp-p1" style="display:${_spSection===1?'block':'none'};padding:2px 20px 16px;">${spP1()}</div>
           <div id="sp-p2" style="display:${_spSection===2?'flex':'none'};height:100%;min-height:0;">${spP5()}</div>
           <div id="sp-p3" style="display:${_spSection===3?'block':'none'};padding:2px 20px 16px;">${spP2()}</div>
           <div id="sp-p4" style="display:${_spSection===4?'block':'none'};padding:2px 20px 16px;">${spP3()}</div>
           <div id="sp-p5" style="display:${_spSection===5?'block':'none'};padding:2px 20px 16px;">${spP4()}</div>
+          <div id="sp-p6" style="display:${_spSection===6?'block':'none'};padding:10px 20px 16px;"></div>
         </div>
 
         <!-- Save bar -->
@@ -498,8 +690,8 @@ function spBuildHTML() {
 
 // ── Nav item HTML ──
 function spNavItem(n) {
-  const icons  = {0:'ti-user-circle',1:'ti-building',2:'ti-box-multiple',3:'ti-layout-grid',4:'ti-adjustments-horizontal',5:'ti-calendar-event'};
-  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'PI Planning Defaults'};
+  const icons  = {0:'ti-user-circle',1:'ti-building',2:'ti-box-multiple',3:'ti-layout-grid',4:'ti-adjustments-horizontal',5:'ti-calendar-event',6:'ti-users'};
+  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'PI Planning Defaults',6:'Team Management'};
   const active = _spSection === n;
   return `<div onclick="spNav(${n})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:${active?600:500};color:${active?'#5F1EBE':'#6b6b68'};cursor:pointer;border-left:2px solid ${active?'#5F1EBE':'transparent'};background:${active?'#EEEDFE':'transparent'};font-family:'DM Sans',sans-serif;user-select:none;" id="sp-nav-${n}">
     <i class="ti ${icons[n]}" style="font-size:12px;flex-shrink:0;" aria-hidden="true"></i> ${labels[n]}
@@ -514,7 +706,7 @@ function spSectionDisplay(i){ return i===2?'flex':'block'; }
 // ── Switch section ──
 function spNav(n) {
   _spSection = n;
-  [0,1,2,3,4,5].forEach(i => {
+  _spVisibleSections().forEach(i => {
     const p  = document.getElementById('sp-p'+i);
     const ni = document.getElementById('sp-nav-'+i);
     if(p) p.style.display = i===n ? spSectionDisplay(i) : 'none';
@@ -530,25 +722,40 @@ function spNav(n) {
   const restBtn = document.getElementById('sp-restore-btn');
   if(titleEl) titleEl.innerHTML  = _spTitle(n);
   if(descEl)  descEl.textContent = _spDesc(n);
-  if(restBtn) restBtn.style.display = (n===3||n===4) ? 'flex' : 'none';
+  // FIXED in v8.107 (Phase 3), tracked as a separate fix from the
+  // permission work in this same change, per external adversarial review —
+  // this previously checked n===3||n===4, disagreeing with spBuildHTML's
+  // initial-render check of _spSection===4||5. Sections 4 and 5 (Output
+  // Depth, PI Planning Defaults) are the only two with numeric defaults to
+  // restore; Feature Modules (3) never should have shown this button.
+  if(restBtn) restBtn.style.display = (n===4||n===5) ? 'flex' : 'none';
   // Section 5 manages its own internal scroll — prevent outer wrapper from competing
   const scrollWrap=document.getElementById('sp-scroll-wrap');
   if(scrollWrap) scrollWrap.style.overflowY = n===5 ? 'hidden' : 'auto';
+  if(n===6 && typeof tmLoad==='function') tmLoad();
 }
 
 // Navigate to a specific settings section — set _spSection BEFORE spRender()
-// so spBuildHTML() bakes the correct section into the HTML directly
+// so spBuildHTML() bakes the correct section into the HTML directly.
+// Defensive redirect (Phase 3, v8.107) — the one authoritative place this
+// check happens, not duplicated into spNav() separately, per external
+// review. Confirmed via grep that no current caller can actually trigger
+// this (all three existing callers use hardcoded safe values); this is
+// forward-looking robustness for a future caller, not closing a presently
+// reachable gap. Checked and redirected BEFORE any gated content is ever
+// built, not as an after-the-fact correction once rendered.
 function openSettingsToSection(n){
-  _spSection = n;
+  _spSection = _spVisibleSections().includes(n) ? n : 0;
   openSettingsPage();
 }
 
-// Open Settings to Section 1 (Company Profile & Access) and focus the API
-// key field directly. Used by the Home tab's "Add your API key in Settings"
-// inline error link — distinct from openSettingsToSection(2) used by
-// "Add Product Profile" / profile edit pencil, which must stay untouched.
+// Open Settings to Section 0 (My Profile) and focus the API key field
+// directly — updated in Phase 3 (v8.107) since the key moved there from
+// Company Profile. Currently unreferenced by any caller in the codebase
+// (checked directly) — out of scope for this phase to investigate why,
+// just corrected for consistency while already touching this exact area.
 function openSettingsToAPIKey(){
-  openSettingsToSection(1);
+  openSettingsToSection(0);
   const keyEl=document.getElementById('api-key');
   if(keyEl) keyEl.focus();
 }
@@ -675,7 +882,8 @@ function _spTitle(n) {
     2:'Product Profiles',
     3:'Feature Modules',
     4:'Output Depth',
-    5:'PI Planning Defaults'
+    5:'PI Planning Defaults',
+    6:'Team Management'
   }[n]||'';
 }
 function _spDesc(n) {
@@ -685,11 +893,12 @@ function _spDesc(n) {
     2:'Manage your product workspaces. Each profile feeds the Home tab selector.',
     3:'Control which tabs are available to users. Changes take effect immediately.',
     4:'Locked minimums ensure quality floors. You control the ceiling.',
-    5:'Default values pre-loaded when PI Planning opens. Users can override in the PI panel.'
+    5:'Default values pre-loaded when PI Planning opens. Users can override in the PI panel.',
+    6:'Invite, manage roles, and remove people from this company.'
   }[n]||'';
 }
 function _spTabLabel() {
-  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'PI Canvas',mi:'Market Intelligence',la:'Product Diagnostics'};
+  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'PI Canvas',mi:'Market Intelligence',la:'Experiment Canvas'};
   return labels[curTab] || 'App';
 }
 
@@ -788,6 +997,44 @@ function spP0() {
         <div id="sp-p0-pw-toast" style="display:none;margin-top:7px;border-radius:5px;padding:6px 10px;font-size:10px;font-family:'DM Sans',sans-serif;"></div>
       </div>
 
+      <!-- API key section — moved here from Company Profile (Phase 3, v8.107).
+           Personal, sessionStorage-scoped, role-independent — never belonged
+           behind admin-only editing in the first place.
+           v8.108: side-by-side layout restored to match how this looked in
+           Company Profile before relocation — the initial move used a
+           stacked custom layout instead of carrying the existing pattern
+           over, an oversight caught in review, not a deliberate change. -->
+      <div style="border:1px solid #D0D5E8;border-radius:8px;padding:14px 16px;">
+        ${(function(){
+          const keyVal  = (function(){ const k=sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak'); return k?k:''; })();
+          const keyReady   = (typeof isValidApiKeyFormat==='function')?isValidApiKeyFormat(keyVal):(keyVal.startsWith('sk-ant')||keyVal.startsWith('sk-'));
+          const keyEmpty   = keyVal.length === 0;
+          const keyInvalid = !keyReady && !keyEmpty;
+          const _pillBg    = keyInvalid ? '#FCE8E8' : '#e6f4f1';
+          const _pillColor = keyInvalid ? '#A32D2D' : '#007873';
+          const _pillIcon  = keyInvalid ? 'ti-alert-circle' : (keyReady ? 'ti-circle-check' : 'ti-building');
+          const _pillText  = keyInvalid ? 'Invalid key format' : (keyReady ? 'Personal key active' : 'Organisation key active');
+          return `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:11px;font-weight:700;color:#000;font-family:'DM Sans',sans-serif;">Anthropic API Key</div>
+              <div style="font-size:10px;color:#6b6b68;margin-top:1px;font-family:'DM Sans',sans-serif;">Personal, per-company — never shared with other companies you belong to</div>
+            </div>
+            <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;">
+              <span id="sp-key-status" style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:600;padding:2px 6px;border-radius:20px;background:${_pillBg};color:${_pillColor};white-space:nowrap;font-family:'DM Sans',sans-serif;">
+                <i class="ti ${_pillIcon}" style="font-size:9px;"></i> ${_pillText}
+              </span>
+              <div id="api-key-wrap" style="display:flex;align-items:center;border:1px solid #D0D5E8;border-radius:5px;background:#fff;height:28px;width:200px;overflow:hidden;${keyInvalid?'box-shadow:0 0 0 3px rgba(124,58,237,0.25);border-color:#7C3AED;':''}">
+                <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="sk-ant-api03-..." autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
+                <button onclick="toggleKeyVis()" style="background:none;border:none;border-left:1px solid #D0D5E8;padding:0 7px;height:100%;cursor:pointer;color:#6b6b68;display:flex;align-items:center;flex-shrink:0;">
+                  <i class="ti ti-eye" id="eye-icon" style="font-size:12px;"></i>
+                </button>
+              </div>
+            </div>
+          </div>`;
+        })()}
+      </div>
+
     </div>`;
 }
 
@@ -851,7 +1098,7 @@ async function spP0ResetPassword() {
   _spP0Toast(toast, 'loading', 'Sending reset link…');
   try {
     if(typeof authResetPassword==='function') await authResetPassword(email);
-    _spP0Toast(toast, 'success', 'If that email is registered, a reset link is on its way. Check your inbox.');
+    _spP0Toast(toast, 'success', 'Reset link sent to ' + email + '. Check your inbox.');
   } catch(err) {
     const msg = (typeof err==='string') ? err : (err.message || 'Could not send reset link.');
     _spP0Toast(toast, 'error', msg);
@@ -877,14 +1124,6 @@ function spP1() {
   const modelOpts = _spModels.map(m =>
     `<option value="${m.value}"${m.value===appSettings.model?' selected':''}>${m.label}</option>`
   ).join('');
-  const keyVal  = (function(){ const k=sessionStorage.getItem('hcl_ak'); return k?k:''; })();
-  const keyReady   = (typeof isValidApiKeyFormat==='function')?isValidApiKeyFormat(keyVal):(keyVal.startsWith('sk-ant')||keyVal.startsWith('sk-'));
-  const keyEmpty   = keyVal.length === 0;
-  const keyInvalid = !keyReady && !keyEmpty;
-  const _pillBg    = keyInvalid ? '#FCE8E8' : '#e6f4f1';
-  const _pillColor = keyInvalid ? '#A32D2D' : '#007873';
-  const _pillIcon  = keyInvalid ? 'ti-alert-circle' : (keyReady ? 'ti-circle-check' : 'ti-building');
-  const _pillText  = keyInvalid ? 'Invalid key format' : (keyReady ? 'Personal key active' : 'Organisation key active');
 
   // Industry vertical options — blank prompt as first item, no forced default
   const industries = ['Banking & Finance','Cross-Industry','Education / EdTech','Energy & Utilities',
@@ -895,10 +1134,10 @@ function spP1() {
   const industryOpts = `<option value="" ${!coInd?'selected':''}>Select industry...</option>`
     + industries.map(v=>`<option value="${v}"${v===coInd?' selected':''}>${v}</option>`).join('');
 
-  // Doc chips + meter
-  const docChips = (companyProfile.companyDocs||[]).map((d,i)=>
-    `<span class="sp-file-chip"><i class="ti ti-file" style="font-size:9px;" aria-hidden="true"></i> ${_spEsc(d.name)} &middot; ${d.wordCount.toLocaleString()}w${d.truncated?' (truncated)':''}<button class="sp-file-chip-remove" onclick="spRemoveDoc('co',${i})" aria-label="Remove file"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button></span>`
-  ).join('');
+  // Doc chips + meter — moved after readOnly is known below, since the
+  // remove button needs to be suppressed entirely in read-only mode, not
+  // just disabled (there's no reason to show a remove affordance at all to
+  // someone who could never use it).
   const totalWords = (companyProfile.companyDocs||[]).reduce((s,d)=>s+d.wordCount,0);
   const meterPct   = Math.min(100,Math.round(totalWords/20000*100));
   const meterColor = meterPct>80?'#C8870A':'#5F1EBE';
@@ -911,19 +1150,34 @@ function spP1() {
   const sub = 'font-size:9px;color:#A5AFBE;margin-top:3px;display:block;font-family:\'DM Sans\',sans-serif;';
   const col = 'display:flex;flex-direction:column;min-width:0;';
 
+  // Phase 3 (v8.107): view-only for Regular Users — inputs disabled, Save
+  // hidden (enforced at the page-level footer via settingsPageSave()'s own
+  // admin check above, not duplicated here), upload/remove-doc controls
+  // disabled too, not just the plain text fields (confirmed via grep this
+  // section has the same three-click-target upload pattern as Section 2).
+  const readOnly = !_spIsAdmin();
+  const dis = readOnly ? 'disabled' : '';
+  const disInp = readOnly ? inp+'background:#F4F6FA;color:#9a9a96;cursor:not-allowed;' : inp;
+  const disSel = readOnly ? sel+'background:#F4F6FA;color:#9a9a96;cursor:not-allowed;' : sel;
+  const banner = readOnly ? `<div style="background:#FAEEDA;border:1px solid #EF9F27;border-radius:6px;padding:8px 10px;font-size:10px;color:#633806;margin:14px 0;display:flex;align-items:center;gap:6px;font-family:'DM Sans',sans-serif;"><i class="ti ti-lock" aria-hidden="true"></i> Only admins can edit the company profile</div>` : '';
+  const docChips = (companyProfile.companyDocs||[]).map((d,i)=>
+    `<span class="sp-file-chip"><i class="ti ti-file" style="font-size:9px;" aria-hidden="true"></i> ${_spEsc(d.name)} &middot; ${d.wordCount.toLocaleString()}w${d.truncated?' (truncated)':''}${readOnly?'':`<button class="sp-file-chip-remove" onclick="spRemoveDoc('co',${i})" aria-label="Remove file"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`}</span>`
+  ).join('');
+
   return `
+  ${banner}
   ${_spSubLbl('Company Profile')}
 
   <!-- Row 1: Company Name + Industry Vertical -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:10px 0;border-bottom:0.5px solid #D0D5E8;">
     <div style="${col}">
       <label style="${lbl}">Company Name <span style="color:#A32D2D;">*</span></label>
-      <input type="text" id="sp-co-name" value="${_spEsc(companyProfile.companyName||'')}" placeholder="e.g. Contoso, Acme Corp" style="${inp}">
+      <input type="text" id="sp-co-name" ${dis} value="${_spEsc(companyProfile.companyName||'')}" placeholder="e.g. Contoso, Acme Corp" style="${disInp}">
       <span style="${sub}">Used across all product diagnostics</span>
     </div>
     <div style="${col}">
       <label style="${lbl}">Industry Vertical</label>
-      <select id="sp-co-industry" style="${sel}">${industryOpts}</select>
+      <select id="sp-co-industry" ${dis} style="${disSel}">${industryOpts}</select>
       <span style="${sub}">Default for all products - overridable per product</span>
     </div>
   </div>
@@ -932,12 +1186,12 @@ function spP1() {
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:10px 0;border-bottom:0.5px solid #D0D5E8;">
     <div style="${col}">
       <label style="${lbl}">Company URL</label>
-      <input type="text" id="sp-co-url" value="${_spEsc(companyProfile.companyUrl||'')}" placeholder="https://company.com" style="${inp}">
+      <input type="text" id="sp-co-url" ${dis} value="${_spEsc(companyProfile.companyUrl||'')}" placeholder="https://company.com" style="${disInp}">
       <span style="${sub}">Company website or investor relations page</span>
     </div>
     <div style="${col}">
       <label style="${lbl}">Reference Link</label>
-      <input type="text" id="sp-co-reflink" value="${_spEsc(companyProfile.companyRefLink||'')}" placeholder="Confluence, Google Doc, Notion URL..." style="${inp}">
+      <input type="text" id="sp-co-reflink" ${dis} value="${_spEsc(companyProfile.companyRefLink||'')}" placeholder="Confluence, Google Doc, Notion URL..." style="${disInp}">
       <span style="${sub}">Stored as context - not fetched</span>
     </div>
   </div>
@@ -947,13 +1201,13 @@ function spP1() {
     <div style="${col}">
       <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Strategy &amp; Vision</div>
       <div style="font-size:10px;color:#6b6b68;margin-bottom:6px;font-family:'DM Sans',sans-serif;">Align KPI recommendations with your org's north star</div>
-      <textarea id="sp-co-strategy" oninput="spCharCount(this,'sp-co-strategy-ct',2000)" maxlength="2000" rows="4" placeholder="e.g. Become the leading AI-native enterprise platform for mid-market logistics by 2027..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:6px 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;resize:vertical;min-height:72px;box-sizing:border-box;">${_spEsc(companyProfile.companyStrategy||'')}</textarea>
+      <textarea id="sp-co-strategy" ${dis} oninput="spCharCount(this,'sp-co-strategy-ct',2000)" maxlength="2000" rows="4" placeholder="e.g. Become the leading AI-native enterprise platform for mid-market logistics by 2027..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:6px 8px;font-size:11px;font-family:'DM Sans',sans-serif;resize:vertical;min-height:72px;box-sizing:border-box;${readOnly?'background:#F4F6FA;color:#9a9a96;cursor:not-allowed;':'color:#1a1a1a;background:#fff;'}">${_spEsc(companyProfile.companyStrategy||'')}</textarea>
       <div style="display:flex;justify-content:flex-end;"><span id="sp-co-strategy-ct" style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${(companyProfile.companyStrategy||'').length}/2000</span></div>
     </div>
     <div style="${col}">
       <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Additional Context</div>
       <div style="font-size:10px;color:#6b6b68;margin-bottom:6px;font-family:'DM Sans',sans-serif;">Client background, constraints, landscape - lowest prompt priority</div>
-      <textarea id="sp-co-context" oninput="spCharCount(this,'sp-co-context-ct',2000)" maxlength="2000" rows="4" placeholder="Insider intelligence, constraints, org culture notes..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:6px 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;resize:vertical;min-height:72px;box-sizing:border-box;">${_spEsc(companyProfile.companyContext||'')}</textarea>
+      <textarea id="sp-co-context" ${dis} oninput="spCharCount(this,'sp-co-context-ct',2000)" maxlength="2000" rows="4" placeholder="Insider intelligence, constraints, org culture notes..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:6px 8px;font-size:11px;font-family:'DM Sans',sans-serif;resize:vertical;min-height:72px;box-sizing:border-box;${readOnly?'background:#F4F6FA;color:#9a9a96;cursor:not-allowed;':'color:#1a1a1a;background:#fff;'}">${_spEsc(companyProfile.companyContext||'')}</textarea>
       <div style="display:flex;justify-content:flex-end;"><span id="sp-co-context-ct" style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${(companyProfile.companyContext||'').length}/2000</span></div>
     </div>
   </div>
@@ -962,7 +1216,7 @@ function spP1() {
   <div style="padding:10px 0;border-bottom:0.5px solid #D0D5E8;">
     <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Supporting Documents</div>
     <div style="font-size:10px;color:#6b6b68;margin-bottom:6px;font-family:'DM Sans',sans-serif;">Strategy decks, annual reports, org briefs</div>
-    <div class="sp-upload-zone" onclick="document.getElementById('sp-co-file-input').click()">
+    ${readOnly?'':`<div class="sp-upload-zone" onclick="document.getElementById('sp-co-file-input').click()">
       <div class="sp-upload-icon"><i class="ti ti-upload" aria-hidden="true"></i></div>
       <div class="sp-upload-text">
         <div class="sp-upload-title">${docsCount>=5?'Maximum files reached':'Upload files'}</div>
@@ -970,27 +1224,13 @@ function spP1() {
       </div>
       ${docsCount<5?'<button class="sp-upload-btn" onclick="event.stopPropagation();document.getElementById(\'sp-co-file-input\').click()">Browse</button>':''}
     </div>
-    <input type="file" id="sp-co-file-input" class="sp-upload-input" multiple accept=".pdf,.docx,.txt,.csv,.xlsx" onchange="spHandleFileUpload('co',this)" />
+    <input type="file" id="sp-co-file-input" class="sp-upload-input" multiple accept=".pdf,.docx,.txt,.csv,.xlsx" onchange="spHandleFileUpload('co',this)" />`}
     <div id="sp-co-chips">${docChips}</div>
     ${docsCount>0?`<div class="sp-word-meter-wrap" id="sp-co-meter-wrap"><div class="sp-word-meter-bar" style="width:${meterPct}%;background:${meterColor};"></div></div><div class="sp-word-meter-label" id="sp-co-meter-lbl">${totalWords.toLocaleString()} / 20,000 words used &middot; ${docsCount} file${docsCount!==1?'s':''}</div>`:''}
   </div>
 
   ${_spSubLbl('API &amp; Access')}
 
-  ${_spRow(
-    'Anthropic API Key',
-    'Shared key for all sessions on this workspace',
-    `<span id="sp-key-status" style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:600;padding:2px 6px;border-radius:20px;background:${_pillBg};color:${_pillColor};white-space:nowrap;font-family:'DM Sans',sans-serif;">
-        <i class="ti ${_pillIcon}" style="font-size:9px;"></i> ${_pillText}
-      </span>
-      <div id="api-key-wrap" style="display:flex;align-items:center;border:1px solid #D0D5E8;border-radius:5px;background:#fff;height:28px;width:280px;overflow:hidden;${keyInvalid?'box-shadow:0 0 0 3px rgba(124,58,237,0.25);border-color:#7C3AED;':''}">
-        <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="sk-ant-api03-..." autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
-        <button onclick="toggleKeyVis()" style="background:none;border:none;border-left:1px solid #D0D5E8;padding:0 7px;height:100%;cursor:pointer;color:#6b6b68;display:flex;align-items:center;flex-shrink:0;">
-          <i class="ti ti-eye" id="eye-icon" style="font-size:12px;"></i>
-        </button>
-      </div>`,
-    null
-  )}
   ${_spRow(
     'AI Model',
     'Model used across all AI generation. Higher-capability models improve quality but increase cost.',
@@ -1004,29 +1244,86 @@ function spP1() {
 function spP2() {
   return `
   ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Definition','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
-  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Product Diagnostics','Evidence collection and product leak analysis on your KPI tree',appSettings.featDiag)}
+  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your KPI tree',appSettings.featDiag)}
   ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before KPI tree generation.',appSettings.featMI)}
-  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI,true)}`;
+  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI)}
+  ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse,true)}`;
 }
 
 // ── Panel 3: Output Depth ──
 function spP3() {
   return `
   ${_spSubLbl('Discovery Map')}
-  ${_spRow('KPI Tree Depth','Controls metric levels in Outcome-Based mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
+  ${_spRow('KPI Tree Depth','Controls metric levels in Outcome Metrics mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
     _spStepper('sp-vkd',appSettings.kpiDepth||1,"spStep('sp-vkd',-1,1,3)","spStep('sp-vkd',1,1,3)"),'Max 3')}
   ${_spSubLbl('Capabilities')}
+  <div class="sp-group-tight">
   ${_spRow('Capabilities per Metric','AI generates 2 to [n] capabilities per metric',
-    _spStepper('sp-vc',appSettings.maxCaps,"spStep('sp-vc',-1,2,5)","spStep('sp-vc',1,2,5)"),'Min 2 locked')}
+    _spStepper('sp-vc',appSettings.maxCaps,"spStep('sp-vc',-1,2,5)","spStep('sp-vc',1,2,5)"),'Min 2 locked',true)}
   ${_spRow('Include Sub-Capabilities','Generated only when a capability is complex enough to sub-divide',_spTog('sc',appSettings.includeSubCaps),null)}
+  </div>
   ${_spSubLbl('Features')}
   ${_spRow('Features per Capability','AI generates 3 to [n] features per capability across all paths',
     _spStepper('sp-vf',appSettings.maxFeatures,"spStep('sp-vf',-1,3,6)","spStep('sp-vf',1,3,6)"),'Min 3 locked')}
   ${_spSubLbl('Stories &amp; Acceptance Criteria')}
+  <div class="sp-group-tight">
   ${_spRow('Stories per Feature','AI generates 2 to [n] stories per feature across Story Canvas and PI Planning',
-    _spStepper('sp-vs',appSettings.maxStories,"spStep('sp-vs',-1,2,10)","spStep('sp-vs',1,2,10)"),'Min 2 locked')}
+    _spStepper('sp-vs',appSettings.maxStories,"spStep('sp-vs',-1,2,10)","spStep('sp-vs',1,2,10)"),'Min 2 locked',true)}
   ${_spRow('Acceptance Criteria per Story','One happy path and one edge case are always included',
-    _spStepper('sp-va',appSettings.maxACs,"spStep('sp-va',-1,2,5)","spStep('sp-va',1,2,5)"),'Min 2 locked',true)}`;
+    _spStepper('sp-va',appSettings.maxACs,"spStep('sp-va',-1,2,5)","spStep('sp-va',1,2,5)"),'Min 2 locked',true)}
+  </div>
+  <div style="border-top:0.5px solid #D0D5E8;margin-top:4px;"></div>
+  ${_spSubLbl('Session Sharing')}
+  <div style="margin-bottom:4px;">
+    <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Default access for shared sessions</div>
+    <div style="font-size:10px;color:#6b6b68;margin-bottom:10px;font-family:'DM Sans',sans-serif;">Applies when a session is shared with your team.</div>
+    <div style="display:flex;gap:10px;margin-bottom:10px;">
+      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${(appSettings.defaultShareMode||'view')==='view'?'#5F1EBE':'#D0D5E8'};background:${(appSettings.defaultShareMode||'view')==='view'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-view-wrap">
+        <input type="radio" name="sp-sharemode" id="sp-sharemode-view" ${(appSettings.defaultShareMode||'view')==='view'?'checked':''} onchange="spSetShareMode('view')" style="margin-top:2px;accent-color:#5F1EBE;">
+        <div>
+          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">View only <span style="font-weight:400;color:#5F1EBE;">Default</span></div>
+          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can view and export session content. They can't add, edit, or delete anything.</div>
+        </div>
+      </label>
+      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${appSettings.defaultShareMode==='edit'?'#5F1EBE':'#D0D5E8'};background:${appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-edit-wrap">
+        <input type="radio" name="sp-sharemode" id="sp-sharemode-edit" ${appSettings.defaultShareMode==='edit'?'checked':''} onchange="spSetShareMode('edit')" style="margin-top:2px;accent-color:#5F1EBE;">
+        <div>
+          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Collaborative editing</div>
+          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can generate, edit, and delete content, same as you.</div>
+        </div>
+      </label>
+    </div>
+    <div id="sp-sharemode-warn" style="display:${appSettings.defaultShareMode==='edit'?'flex':'none'};gap:8px;align-items:flex-start;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:6px;padding:8px 10px;">
+      <i class="ti ti-alert-triangle" style="font-size:12px;color:#633806;flex-shrink:0;margin-top:1px;" aria-hidden="true"></i>
+      <div style="font-size:10px;color:#633806;line-height:1.5;font-family:'DM Sans',sans-serif;">Turning on collaborative editing means multiple people can update the same session at once. Updates can silently overwrite each other, so this mode needs active coordination among your team.</div>
+    </div>
+  </div>`;
+}
+
+// ── v9.08: Session Sharing radio handler ──
+// Labeled clearly as a security/access-control setting in this comment
+// despite living in the Output Depth section for now — this is a
+// temporary placement, not a signal that this is a minor UX preference.
+function spSetShareMode(mode){
+  appSettings.defaultShareMode = (mode==='edit') ? 'edit' : 'view';
+  const viewWrap=document.getElementById('sp-sharemode-view-wrap');
+  const editWrap=document.getElementById('sp-sharemode-edit-wrap');
+  const warn=document.getElementById('sp-sharemode-warn');
+  if(viewWrap){
+    viewWrap.style.border=appSettings.defaultShareMode==='view'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    viewWrap.style.background=appSettings.defaultShareMode==='view'?'#F7F6FE':'#fff';
+  }
+  if(editWrap){
+    editWrap.style.border=appSettings.defaultShareMode==='edit'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    editWrap.style.background=appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff';
+  }
+  // v9.08.01 fix: warning strip now toggles live with selection, rather
+  // than always rendering regardless of which mode is selected. Initial
+  // render (in the template above) is gated on appSettings.defaultShareMode
+  // directly, so reopening Settings when Collaborative editing is already
+  // the saved default shows the warning immediately, not only after a click.
+  if(warn) warn.style.display=(appSettings.defaultShareMode==='edit')?'flex':'none';
+  if(typeof spMarkDirty==='function') spMarkDirty();
 }
 
 // ── Panel 4: PI Planning Defaults ──
@@ -1078,14 +1375,17 @@ function spP5(){
 
 // ── Product Profiles list HTML ──
 function spP5ListHTML(){
-  const addBtnTop = productProfiles.length>0
+  const isAdmin = _spIsAdmin();
+  const addBtnTop = (productProfiles.length>0 && isAdmin)
     ? `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${productProfiles.length} Profile${productProfiles.length!==1?'s':''}</span>
-        <button onclick="spP5ShowEdit(null)" style="display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border-radius:6px;background:#5F1EBE;color:#fff;font-size:10px;font-weight:700;cursor:pointer;border:none;font-family:'DM Sans',sans-serif;">
+        <span style="font-size:9px;font-weight:700;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${productProfiles.length} Profile${productProfiles.length!==1?'s':''}</span>
+        <button onclick="spP5ShowEdit(null)" class="pgt-btn-outline" style="padding:5px 10px;font-size:10px;">
           <i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Profile
         </button>
       </div>`
-    : '';
+    : (productProfiles.length>0
+      ? `<div style="margin-bottom:12px;"><span style="font-size:9px;font-weight:700;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${productProfiles.length} Profile${productProfiles.length!==1?'s':''}</span></div>`
+      : '');
 
   if(!productProfiles.length){
     return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;text-align:center;color:#A5AFBE;height:100%;">
@@ -1093,10 +1393,10 @@ function spP5ListHTML(){
         <i class="ti ti-box-multiple" style="font-size:18px;color:#A5AFBE;" aria-hidden="true"></i>
       </div>
       <div style="font-size:12px;font-weight:600;color:#6b6b68;margin-bottom:6px;font-family:'DM Sans',sans-serif;">No product profiles yet</div>
-      <div style="font-size:10px;color:#A5AFBE;line-height:1.6;margin-bottom:16px;max-width:220px;font-family:'DM Sans',sans-serif;">Add your first profile to get started. Each profile feeds the Home tab selector and powers all AI diagnostics.</div>
-      <button onclick="spP5ShowEdit(null)" style="display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:6px;background:#5F1EBE;color:#fff;font-size:11px;font-weight:700;cursor:pointer;border:none;font-family:'DM Sans',sans-serif;">
+      <div style="font-size:10px;color:#A5AFBE;line-height:1.6;margin-bottom:16px;max-width:220px;font-family:'DM Sans',sans-serif;">${isAdmin?'Add your first profile to get started. Each profile feeds the Home tab selector and powers all AI diagnostics.':'Ask an admin to add a product profile to get started.'}</div>
+      ${isAdmin?`<button onclick="spP5ShowEdit(null)" class="pgt-btn-outline" style="padding:7px 14px;font-size:11px;">
         <i class="ti ti-plus" style="font-size:12px;" aria-hidden="true"></i> Add Your First Profile
-      </button>
+      </button>`:''}
     </div>`;
   }
 
@@ -1110,8 +1410,8 @@ function spP5ListHTML(){
         <span class="sp-profile-chip-name">${_spEsc(p.productName)}</span>
         <span class="sp-profile-type-badge">${_spEsc(typeBadge)}</span>
         <div class="sp-profile-chip-actions">
-          <button class="sp-profile-action-btn" onclick="spP5ShowEdit('${p.id}')" aria-label="Edit profile"><i class="ti ti-pencil" aria-hidden="true"></i></button>
-          <button class="sp-profile-action-btn sp-profile-action-del" onclick="spP5DeleteProfile('${p.id}')" aria-label="Delete profile"><i class="ti ti-trash" aria-hidden="true"></i></button>
+          <button class="sp-profile-action-btn" onclick="spP5ShowEdit('${p.id}')" aria-label="${isAdmin?'Edit profile':'View profile'}"><i class="ti ${isAdmin?'ti-pencil':'ti-eye'}" aria-hidden="true"></i></button>
+          ${isAdmin?`<button class="sp-profile-action-btn sp-profile-action-del" onclick="spP5DeleteProfile('${p.id}')" aria-label="Delete profile"><i class="ti ti-trash" aria-hidden="true"></i></button>`:''}
         </div>
       </div>
       ${p.productDesc?`<div class="sp-profile-chip-desc">${_spEsc(p.productDesc)}</div>`:''}
@@ -1124,7 +1424,19 @@ function spP5ListHTML(){
 }
 
 // ── Product profile edit form HTML ──
-function spP5EditHTML(id){
+// Phase 3 (v8.107): genuine dual-mode rendering, not `disabled` attributes
+// sprinkled across a dozen different control types. Per external
+// adversarial review — this function has four custom type-selector buttons
+// (not a native <select>, `disabled` does nothing to them) and an upload
+// zone with three separate click targets, none of which a naive "add
+// disabled to inputs" pass would touch. Read-only mode renders flat,
+// non-interactive display versions of each control instead. The
+// new-profile path (id === null) is only ever reachable for admins — the
+// "Add Profile" buttons that call it are already hidden for Regular Users
+// in spP5ListHTML() — so readOnly+isNew is a deliberately unreachable
+// combination here, not an oversight.
+function spP5EditHTML(id, readOnly){
+  readOnly = !!readOnly;
   const p=id?productProfiles.find(x=>x.id===id):null;
   const isNew=!p;
   const industries=['Banking & Finance','Cross-Industry','Education / EdTech','Energy & Utilities',
@@ -1135,25 +1447,30 @@ function spP5EditHTML(id){
   const industryOpts=`<option value="" ${!pInd?'selected':''}>Select industry...</option>`
     +industries.map(v=>`<option value="${v}"${v===pInd?' selected':''}>${v}</option>`).join('');
   const types=['B2C Product','B2B SaaS','Internal Tool','System/API'];
-  const typeSegs=types.map(t=>{
-    const active=(p&&p.productType?p.productType:'B2C Product')===t;
-    const lbl={'B2C Product':'B2C','B2B SaaS':'B2B SaaS','Internal Tool':'Internal','System/API':'System'}[t];
-    return `<button class="sp-p5-type-btn${active?' active':''}" data-v="${t}" onclick="spP5TypeSeg(this)">${lbl}</button>`;
-  }).join('');
+  const activeType=(p&&p.productType?p.productType:'B2C Product');
+  const typeLabels={'B2C Product':'B2C','B2B SaaS':'B2B SaaS','Internal Tool':'Internal','System/API':'System'};
+  const typeSegs=readOnly
+    ? `<div style="display:flex;align-items:center;height:26px;padding:0 8px;font-size:10px;color:#1a1a1a;font-family:'DM Sans',sans-serif;">${typeLabels[activeType]||activeType}</div>`
+    : types.map(t=>{
+        const active=activeType===t;
+        return `<button class="sp-p5-type-btn${active?' active':''}" data-v="${t}" onclick="spP5TypeSeg(this)">${typeLabels[t]}</button>`;
+      }).join('');
   const docs=p&&p.docs?p.docs:[];
   const totalWords=docs.reduce((s,d)=>s+d.wordCount,0);
   const meterPct=Math.min(100,Math.round(totalWords/20000*100));
   const meterColor=meterPct>80?'#C8870A':'#5F1EBE';
   const docChips=docs.map((d,i)=>
-    `<span class="sp-file-chip${d.tooLittle?' sp-file-chip-warn':''}"><i class="ti ti-file" style="font-size:9px;" aria-hidden="true"></i> ${_spEsc(d.name)} &middot; ${d.tooLittle?'too little text':d.wordCount.toLocaleString()+'w'+(d.truncated?' (truncated)':'')}<button class="sp-file-chip-remove" onclick="spRemoveDoc('p5',${i})" aria-label="Remove file"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button></span>`
+    `<span class="sp-file-chip${d.tooLittle?' sp-file-chip-warn':''}"><i class="ti ti-file" style="font-size:9px;" aria-hidden="true"></i> ${_spEsc(d.name)} &middot; ${d.tooLittle?'too little text':d.wordCount.toLocaleString()+'w'+(d.truncated?' (truncated)':'')}${readOnly?'':`<button class="sp-file-chip-remove" onclick="spRemoveDoc('p5',${i})" aria-label="Remove file"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`}</span>`
   ).join('');
+  const dis = readOnly ? 'disabled' : '';
+  const disSuffix = readOnly ? 'background:#F4F6FA;color:#9a9a96;cursor:not-allowed;' : 'color:#1a1a1a;background:#fff;';
 
   return `<div class="sp-p5-edit-hdr" style="position:relative;">
     <div style="padding-right:32px;">
-      <div class="sp-p5-edit-title">${isNew?'New Profile':'Editing: '+_spEsc(p.productName)}</div>
-      <div class="sp-p5-edit-sub">${isNew?'Set up this product\'s AI context - used across every diagnostic session.':'Update this product\'s AI context - changes apply from the next session.'}</div>
+      <div class="sp-p5-edit-title">${isNew?'New Profile':(readOnly?'Viewing: '+_spEsc(p.productName):'Editing: '+_spEsc(p.productName))}</div>
+      <div class="sp-p5-edit-sub">${isNew?'Set up this product\'s AI context - used across every diagnostic session.':(readOnly?'View this product\'s AI context. Ask an admin to make changes.':'Update this product\'s AI context - changes apply from the next session.')}</div>
     </div>
-    <button class="sp-p5-edit-close" onclick="spP5TryClose()" aria-label="Close panel" title="Close"><i class="ti ti-x" style="font-size:11px;" aria-hidden="true"></i></button>
+    <button class="sp-p5-edit-close" onclick="${readOnly?'spP5ShowList()':'spP5TryClose()'}" aria-label="Close panel" title="Close"><i class="ti ti-x" style="font-size:11px;" aria-hidden="true"></i></button>
   </div>
   <input type="hidden" id="sp-p5-editing-id" value="${id||''}" />
   <div class="sp-p5-edit-scroll">
@@ -1162,18 +1479,18 @@ function spP5EditHTML(id){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
         <div>
           <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Product Name <span style="color:#A32D2D;">*</span></label>
-          <input type="text" id="sp-p5-name" value="${_spEsc(p&&p.productName?p.productName:'')}" placeholder="e.g. Focusly, Order Management Suite" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;box-sizing:border-box;">
+          <input type="text" id="sp-p5-name" ${dis} value="${_spEsc(p&&p.productName?p.productName:'')}" placeholder="e.g. Focusly, Order Management Suite" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;box-sizing:border-box;${disSuffix}">
         </div>
         <div>
           <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Product Type <span style="color:#A32D2D;">*</span></label>
-          <div style="display:flex;border:1px solid #D0D5E8;border-radius:5px;overflow:hidden;height:26px;" id="sp-p5-type-seg">${typeSegs}</div>
-          <input type="hidden" id="sp-p5-type" value="${_spEsc(p&&p.productType?p.productType:'B2C Product')}" />
+          <div style="display:flex;border:1px solid #D0D5E8;border-radius:5px;overflow:hidden;height:26px;${readOnly?'background:#F4F6FA;':''}" id="sp-p5-type-seg">${typeSegs}</div>
+          <input type="hidden" id="sp-p5-type" value="${_spEsc(activeType)}" />
         </div>
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">What does this product do? <span style="color:#A32D2D;">*</span></label>
-        <textarea id="sp-p5-desc" oninput="spCharCount(this,'sp-p5-desc-ct',2000)" maxlength="2000" rows="2" placeholder="e.g. Orchestrates omnichannel orders across warehouse, carrier and store channels" style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:5px 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;resize:vertical;min-height:44px;box-sizing:border-box;">${_spEsc(p&&p.productDesc?p.productDesc:'')}</textarea>
+        <textarea id="sp-p5-desc" ${dis} oninput="spCharCount(this,'sp-p5-desc-ct',2000)" maxlength="2000" rows="2" placeholder="e.g. Orchestrates omnichannel orders across warehouse, carrier and store channels" style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:5px 7px;font-size:10px;font-family:'DM Sans',sans-serif;resize:vertical;min-height:44px;box-sizing:border-box;${disSuffix}">${_spEsc(p&&p.productDesc?p.productDesc:'')}</textarea>
         <div style="display:flex;justify-content:space-between;margin-top:2px;">
           <span style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">One sentence - primary AI context signal</span>
           <span id="sp-p5-desc-ct" style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${(p&&p.productDesc?p.productDesc:'').length}/2000</span>
@@ -1183,39 +1500,39 @@ function spP5EditHTML(id){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
         <div>
           <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Industry Vertical</label>
-          <select id="sp-p5-industry" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;">${industryOpts}</select>
+          <select id="sp-p5-industry" ${dis} style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;${disSuffix}">${industryOpts}</select>
           <div style="font-size:9px;color:#A5AFBE;margin-top:3px;font-family:'DM Sans',sans-serif;">Overrides company-level</div>
         </div>
         <div>
           <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Primary User / ICP</label>
-          <input type="text" id="sp-p5-icp" value="${_spEsc(p&&p.icp?p.icp:'')}" placeholder="e.g. Knowledge workers, Warehouse ops" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;box-sizing:border-box;">
+          <input type="text" id="sp-p5-icp" ${dis} value="${_spEsc(p&&p.icp?p.icp:'')}" placeholder="e.g. Knowledge workers, Warehouse ops" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;box-sizing:border-box;${disSuffix}">
         </div>
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Current KPIs Being Tracked</label>
-        <input type="text" id="sp-p5-kpis" value="${_spEsc(p&&p.kpis?p.kpis:'')}" placeholder="e.g. DAU, session length, 7-day retention" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;box-sizing:border-box;">
+        <input type="text" id="sp-p5-kpis" ${dis} value="${_spEsc(p&&p.kpis?p.kpis:'')}" placeholder="e.g. DAU, session length, 7-day retention" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;box-sizing:border-box;${disSuffix}">
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Biggest Known Problem</label>
-        <input type="text" id="sp-p5-problem" value="${_spEsc(p&&p.problem?p.problem:'')}" placeholder="e.g. High drop-off after first week" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;box-sizing:border-box;">
+        <input type="text" id="sp-p5-problem" ${dis} value="${_spEsc(p&&p.problem?p.problem:'')}" placeholder="e.g. High drop-off after first week" style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;box-sizing:border-box;${disSuffix}">
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Additional Context</label>
-        <textarea id="sp-p5-context" oninput="spCharCount(this,'sp-p5-context-ct',2000)" maxlength="2000" rows="2" placeholder="Product-specific constraints, tech stack, org context..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:5px 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;resize:vertical;min-height:44px;box-sizing:border-box;">${_spEsc(p&&p.additionalContext?p.additionalContext:'')}</textarea>
+        <textarea id="sp-p5-context" ${dis} oninput="spCharCount(this,'sp-p5-context-ct',2000)" maxlength="2000" rows="2" placeholder="Product-specific constraints, tech stack, org context..." style="width:100%;border:1px solid #D0D5E8;border-radius:5px;padding:5px 7px;font-size:10px;font-family:'DM Sans',sans-serif;resize:vertical;min-height:44px;box-sizing:border-box;${disSuffix}">${_spEsc(p&&p.additionalContext?p.additionalContext:'')}</textarea>
         <div style="display:flex;justify-content:flex-end;"><span id="sp-p5-context-ct" style="font-size:9px;color:#A5AFBE;font-family:'DM Sans',sans-serif;">${(p&&p.additionalContext?p.additionalContext:'').length}/2000</span></div>
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Reference Link</label>
-        <input type="url" id="sp-p5-reflink" value="${_spEsc(p&&p.refLink?p.refLink:'')}" placeholder="Confluence, Google Doc, app store listing..." style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;box-sizing:border-box;">
+        <input type="url" id="sp-p5-reflink" ${dis} value="${_spEsc(p&&p.refLink?p.refLink:'')}" placeholder="Confluence, Google Doc, app store listing..." style="width:100%;height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 7px;font-size:10px;font-family:'DM Sans',sans-serif;box-sizing:border-box;${disSuffix}">
       </div>
 
       <div style="margin-bottom:10px;">
         <label style="font-size:10px;font-weight:600;color:#000;display:block;margin-bottom:4px;font-family:'DM Sans',sans-serif;">Supporting Documents</label>
-        <div class="sp-upload-zone" onclick="document.getElementById('sp-p5-file-input').click()" style="padding:7px 10px;">
+        ${readOnly?'':`<div class="sp-upload-zone" onclick="document.getElementById('sp-p5-file-input').click()" style="padding:7px 10px;">
           <div class="sp-upload-icon" style="width:22px;height:22px;border-radius:4px;font-size:11px;"><i class="ti ti-upload" aria-hidden="true"></i></div>
           <div class="sp-upload-text">
             <div class="sp-upload-title" style="font-size:9px;">${docs.length>=5?'Maximum files reached':'Upload files'}</div>
@@ -1223,7 +1540,7 @@ function spP5EditHTML(id){
           </div>
           ${docs.length<5?'<button class="sp-upload-btn" onclick="event.stopPropagation();document.getElementById(\'sp-p5-file-input\').click()">Browse</button>':''}
         </div>
-        <input type="file" id="sp-p5-file-input" class="sp-upload-input" multiple accept=".pdf,.docx,.txt,.csv,.xlsx" onchange="spHandleFileUpload('p5',this)" />
+        <input type="file" id="sp-p5-file-input" class="sp-upload-input" multiple accept=".pdf,.docx,.txt,.csv,.xlsx" onchange="spHandleFileUpload('p5',this)" />`}
         <div id="sp-p5-chips">${docChips}</div>
         ${docs.length>0?`<div class="sp-word-meter-wrap"><div class="sp-word-meter-bar" style="width:${meterPct}%;background:${meterColor};"></div></div><div class="sp-word-meter-label">${totalWords.toLocaleString()} / 20,000 words used &middot; ${docs.length} file${docs.length!==1?'s':''}</div>`:''}
       </div>
@@ -1231,8 +1548,11 @@ function spP5EditHTML(id){
 
   </div>
   <div class="sp-p5-edit-footer">
-    <button onclick="spP5TryClose()" class="sp-p5-discard-btn">Discard</button>
-    <button onclick="spP5SaveProfile()" class="sp-p5-apply-btn">Apply</button>
+    ${readOnly
+      ? `<button onclick="spP5ShowList()" class="sp-p5-discard-btn" style="margin-left:auto;">Close</button>`
+      : `<button onclick="spP5TryClose()" class="sp-p5-discard-btn">Discard</button>
+         <button onclick="spP5SaveProfile()" class="sp-p5-apply-btn">Apply</button>`
+    }
   </div>`;
 }
 
@@ -1321,20 +1641,27 @@ function spP5ShowList(){
 }
 
 function spP5ShowEdit(id){
+  const readOnly = !_spIsAdmin();
   const listEl=document.getElementById('sp-p5-list');
   const editEl=document.getElementById('sp-p5-edit');
   const divEl =document.getElementById('sp-p5-divider');
-  if(editEl){editEl.innerHTML=spP5EditHTML(id);editEl.style.display='flex';}
+  if(editEl){editEl.innerHTML=spP5EditHTML(id, readOnly);editEl.style.display='flex';}
   if(divEl) {divEl.classList.add('visible');}
   // Narrow the list to 40% so edit panel takes remaining space - true split not overlay
   if(listEl){listEl.style.flex='0 0 40%';listEl.style.minWidth='0';listEl.style.overflow='hidden auto';}
   // v8.53: drop card grid to 2-col when edit panel is open
   const gridEl=listEl?listEl.querySelector('.sp-profile-chip-grid'):null;
   if(gridEl)gridEl.classList.add('sp-profile-chip-grid-narrow');
-  // v8.53: snapshot field values for dirty detection on Discard/✕
-  _spP5CaptureSnapshot();
-  // Disable page-level Save & Exit and Cancel while profile form is open
-  _spSetFooterBtns(false);
+  // Phase 3 (v8.107): read-only mode skips snapshot capture and the footer
+  // disable entirely — there is nothing to become dirty when nothing can be
+  // edited, and leaving dirty-tracking machinery running unconditionally
+  // was flagged in adversarial review as wasted work at best, a real bug at
+  // worst if that state ever leaked into a later edit session.
+  if(!readOnly){
+    _spP5CaptureSnapshot();
+    // Disable page-level Save & Exit and Cancel while profile form is open
+    _spSetFooterBtns(false);
+  }
 }
 
 function spP5TypeSeg(btn){
@@ -1350,7 +1677,16 @@ function spP5TypeSeg(btn){
   if(hiddenEl)hiddenEl.value=btn.dataset.v;
 }
 
-function spP5SaveProfile(){
+// ── Save a product profile (Phase 2, v8.104) ──
+// Now async — a genuine per-row INSERT or UPDATE against mt_products, not a
+// push into an array followed by a blanket-overwrite of the whole thing.
+// New products get a real UUID (_ssUUID(), already used for session IDs)
+// instead of the old 'pp_'+Date.now() string, which isn't valid for
+// mt_products.id's real uuid column. The in-memory array and cache are only
+// updated AFTER a confirmed successful write — a failed save (e.g. the
+// unique(company_id, name) constraint firing on a duplicate name) should
+// never leave a phantom entry the database doesn't actually have.
+async function spP5SaveProfile(){
   const nameEl=document.getElementById('sp-p5-name');
   const descEl=document.getElementById('sp-p5-desc');
   const typeEl=document.getElementById('sp-p5-type');
@@ -1377,10 +1713,17 @@ function spP5SaveProfile(){
     if(typeof showToast==='function')showToast('Reference link should start with https://','error');
     return;
   }
+
+  const companyId=_spGetActiveCompanyId();
+  if(!companyId){ if(typeof showToast==='function')showToast('No active company. Cannot save.','error'); return; }
+  const client=(typeof authInit==='function')?authInit():null;
+  if(!client){ if(typeof showToast==='function')showToast('Not connected. Check your network and try again.','error'); return; }
+
   // Docs: use existing docs for edits, _spP5NewDocs for new profiles
   const docsToSave=existing?existing.docs:(window._spP5NewDocs||[]);
+  const newId=editingId||(typeof _ssUUID==='function'?_ssUUID():('pp_'+Date.now()));
   const profile={
-    id:editingId||('pp_'+Date.now()),
+    id:newId,
     productName:name,
     productDesc:desc,
     productType:type,
@@ -1392,18 +1735,56 @@ function spP5SaveProfile(){
     refLink:refLinkVal,
     docs:docsToSave.slice() // copy array
   };
-  if(editingId){
-    const idx=productProfiles.findIndex(p=>p.id===editingId);
-    if(idx>=0)productProfiles[idx]=profile;
-    else productProfiles.push(profile);
-  } else {
-    productProfiles.push(profile);
-    window._spP5NewDocs=[]; // clear temp store after save
+
+  const applyBtn=document.querySelector('.sp-p5-apply-btn');
+  if(applyBtn)applyBtn.disabled=true;
+
+  try {
+    const dbRow=_spMapProductToDB(profile, companyId);
+    let dbError;
+    if(editingId){
+      const { error } = await client.from('mt_products').update(dbRow).eq('id', editingId);
+      dbError=error;
+    } else {
+      // created_by is NOT NULL on mt_products — an UPDATE leaves an
+      // existing row's value untouched, but a fresh INSERT needs one
+      // explicitly. Confirmed against the actual RLS policy that this
+      // isn't enforced by a WITH CHECK clause (only company_id + admin role
+      // are), so any non-null value satisfies the database constraint —
+      // but currentUser.id is still the correct value regardless, for
+      // accurate attribution of who actually created the product.
+      const { error } = await client.from('mt_products').insert(Object.assign({ id:newId, created_by:currentUser.id }, dbRow));
+      dbError=error;
+    }
+    if(dbError){
+      // Postgres unique_violation — checked via the structured error code,
+      // not by matching message text, since message wording isn't a stable
+      // API contract across Postgres/Supabase versions.
+      if(dbError.code==='23505'){
+        if(typeof showToast==='function')showToast('A product with this name already exists.','error');
+      } else {
+        if(typeof showToast==='function')showToast('Couldn\u2019t save profile: '+dbError.message,'error');
+      }
+      return;
+    }
+
+    if(editingId){
+      const idx=productProfiles.findIndex(p=>p.id===editingId);
+      if(idx>=0)productProfiles[idx]=profile;
+      else productProfiles.push(profile);
+    } else {
+      productProfiles.push(profile);
+      window._spP5NewDocs=[]; // clear temp store after save
+    }
+    try { localStorage.setItem(_spPpKey(companyId), JSON.stringify(productProfiles.map(_spStripDocs))); } catch(e) {}
+    spMarkDirty();
+    spP5ShowList();
+    if(typeof showToast==='function')showToast('Profile saved.','success');
+  } catch(e) {
+    if(typeof showToast==='function')showToast('Couldn\u2019t save profile. Check your network and try again.','error');
+  } finally {
+    if(applyBtn)applyBtn.disabled=false;
   }
-  spMarkDirty();
-  _spPersistProfiles();
-  spP5ShowList();
-  if(typeof showToast==='function')showToast('Profile saved.','success');
 }
 
 function spP5DeleteProfile(id){
@@ -1426,8 +1807,8 @@ function spP5DeleteProfile(id){
       </div>
     </div>
     <div style="padding:10px 20px 16px;display:flex;justify-content:flex-end;gap:6px;">
-      <button class="modal-cancel-btn" onclick="document.getElementById('sp-p5-del-overlay').remove()">Cancel</button>
-      <button style="background:#A32D2D;color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;" onclick="spP5ConfirmDelete('${id}')">Delete Profile</button>
+      <button class="modal-cancel-btn" id="sp-p5-del-cancel-btn" onclick="document.getElementById('sp-p5-del-overlay').remove()">Cancel</button>
+      <button id="sp-p5-del-confirm-btn" style="background:#A32D2D;color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:'DM Sans',sans-serif;cursor:pointer;" onclick="spP5ConfirmDelete('${id}')">Delete Profile</button>
     </div>
   </div>`;
   document.body.appendChild(_ov);
@@ -1436,16 +1817,50 @@ function spP5DeleteProfile(id){
   document.addEventListener('keydown',_esc,true);
 }
 
-function spP5ConfirmDelete(id){
+// ── Confirm product delete (Phase 2, v8.104) ──
+// Now async — a genuine DELETE against mt_products, not an array filter
+// followed by a blanket-overwrite. Zero-rows-matched (someone else already
+// deleted this product) is detected explicitly via the delete's exact row
+// count, rather than assumed to have succeeded.
+async function spP5ConfirmDelete(id){
   const _ov=document.getElementById('sp-p5-del-overlay');
-  if(_ov)_ov.remove();
-  productProfiles=productProfiles.filter(p=>p.id!==id);
-  // If deleted profile was the active one, clear activeProfileId
-  if(activeProfileId===id)activeProfileId=null;
-  spMarkDirty();
-  _spPersistProfiles();
-  spP5ShowList();
-  if(typeof showToast==='function')showToast('Profile deleted.','success');
+  const delBtn=document.getElementById('sp-p5-del-confirm-btn');
+  const cancelBtn=document.getElementById('sp-p5-del-cancel-btn');
+  if(delBtn)delBtn.disabled=true;
+  if(cancelBtn)cancelBtn.disabled=true;
+
+  const companyId=_spGetActiveCompanyId();
+  const client=(typeof authInit==='function')?authInit():null;
+  if(!client||!companyId){
+    if(_ov)_ov.remove();
+    if(typeof showToast==='function')showToast('Not connected. Check your network and try again.','error');
+    return;
+  }
+
+  try {
+    const { error, count } = await client.from('mt_products').delete({ count:'exact' }).eq('id', id);
+    if(_ov)_ov.remove();
+    if(error){
+      if(typeof showToast==='function')showToast('Couldn\u2019t delete profile: '+error.message,'error');
+      return;
+    }
+    // Sync local state to reality regardless of whether this delete matched
+    // a row — if count is 0, someone else already removed it, and the local
+    // list should stop showing it either way.
+    productProfiles=productProfiles.filter(p=>p.id!==id);
+    if(activeProfileId===id)activeProfileId=null;
+    try { localStorage.setItem(_spPpKey(companyId), JSON.stringify(productProfiles.map(_spStripDocs))); } catch(e) {}
+    spP5ShowList();
+    if(count===0){
+      if(typeof showToast==='function')showToast('This product was already removed.','error');
+    } else {
+      spMarkDirty();
+      if(typeof showToast==='function')showToast('Profile deleted.','success');
+    }
+  } catch(e) {
+    if(_ov)_ov.remove();
+    if(typeof showToast==='function')showToast('Couldn\u2019t delete profile. Check your network and try again.','error');
+  }
 }
 
 // ── File upload handler (shared for company 'co' and product 'p5' scopes) ──
@@ -1625,7 +2040,15 @@ function spPopulateCompanyProfile(){
 }
 
 // ── Save company profile fields on settingsPageSave() ──
-function spSaveCompanyProfile(){
+// ── Save company profile fields (Phase 2, v8.104) ──
+// Now async — a targeted UPDATE on the one mt_companies row for the active
+// company, not a call into the retired blanket-overwrite _spPersistProfiles().
+// Returns { ok, message } rather than a bare boolean, so settingsPageSave()
+// can distinguish "validation failed, don't proceed" from "the write itself
+// failed" and show the right message for each — including the permission
+// case (RLS requires role='admin' on mt_companies; a Regular User's write
+// is correctly rejected by the database, not silently accepted).
+async function spSaveCompanyProfile(){
   const getVal=(id)=>{const el=document.getElementById(id);return el?el.value.trim():'';};
   const nameVal=getVal('sp-co-name');
   // Only block save if user has started filling company profile but left name empty.
@@ -1634,15 +2057,37 @@ function spSaveCompanyProfile(){
   if(!nameVal&&anyFilled){
     const nameEl=document.getElementById('sp-co-name');
     if(nameEl){nameEl.style.borderColor='#A32D2D';nameEl.focus();}
-    if(typeof showToast==='function')showToast('Company name is required.','error');
-    return false;
+    return { ok:false, message:'Company name is required.' };
   }
+
   companyProfile.companyName     = nameVal;
   companyProfile.companyIndustry = getVal('sp-co-industry')||'';
   companyProfile.companyUrl      = getVal('sp-co-url');
   companyProfile.companyStrategy = getVal('sp-co-strategy');
   companyProfile.companyContext  = getVal('sp-co-context');
   companyProfile.companyRefLink  = getVal('sp-co-reflink');
-  _spPersistProfiles();
-  return true;
+
+  const companyId = _spGetActiveCompanyId();
+  if(!companyId) return { ok:false, message:'No active company. Cannot save.' };
+
+  const client = (typeof authInit === 'function') ? authInit() : null;
+  if(!client) return { ok:false, message:'Not connected. Check your network and try again.' };
+
+  try {
+    const { error } = await client
+      .from('mt_companies')
+      .update(_spMapCompanyToDB(companyProfile))
+      .eq('id', companyId);
+    if(error){
+      // RLS silently returns 0 rows affected for an unauthorized write rather
+      // than a distinct "permission denied" error in most PostgREST setups —
+      // treat any error here as worth surfacing plainly rather than assuming
+      // it's always a network issue.
+      return { ok:false, message:'Couldn\u2019t save company profile: ' + error.message };
+    }
+    try { localStorage.setItem(_spCoKey(companyId), JSON.stringify(_spStripCoDocs(companyProfile))); } catch(e) {}
+    return { ok:true };
+  } catch(e) {
+    return { ok:false, message:'Couldn\u2019t save company profile. Check your network and try again.' };
+  }
 }

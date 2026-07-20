@@ -1,5 +1,251 @@
-function getKey(){const el=document.getElementById('api-key');if(el&&el.value.trim())return el.value.trim();return sessionStorage.getItem('hcl_ak')||'';}  
+function getKey(){const el=document.getElementById('api-key');if(el&&el.value.trim())return el.value.trim();return sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak')||'';}  
 function gv(id){return document.getElementById(id).value.trim();}
+
+// ── Phase 5: generation lock ──
+// Wraps a caller's FULL generate→parse→validate→apply→save workflow, not
+// just the network call. Confirmed via adversarial review that scoping the
+// lock to callAPI() alone is unsafe for this codebase: every real caller
+// (~21 sites across 10 files) does substantial post-processing and calls
+// sessionStoreSave() AFTER callAPI() returns — a lock that releases when
+// callAPI() resolves would let a second person start generating before the
+// first person's result is actually persisted.
+//
+// Explicitly deferred, not built this phase (logged, not an oversight):
+//   - Server-side lock enforcement (Render proxy) — this remains a
+//     cooperative client-side convention, not a true distributed guarantee.
+//   - Live re-fetch of is_shared immediately pre-acquire — _activeSessionIsShared
+//     is a cached client flag; a session shared mid-session by someone else
+//     won't be reflected here until next load.
+//   - Operation-token-based locking (active_operation_id) — the real fix for
+//     same-user multi-tab and heartbeat/release ordering at the schema
+//     level. Requires a DB migration outside this phase's reach.
+//   - The has_access/UPDATE non-atomicity inside acquire_generation_lock()
+//     itself (a membership revocation landing mid-call) — a DB-function
+//     limitation, not fixable from app code.
+
+// Same-tab/same-browser duplicate-generation guard. Does NOT solve true
+// cross-device same-user concurrency (the DB lock is reentrant for the same
+// current_app_user() by design) — this only stops the easy accidental
+// double-click/two-tab-in-one-browser case.
+const _localGenerationLocks = new Set();
+
+// Branded lock handle marker — vanilla JS has no enforced module privacy,
+// so an inner "unlocked, requires a real lock handle" function (see the
+// ccGenerateFeaturesForCap pattern) can't rely on a leading underscore
+// alone to stop a future caller from passing a bogus {throwIfLost(){}}
+// object and silently bypassing the lock. Confirmed via adversarial
+// review (nested-lock design question) that this branding is necessary,
+// not decorative — an inner function that requires a lock handle should
+// assert the brand and throw loudly if it's missing or fake, turning an
+// accidental unlocked call into an immediate error instead of a silent
+// same-tab race.
+const _GENERATION_LOCK_HANDLE_BRAND = Symbol('generationLockHandle');
+
+// Call at the top of any inner "requires a real lock handle" function
+// (naming convention: suffixed _REQUIRES_LOCK_HANDLE) to fail loudly if
+// called without one. callerName is just for a more useful error message.
+function _assertGenerationLockHandle(lockHandle, callerName){
+  if (!lockHandle || lockHandle[_GENERATION_LOCK_HANDLE_BRAND] !== true || typeof lockHandle.throwIfLost !== 'function') {
+    throw new Error((callerName||'unknown caller')+': called without a valid generation lock handle — this function must only be called from inside withGenerationLock(), never directly.');
+  }
+}
+
+async function _pgtRpc(fnName, params){
+  const client = (typeof authInit === 'function') ? authInit() : null;
+  if (!client) return { data: null, error: new Error('Auth client not initialised') };
+  return await client.rpc(fnName, params);
+}
+
+async function _acquireGenerationLock(sessionId){
+  const { data, error } = await _pgtRpc('acquire_generation_lock', { p_session_id: sessionId });
+  if (error) throw error; // caller distinguishes thrown (unknown) from a clean false
+  // Phase 5 fix (v8.118): the RPC's return shape changed from a bare
+  // boolean to a structured object ({acquired, active_user_name, reason})
+  // so the frontend can show WHO currently holds the lock, not just that
+  // it's held. Per adversarial review, this is a genuine breaking change
+  // to the RPC's contract, not an additive one — a careless `if(data)`
+  // truthy check on the new object shape would incorrectly treat
+  // {acquired:false} as truthy and let generation proceed when it
+  // shouldn't. Defends against that here: validates the shape strictly
+  // and THROWS (fails closed, no generation) rather than guessing, if the
+  // RPC ever returns something unexpected — e.g. if this code somehow runs
+  // against the OLD boolean-returning RPC before the SQL migration lands,
+  // or after some future accidental revert.
+  if (!data || typeof data !== 'object' || typeof data.acquired !== 'boolean') {
+    console.error('[LOCK] unexpected acquire_generation_lock response shape:', data);
+    throw new Error('generation_lock_unknown');
+  }
+  const name = (data.active_user_name == null ? '' : String(data.active_user_name)).trim();
+  return {
+    acquired: data.acquired === true,
+    activeUserName: name || null,
+    reason: data.reason || null
+  };
+}
+
+async function _releaseGenerationLock(sessionId){
+  const { error } = await _pgtRpc('release_generation_lock', { p_session_id: sessionId });
+  if (error) throw error;
+}
+
+// Single-flight heartbeat — never overlaps itself, and release() always
+// waits for any in-flight tick to settle before running. Closes the ghost-
+// lock race found in adversarial review: a blind setInterval's already-
+// in-flight request can land AFTER clearInterval()+release(), silently
+// reacquiring the lock for a generation that has already finished.
+function _startLockHeartbeat(sessionId, onLockLost){
+  let stopped = false, timer = null, inFlight = null;
+  async function beat(){
+    if (stopped) return;
+    inFlight = (async () => {
+      try {
+        const ok = await _acquireGenerationLock(sessionId);
+        if (ok === false) { stopped = true; onLockLost(); return; }
+        // ok === true: refreshed successfully, nothing else to do.
+      } catch(e) {
+        // Thrown/network failure — log and continue. A single failed
+        // heartbeat tick does NOT mean the lock is lost; only a clean
+        // false return means that. Killing a 2-4 minute PI generation
+        // because one heartbeat ping timed out would be worse than the
+        // staleness bug this heartbeat exists to fix.
+        console.warn('[LOCK] heartbeat failed, lock state unknown, continuing:', e);
+      } finally {
+        inFlight = null;
+      }
+      if (!stopped) timer = setTimeout(beat, 22000);
+    })();
+  }
+  timer = setTimeout(beat, 22000);
+  return {
+    async stopAndWait(){
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (inFlight) { try { await inFlight; } catch(e) {} }
+    }
+  };
+}
+
+// The wrapper every generation call site (B6) uses. fn is an async function
+// containing the ENTIRE workflow: the callAPI() call, response parsing,
+// validation, applying results to state, and sessionStoreSave(). Session
+// context is captured ONCE here, at call start — never re-read from a live
+// global mid-flight, closing the "user switches sessions during generation"
+// race found in adversarial review.
+//
+// fn receives a `lock` handle: { throwIfLost() }. Per the SECOND adversarial
+// review round, checking `lockLost` only AFTER fn() returns is too late if
+// fn() already called sessionStoreSave() before returning — the throw at
+// that point is "performative," the bad save already happened. Callers that
+// do meaningful work in stages (parse → apply → save) should call
+// lock.throwIfLost() between stages, especially immediately before any
+// save, so a lock lost mid-generation is caught BEFORE persisting, not
+// after. Not every caller needs multiple checkpoints — a caller that
+// applies+saves in one synchronous block right after callAPI() returns
+// only needs one checkpoint, right before that block.
+async function withGenerationLock(fn){
+  const lockSessionId = (typeof _activeSessionId !== 'undefined') ? _activeSessionId : null;
+  const lockIsShared = (typeof _activeSessionIsShared !== 'undefined') && !!_activeSessionIsShared;
+
+  if (!lockIsShared || !lockSessionId) return await fn({ [_GENERATION_LOCK_HANDLE_BRAND]: true, sessionId: lockSessionId||null, throwIfLost(){} }); // private session — no lock, zero overhead, no-op checkpoint, still branded so inner _REQUIRES_LOCK_HANDLE functions accept it
+
+  if (_localGenerationLocks.has(lockSessionId)) {
+    // Phase 5 fix (v8.118): this message is about the user's OWN prior
+    // click still being in flight in THIS SAME browser tab — not a
+    // different user, and the original wording ("A generation is already
+    // running on this session in this tab") was confirmed via live
+    // testing to read as a completely separate, cross-user situation,
+    // when it's really the same "you clicked while your own request was
+    // still running" case every other generation entry point in the app
+    // already handles with this exact copy. Adopting that existing,
+    // already-proven wording here for consistency, not inventing new text.
+    if (typeof showToast === 'function') showToast("Still working on your last request. Hang tight, this won't take long.", 'info');
+    throw new Error('generation_already_running_locally');
+  }
+  // Claim the local slot SYNCHRONOUSLY, before the async DB acquire call
+  // even starts — not after it resolves. A real bug was found here in
+  // testing: adding to the Set only after `await _acquireGenerationLock()`
+  // resolved left a genuine window, between the acquire call starting and
+  // it resolving, where a second same-tab call could pass the check above
+  // and race its own concurrent acquire. Every exit path below now removes
+  // this claim — the try/finally covers it even if the acquire call itself
+  // throws or returns false.
+  _localGenerationLocks.add(lockSessionId);
+
+  // Phase 5 fix (v8.118): _acquireGenerationLock() now returns
+  // {acquired, activeUserName, reason} instead of a bare boolean, so the
+  // cross-user rejection toast below can name the actual person holding
+  // the lock. lockResult starts as a fail-closed default (acquired:false)
+  // so any code path that somehow skips the assignment below still
+  // behaves safely, the same fail-closed intent the old `let acquired =
+  // false` default had.
+  let lockResult = { acquired: false, activeUserName: null, reason: null };
+  try {
+    try {
+      lockResult = await _acquireGenerationLock(lockSessionId);
+    } catch(e) {
+      // Thrown/network failure on the INITIAL acquire is treated as unknown,
+      // not as safe-to-proceed — distinct from a clean false, per adversarial
+      // review. We genuinely don't know if the lock was granted server-side.
+      console.warn('[LOCK] initial acquire failed, lock state unknown:', e);
+      if (typeof showToast === 'function') showToast('Could not confirm generation lock. Please try again.', 'warn');
+      throw new Error('generation_lock_unknown');
+    }
+    if (lockResult.acquired === false) {
+      // v9.08: distinguish view-only rejection from a genuinely held lock.
+      // Before this feature, is_shared alone always granted access, so
+      // 'no_access' as a reason was impossible — the RPC can now return it
+      // for an authenticated, active company member who simply has
+      // view-only access to this session. Falling through to the generic
+      // "someone is already generating" copy would be actively misleading
+      // for this case.
+      if (lockResult.reason === 'no_access') {
+        if (typeof showToast === 'function') showToast("You have view-only access to this session and can't generate content.", 'warn');
+        throw new Error('generation_lock_no_access');
+      }
+      // Phase 5 fix (v8.118): name the actual holder when the RPC provides
+      // one; fall back to the existing generic wording otherwise (a
+      // legitimately possible case — e.g. active_user_name was never
+      // denormalized for some old lock, or the holder released between the
+      // RPC's failed acquire and its own name lookup, a benign, accepted
+      // display-only race per adversarial review). Matches the same
+      // "|| 'Someone'" fallback pattern already used for the session
+      // card's "is generating now" meta line, for consistency.
+      const _holder = lockResult.activeUserName || 'Someone on your team';
+      if (typeof showToast === 'function') showToast(_holder + ' is already generating on this session. Try again in a moment.', 'warn');
+      throw new Error('generation_lock_not_acquired');
+    }
+
+    let lockLost = false;
+    const heartbeat = _startLockHeartbeat(lockSessionId, function(){ lockLost = true; });
+    const lockHandle = {
+      [_GENERATION_LOCK_HANDLE_BRAND]: true,
+      sessionId: lockSessionId,
+      throwIfLost(){
+        if (lockLost) {
+          if (typeof showToast === 'function') showToast('Your session lock was lost during generation. Your result was not saved. Please try again.', 'warn');
+          throw new Error('generation_lock_lost');
+        }
+      }
+    };
+    try {
+      const result = await fn(lockHandle);
+      // Final check after fn() returns too — covers callers whose last
+      // statement inside fn() IS the save, with no room for one more
+      // explicit checkpoint call after it.
+      lockHandle.throwIfLost();
+      return result;
+    } finally {
+      await heartbeat.stopAndWait();
+      try { await _releaseGenerationLock(lockSessionId); }
+      catch(e) { console.warn('[LOCK] release failed, will expire by staleness window:', e); }
+    }
+  } finally {
+    // Release the local slot on EVERY exit — success, lock-not-acquired,
+    // lock-unknown, fn() throwing, or lock-lost mid-generation.
+    _localGenerationLocks.delete(lockSessionId);
+  }
+}
+
 
 // ── Per-caller default model table ──
 // Used only when appSettings.model === 'optimized' (the new default — see
@@ -30,7 +276,14 @@ const CALLER_MODEL_DEFAULTS = {
   'prototype-wireframe': 'claude-haiku-4-5',
   'prototype-brief': 'claude-sonnet-4-6',
   'doc-summary': 'claude-haiku-4-5',
-  'ai-recommendations': 'claude-haiku-4-5'
+  'ai-recommendations': 'claude-haiku-4-5',
+  // v9.10.03: was silently falling through to _MODEL_FALLBACK
+  // ('claude-sonnet-4-6') by omission, not deliberate choice — this call
+  // (Add Feature's on-demand single-hypothesis generation) is a lighter,
+  // single-item task closer in profile to cc-dd-single/mi-suggest than
+  // to the bulk multi-feature generation callers, so registered here at
+  // the Haiku tier rather than Sonnet.
+  'sc-add-feat-hyp-gen': 'claude-haiku-4-5'
 };
 const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing from the table above — should never happen, but never silently fail to a non-existent model
 
@@ -79,6 +332,25 @@ function switchTab(t){
   if(blockIfGenerating(()=>switchTab(t)))return;
   const prev=curTab;
   curTab=t;
+  // Phase 3a (v8.126): Home poll only runs while Home is actually visible —
+  // started in homeInit()/homeOnTabEnter(), stopped here on the way out.
+  if(prev==='home'&&t!=='home'&&typeof _lsHomePollStop==='function'){
+    _lsHomePollStop();
+  }
+  // Item 8: no reason to make a collaborator wait up to 5 minutes if the
+  // user's clearly done editing and has moved on to another tab.
+  if(prev==='pi'&&t!=='pi'&&typeof _lsFlushManualEditOnTabLeave==='function'){
+    _lsFlushManualEditOnTabLeave('pi');
+  }
+  // Item 2: same principle, extended to Capability Canvas.
+  if(prev==='cc'&&t!=='cc'&&typeof _lsFlushManualEditOnTabLeave==='function'){
+    _lsFlushManualEditOnTabLeave('cc');
+  }
+  // Build B: same principle, extended to Story Canvas and Prototype Canvas.
+  if(prev==='sc'&&t!=='sc'&&typeof _lsFlushManualEditOnTabLeave==='function'){
+    _lsFlushManualEditOnTabLeave('sc');
+    _lsFlushManualEditOnTabLeave('pc');
+  }
   // Fix 1 (v8.39): update lastTab on user-initiated tab switches, debounced 300ms
   if(typeof _ssRestoring!=='undefined'&&!_ssRestoring&&t!=='home'){
     if(typeof _ssLastTabTimer!=='undefined')clearTimeout(_ssLastTabTimer);
@@ -97,7 +369,7 @@ function switchTab(t){
   // Close DD panel on every tab switch
   if(typeof ccCloseDDPanel==='function')ccCloseDDPanel();
   // Update all tab buttons — includes home, fc (Feature Canvas) and sc (Story Canvas)
-  ['mm','cc','pi','mi','la','fc','sc','home'].forEach(id=>{
+  ['mm','cc','pi','mi','la','fc','sc','op','home'].forEach(id=>{
     const el=document.getElementById('tab-'+id);
     if(el)el.classList.toggle('active',t===id);
   });
@@ -108,6 +380,7 @@ function switchTab(t){
   const miTab=document.getElementById('mi-tab');
   const ccTab=document.getElementById('cc-tab');
   const piTab=document.getElementById('pi-tab');
+  const opTab=document.getElementById('op-tab');
   const homeTab=document.getElementById('home-tab');
   const lp=document.getElementById('left-panel');
 
@@ -120,6 +393,7 @@ function switchTab(t){
   if(miTab)miTab.classList.toggle('on',t==='mi');
   if(ccTab)ccTab.classList.toggle('on',t==='cc');
   if(piTab)piTab.classList.toggle('on',t==='pi');
+  if(opTab)opTab.classList.toggle('on',t==='op');
 
   // Left panel: hidden on all tabs except mm post-launch (handled in mm case above)
   // For all non-mm tabs, always hide old left panel — Home has its own, others don't use it
@@ -148,7 +422,7 @@ function switchTab(t){
       if(typeof _homeResetSetupForm==='function') _homeResetSetupForm();
     }
     // Hide all workflow tabs when on Home — visible only during active non-home tab
-    ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc'].forEach(function(id){
+    ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-op'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.style.display!=='none') el.setAttribute('data-home-hidden','1');
       if(el) el.style.display='none';
@@ -164,7 +438,7 @@ function switchTab(t){
     if(typeof homeOnTabEnter==='function')homeOnTabEnter();
   } else if(t==='mm'){
     // Restore tabs that were hidden when entering Home — only if they were visible before
-    ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc'].forEach(function(id){
+    ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-op'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.getAttribute('data-home-hidden')==='1'){
         el.style.display='';
@@ -265,6 +539,12 @@ function switchTab(t){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
     if(typeof newScRender==='function')newScRender();
+  }
+  // Outcome Pulse tab entry
+  if(t==='op'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+    if(typeof opRender==='function')opRender();
   }
   // Close export dropdowns when switching tabs
   const expDrop=document.getElementById('sc-export-drop');
@@ -415,7 +695,8 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
     max_tokens:maxTok,
     system:sys,
     messages:[{role:'user',content:usr}],
-    _caller:caller||''
+    _caller:caller||'',
+    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
   });
 
   let r;
@@ -430,13 +711,40 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
     throw new Error('Generation timed out or proxy unavailable. Please try again.');
   });
   if(data.error){
-    const _etype=data.error.type||'';
-    const _emsg=data.error.message||'Unknown error';
-    const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':''};
-    const _eprefix=_elabels.hasOwnProperty(_etype)?_elabels[_etype]:(_etype?'['+_etype+'] ':'');
-    throw new Error(_eprefix+_emsg);
+    throw new Error(_pgtAnthropicErrorMessage(data.error));
   }
   return data.content&&data.content[0]?data.content[0].text:'';
+}
+
+// Shared between callAPI() and any other direct caller of /api/anthropic
+// (currently just home.js's AI Recommendations, which deliberately uses a
+// separate same-origin Netlify-function call path rather than callAPI()'s
+// cross-origin Render-proxy path — that routing difference exists on
+// purpose, for corporate-network compatibility, and must never be merged.
+// Only the error-interpretation logic is shared, to avoid the two call
+// sites drifting apart on how they handle the same error types.
+function _pgtAnthropicErrorMessage(error){
+  const _etype=error.type||'';
+  const _emsg=error.message||'Unknown error';
+  // forbidden_error means the server-side company-membership check (v8.113)
+  // rejected this call — most likely because the person was disabled/removed
+  // from their active company mid-session. A generic "AI failed" message
+  // would be actively misleading here; re-resolving company state is the
+  // actually-useful next step, since it corrects local state to match
+  // what's really true server-side (e.g. surfacing the zero-company empty
+  // state) rather than leaving the person stuck retrying a call that will
+  // keep failing for the same reason.
+  if(_etype==='forbidden_error'){
+    if(typeof _pgtResolveCompany==='function'){
+      _pgtResolveCompany().then(function(){
+        if(typeof homeInit==='function') homeInit();
+      });
+    }
+    return 'Your access to this company has changed. Refreshing — please try again.';
+  }
+  const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':''};
+  const _eprefix=_elabels.hasOwnProperty(_etype)?_elabels[_etype]:(_etype?'['+_etype+'] ':'');
+  return _eprefix+_emsg;
 }
 
 function isValidTree(p){

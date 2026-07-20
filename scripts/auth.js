@@ -8,6 +8,47 @@
 // env.js is NOT included in Claude zips — create it once locally and keep it.
 // SUPABASE_URL and SUPABASE_ANON_KEY must be defined before this file loads.
 
+// ── Shared localStorage key for the active company id ──
+// Defined here (loaded first, by both login.html and index.html) since it's
+// referenced by authSignOut() below, main.js's boot sequence, and
+// session-store.js's company-scoped queries.
+const _PGT_ACTIVE_COMPANY_KEY = 'pgt_active_company_id';
+
+// ── Shared BYOK sessionStorage key helper (v8.105) ──
+// The API key was previously stored under one fixed sessionStorage slot,
+// shared identically across every company a user belongs to — entering a
+// key while working in Company A silently applied it in Company B too, with
+// nothing about the storage even aware companies existed. Now scoped by the
+// active company id: each company gets its own independent slot. Defined
+// once here (auth.js loads before api.js, settings.js, and settings-page.js
+// — the three files that read/write this) rather than duplicated in each.
+function _byokKey() {
+  const companyId = (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })();
+  return 'hcl_ak_' + (companyId || 'none');
+}
+
+// One-time migration on first load after this shipped: if a key exists
+// under the old unscoped slot and the new company-scoped slot is still
+// empty, carry it forward into whichever company is active right now.
+// FIXED in v8.106 — the old key must be cleared after copying it forward,
+// not left in place. Leaving it meant this ran again on every subsequent
+// company switch, and since every newly-visited company's slot starts
+// empty, the old key kept getting copied into every company that had never
+// had its own key set — silently defeating the entire point of
+// company-scoping, which is exactly what this looked like from the outside:
+// "the key is still shared everywhere."
+function _migrateByokKeyIfNeeded() {
+  try {
+    const oldKey = sessionStorage.getItem('hcl_ak');
+    if (!oldKey) return;
+    const newSlot = _byokKey();
+    if (!sessionStorage.getItem(newSlot)) {
+      sessionStorage.setItem(newSlot, oldKey);
+    }
+    sessionStorage.removeItem('hcl_ak');
+  } catch(e) {}
+}
+
 // ── Client singleton ──
 var _supabase = null;
 
@@ -84,6 +125,58 @@ async function authSignUp(email, displayName, password) {
   return data;
 }
 
+// ── Check Company Name ──
+// Calls the proxy's unauthenticated /api/check-company-name endpoint before
+// signup or in-app company creation. Never throws — a network failure here
+// should not block anything; treated as "no match found," since the create
+// call itself (RLS + the RPC) is the actual source of truth, not this check.
+// Mirrors api.js's local/hosted routing pattern since PROXY_URL already
+// includes the /api/anthropic path and needs stripping to get the base origin.
+async function authCheckCompanyName(companyName) {
+  const trimmed = (companyName || '').trim();
+  if (!trimmed) return false;
+
+  const isLocal = (window.location.hostname === '' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const LOCAL_URL = 'http://localhost:3001/api/check-company-name';
+  const hostedBase = (typeof PROXY_URL !== 'undefined' && PROXY_URL)
+    ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '')
+    : 'https://product-diagnostics-proxy.onrender.com';
+  const url = isLocal ? LOCAL_URL : (hostedBase + '/api/check-company-name');
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed })
+    });
+    const data = await res.json();
+    return !!(data && data.exists);
+  } catch(e) {
+    console.warn('authCheckCompanyName: request failed, proceeding as no-match:', e);
+    return false;
+  }
+}
+
+// ── Create Company (atomic) ──
+// Calls the create_company_with_admin() RPC — creates the company and makes
+// the calling user its admin in a single transaction (fixes a partial-failure
+// gap in an earlier two-insert design, per adversarial review). This is a
+// shared DB PRIMITIVE only, not a shared workflow — each of its three callers
+// (signup completion, the "Create a New Company" modal, zero-company
+// recovery) handles its own distinct behavior after this resolves; this
+// function does not redirect, close any modal, or touch any UI.
+// Returns the new company's uuid. Throws a user-readable string on failure.
+async function authCreateCompany(companyName) {
+  const client = authInit();
+  if (!client) throw 'Auth client not initialised. Check Supabase credentials.';
+  const trimmed = (companyName || '').trim();
+  if (!trimmed) throw 'Company name is required.';
+
+  const { data, error } = await client.rpc('create_company_with_admin', { p_name: trimmed });
+  if (error) throw error.message || 'Could not create company. Please try again.';
+  return data; // uuid
+}
+
 // ── Sign Out ──
 // Signs out, clears local state, redirects to login.html.
 async function authSignOut() {
@@ -94,6 +187,11 @@ async function authSignOut() {
   // Clear app state from localStorage (Supabase session key cleared by SDK automatically)
   // App session data (pgt_session_*) is preserved — will be re-associated on next login
   // in Step 6 when Supabase becomes the authoritative store.
+  // Active-company key IS cleared, added per adversarial review: not because a stale
+  // value could grant unauthorized access (the per-user membership check in main.js's
+  // boot sequence already prevents that regardless), but so a different person signing
+  // in on a shared machine doesn't inherit a hint pointing at someone else's company.
+  try { localStorage.removeItem(_PGT_ACTIVE_COMPANY_KEY); } catch(e) {}
   window.location.href = 'login.html';
 }
 

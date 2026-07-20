@@ -16,6 +16,19 @@ async function generate(extra){
   const desc=_p.productDesc||'';
   if(!name||!desc){showToast('Product name and description are required. Check your product profile in Settings.','warn');return;}
 
+  // v8.133 fix (item 3): courtesy pre-check, before any confirm dialog —
+  // confirmed live that a lock conflict used to only surface AFTER the
+  // confirm(s) were already shown and dismissed, by which point (item 4)
+  // local data had already been wiped. This is advisory only; the real,
+  // authoritative lock check below is unchanged.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
+
   // Only warn about data reset on fresh generate — not on Refine (extra is truthy)
   const hasDownstream=gData&&(diagnosticSessions.length>0||(productLeakAnalysis&&productLeakAnalysis.length>0)||scCanvas.length>0||ddGenerated);
   if(hasDownstream&&!extra){
@@ -31,6 +44,29 @@ async function generate(extra){
   generateConfirmed(extra);
 }
 
+// Phase 5 (v8.117): stamps a tiny, invisible marker CHILD inside the
+// shared #ls loader element with this attempt's ID. Must be a child, not
+// an attribute on #ls itself — getIfCurrentAttempt() uses
+// container.querySelector(), which per DOM spec only searches
+// DESCENDANTS, never the calling element itself. An earlier version of
+// this helper set the attribute directly on #ls, which would have made
+// every check silently return null (always "stale") — caught only by
+// tracing querySelector's actual matching semantics before relying on it,
+// not by any syntax check. #ls is a static element already in index.html;
+// showLoad() only updates its #load-steps/#load-headline children, never
+// replaces #ls wholesale, so this marker child persists safely alongside
+// showLoad()'s own updates without interfering with them.
+function _kpiStampLoaderMarker(attempt){
+  const ls=document.getElementById('ls');
+  if(!ls) return;
+  let marker=ls.querySelector('[data-gen-attempt]');
+  if(marker) marker.remove();
+  const span=document.createElement('span');
+  span.setAttribute('data-gen-attempt',attempt.id);
+  span.style.display='none';
+  ls.appendChild(span);
+}
+
 async function generateConfirmed(extra){
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
   const key=getKey();
@@ -41,7 +77,49 @@ async function generateConfirmed(extra){
   const name=_p.productName||'';
   const desc=_p.productDesc||'';
   if(!name||!desc){showToast('Product name and description are required. Check your product profile in Settings.','warn');return;}
-  // Full reset of all downstream state
+
+  // v8.133 fix (item 4): the full destructive reset that used to sit here —
+  // wiping capStore/scCanvas/miData/diagnosticSessions and hiding the FC/
+  // SC/PI tabs — has been MOVED to run only after the lock is confirmed
+  // acquired, below. Confirmed live: a lock conflict used to leave this
+  // reset having already run, wiping a viewer's local session state and
+  // hiding tabs before the "someone else is generating" toast ever
+  // appeared — the exact same shape of bug already found and fixed once in
+  // piGenerate() (v8.118), never carried over here until now. Only the
+  // button disable (immediate UX feedback, non-destructive) stays here.
+
+  const btn=document.getElementById('gen-btn');
+  if(btn)btn.disabled=true;
+  if(settingsOpen)toggleSettings();
+
+  // Phase 5 (v8.117): attempt marker, added for consistency with the other
+  // 9 wrapped functions even though the actual risk here is narrower than
+  // most of them — #ls/#er are singleton, app-wide overlay elements (not
+  // per-view containers swapped out by navigation), and aiGenInFlight's
+  // existing top-of-function guard already prevents a genuinely
+  // overlapping second generateConfirmed() call. The one real scenario
+  // this still protects against: a stale, slow-to-fail call's hideLoad()/
+  // error-write reaching a #ls that a NEWER generateConfirmed() call has
+  // since re-claimed for its own generation.
+  const _attempt=newGenAttempt();
+
+  // Phase 5: withGenerationLock wraps the ENTIRE remaining workflow — the
+  // optional MI-suggest sub-step, the main KPI-tree generation, parsing,
+  // applying to gData/productContext/capStore, and the final
+  // sessionStoreSave() — as ONE lock acquisition for what is, from the
+  // user's perspective, one action ("Generate Discovery Map"), even though
+  // it may internally make two separate callAPI() calls. Splitting this
+  // into two separate lock acquisitions (one per callAPI call) would
+  // release the lock between the MI sub-step and the main generation,
+  // reopening exactly the collision window this lock exists to close.
+  try{
+    await withGenerationLock(async (_lock) => {
+
+  // v8.133 fix (item 4): the destructive reset — now confirmed to only run
+  // once the lock is genuinely held, matching piGenerate()'s own fixed
+  // pattern exactly. If the lock check above had failed instead, execution
+  // would never reach this line at all, and the user's existing downstream
+  // data/tabs would never have been touched.
   diagnosticSessions=[];
   activeDiagnosticId=null;
   productLeakAnalysis=[];
@@ -58,6 +136,23 @@ async function generateConfirmed(extra){
   ddGenerated=false;
   productContext=null;
   miData=null;miGenerated=false;miProductMode='market';miCapabilities=[];
+  // v8.140 fix: confirmed via live debug output that piPlan was never
+  // cleared here at all — the tab correctly hid (tabPi.classList.remove
+  // ('revealed') below), but the underlying data silently survived and
+  // got saved as-is, meaning a receiving viewer's cross-user apply was
+  // faithfully copying a piPlan that should never have still existed.
+  // piInputs/piScVersion/piStoryPool reset to their declared defaults
+  // (state.js) since they hold generation-attempt-specific derived data
+  // (parsedCaps/parsedFeatures, a staleness hash tied to scCanvas) that
+  // goes stale the moment capStore/scCanvas are wiped. piSquads
+  // deliberately NOT reset — team capacity configuration, doesn't
+  // reference anything that becomes stale here.
+  piPlan=null;
+  piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
+  piScVersion=null;
+  piDdPanelOpen=false;
+  piDdPanelMetricKey=null;
+  piStoryPool={};
   const dvTabEl=document.getElementById('tab-dv');
   const laTabEl=document.getElementById('tab-la');
   const miTabEl=document.getElementById('tab-mi');
@@ -83,11 +178,6 @@ async function generateConfirmed(extra){
   if(typeof newScRender==='function')newScRender();
   if(typeof newScUpdateTabBadge==='function')newScUpdateTabBadge();
   if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc')switchTab('mm');
-
-  const btn=document.getElementById('gen-btn');
-  if(btn)btn.disabled=true;
-  ddGenerated=false;
-  if(settingsOpen)toggleSettings();
 
   // Industry fallback: product profile -> company profile -> empty (ST-14)
   const industry=_p.industry||_cp.companyIndustry||'';
@@ -138,6 +228,7 @@ async function generateConfirmed(extra){
     if(choice==='with-mi'){
       // Stage 1: Market Research
       showLoad(LOADER_STAGES_MI);
+      _kpiStampLoaderMarker(_attempt);
       const _miSignal=startAiGen(`Your Market Intelligence research for ${fd.name||'this product'} is being put together. Leaving now discards it, you'll need to regenerate from scratch.`);
       try{
         const sys=(typeof SYS_MI!=='undefined'?SYS_MI:'');
@@ -160,17 +251,29 @@ async function generateConfirmed(extra){
           if(miTabEl)miTabEl.style.display='';
         }
       }catch(miErr){
-        if(miErr.name==='AbortError'){endAiGen();return;}
-        showToast('Market Intelligence could not be generated — continuing with KPI tree. You can run it manually from the MI tab.','warn');
+        if(miErr.name==='AbortError'){
+          endAiGen();
+          // Phase 5: rethrow rather than return — a silent return here
+          // made withGenerationLock() (added below, wrapping this whole
+          // function) treat an aborted MI sub-step as a normal successful
+          // completion of the ENTIRE generateConfirmed() workflow, since
+          // this catch is nested inside the function-level try/catch that
+          // will itself become the lock's fn(). See pi-planning.js for the
+          // full rationale on this pattern.
+          throw miErr;
+        }
+        showToast('Market Intelligence could not be generated. Continuing with KPI tree. You can run it manually from the MI tab.','warn');
       }
       // Advance to Stage 2: KPI Tree Analysis
       if(window._loaderAdvanceStage) window._loaderAdvanceStage();
     } else {
       // Skip MI — normal KPI loader (mode-aware: capability vs. metric copy)
       showLoad(fd.approach==='capability-based'?LOADER_STAGES_KPI_CAP:LOADER_STAGES_KPI);
+      _kpiStampLoaderMarker(_attempt);
     }
   } else {
     showLoad(fd.approach==='capability-based'?LOADER_STAGES_KPI_CAP:LOADER_STAGES_KPI);
+    _kpiStampLoaderMarker(_attempt);
   }
 
   const _isManual=fd.approach==='capability-based'&&_sc&&_sc.generationMode==='manual'&&Array.isArray(_sc.manualList)&&_sc.manualList.length>0;
@@ -195,11 +298,49 @@ async function generateConfirmed(extra){
     const parsed=parseJSON(txt);
     if(!parsed)throw new Error('Response could not be parsed. Please try again.');
     if(_isManual)_mmReconcileManualCaps(parsed,_sc.manualList,!!_sc.allowAISuggestions);
+    // Outcome Verification Loop (A3): snapshot the CURRENT (about to be
+    // overwritten) NSM tracking fields before gData is reassigned below —
+    // see the full explanation at the reassignment site just after this.
+    const _prevNsmTracking=(typeof gData!=='undefined'&&gData&&gData.nsm)
+      ?{baseline:gData.nsm.baseline,target:gData.nsm.target,actual:gData.nsm.actual,updatedAt:gData.nsm.updatedAt}
+      :null;
     gData=parsed;
+    // Outcome Verification Loop (A3): gData=parsed above is a full
+    // reassignment on EVERY generation/refinement — the AI's response only
+    // ever contains nsm.metric/definition, so a fresh assignment would
+    // silently wipe out any previously-entered baseline/target/actual/
+    // updatedAt every single time the tree is regenerated or refined.
+    // Preserve them across this reassignment, same pattern already used
+    // just below for kpiDepth/marketIntelligenceEnabled. _prevNsmTracking
+    // must be captured BEFORE gData=parsed runs (it reads the PRIOR
+    // gData, which the line above just overwrote) — captured here, right
+    // after the reassignment, from a local snapshot taken before it. If
+    // this is the product's first-ever generation, _prevNsmTracking is
+    // simply absent and the new fields default to null, which is correct.
+    if(gData.nsm){
+      gData.nsm.baseline=(_prevNsmTracking&&_prevNsmTracking.baseline!==undefined)?_prevNsmTracking.baseline:null;
+      gData.nsm.target=(_prevNsmTracking&&_prevNsmTracking.target!==undefined)?_prevNsmTracking.target:null;
+      gData.nsm.actual=(_prevNsmTracking&&_prevNsmTracking.actual!==undefined)?_prevNsmTracking.actual:null;
+      gData.nsm.updatedAt=(_prevNsmTracking&&_prevNsmTracking.updatedAt!==undefined)?_prevNsmTracking.updatedAt:null;
+    }
     gData.approach=fd.approach;
     // Store the depth used for this generation — refinements must use the same depth
     // to avoid schema mismatch between the prompt schema and the existing tree structure
     gData.kpiDepth=(typeof appSettings!=='undefined'?appSettings.kpiDepth:1)||1;
+    // Phase 5 fix (v8.118): persist this session's launch-time MI choice
+    // (_sc.marketIntelligence — read fresh above, per this specific call,
+    // never carried over from a prior run) so tab-reveal logic on RESUME
+    // can distinguish "chose MI but skipped running it" from "chose no MI
+    // at all" — previously this choice existed only as an ephemeral local
+    // variable, never persisted anywhere, so resuming a session lost all
+    // record of it and could only fall back to miGenerated (has MI
+    // actually been run), which is the wrong question to ask. gData=parsed
+    // above is a FULL reassignment to the AI's fresh JSON response every
+    // single call (confirmed by reading this exact line) — not a mutation
+    // of whatever gData held before — so this line is guaranteed to run
+    // with THIS run's own fresh choice on every generation, never a stale
+    // value surviving from an earlier run.
+    gData.marketIntelligenceEnabled=(_sc&&_sc.marketIntelligence===true);
 
     // Reset banner state — always expanded on new generation
     mmBannerCollapsed=false;
@@ -220,7 +361,10 @@ async function generateConfirmed(extra){
       nsmMetric:(parsed.nsm&&parsed.nsm.metric)||''
     };
 
-    hideLoad();
+    // Phase 5 (v8.117): marker-guarded for consistency with the other 9
+    // functions, even though aiGenInFlight's own guard already makes a
+    // genuinely overlapping second call unlikely here.
+    if(getIfCurrentAttempt('ls',_attempt)){hideLoad();}
     renderMM(parsed);
     capStore={};capStoreInvalidated=true;capActiveMetricKey=null;capActiveCapIdx=null;capActiveSubCapIdx=null;
     if(curTab==='cc')ccRenderEmpty();
@@ -244,8 +388,17 @@ async function generateConfirmed(extra){
     if(ccTabEl) ccTabEl.style.display='';
     // Signal new/updated content in Capability Canvas (cleared on first visit)
     if(typeof markTabPending==='function')markTabPending('cc');
-    // Reveal MI tab if feature is enabled — PM may not have run MI yet but should see it's available
-    if(featMI){
+    // Reveal MI tab if THIS SESSION chose MI at launch — Phase 5 fix
+    // (v8.118): previously checked ONLY the global featMI setting, which
+    // meant a session that itself chose "no MI" could still have the tab
+    // incorrectly revealed here if the global setting happened to be on
+    // for some other reason. Uses the same _ssShouldShowMiTab() helper the
+    // resume path uses (session-store.js), so both reveal paths can't
+    // silently drift apart on this logic again — but reads directly off
+    // gData here since gData IS the object being constructed right now in
+    // this same function call, not yet wrapped in the {gData:...} shape
+    // _ssShouldShowMiTab() expects from a restored session snapshot.
+    if((typeof gData!=='undefined'&&gData&&gData.marketIntelligenceEnabled===true)||miGenerated===true){
       const miTabEl=document.getElementById('tab-mi');
       if(miTabEl) miTabEl.style.display='';
       // If MI was pre-generated (session launched with MI enabled), render the screen now
@@ -256,18 +409,69 @@ async function generateConfirmed(extra){
       }
     }
     // Auto-save session after successful DM generation
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save — see pi-planning.js
+    // for the full rationale (second adversarial review round).
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      // Build A (v8.132, live sync): awaited inline, same sequencing already
+      // proven necessary for CC — withGenerationLock releases as soon as
+      // this callback's promise resolves, so the emit must happen before
+      // that, not via .then().
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'mm','kpi_tree_generated',null,null);
+      }
+    }
     endAiGen();
   }catch(err){
-    if(err.name==='AbortError'){endAiGen();return;}
-    hideLoad();if(btn)btn.disabled=false;
+    if(err.name==='AbortError'){
+      endAiGen();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1).
+      throw err;
+    }
+    if(err.message==='generation_lock_lost'){
+      // Toast already shown by withGenerationLock() — avoid a duplicate.
+      // Phase 5 (v8.117): marker-guarded — only hide the loader if this
+      // attempt still owns it (a newer generateConfirmed() call hasn't
+      // since re-stamped #ls for its own generation).
+      if(getIfCurrentAttempt('ls',_attempt)){hideLoad();}
+      if(btn)btn.disabled=false;
+      endAiGen();
+      throw err;
+    }
+    if(getIfCurrentAttempt('ls',_attempt)){hideLoad();}
+    if(btn)btn.disabled=false;
     document.getElementById('er').classList.add('on');
     document.getElementById('er-msg').textContent='Error: '+err.message;
     endAiGen();
   }
+    });
+  }catch(lockErr){
+    // Phase 5: reached in three cases — pre-fn lock failure (lock not
+    // acquired/unknown/already running locally), or the rethrown
+    // AbortError/lock-lost from the inner catch above. The inner catch
+    // already did its own resets in every case that reaches here; this is
+    // a final, idempotent safety net so the gen button never gets stuck
+    // disabled if withGenerationLock() itself throws before the inner
+    // try/catch ever runs.
+    if(btn)btn.disabled=false;
+  }
 }
-function regen(){
+async function regen(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const refinementText=gv('regen-in');
+  // v8.133 fix (item 3): checked here too, not just inside generate() —
+  // this function can route to _mmShowRegenConfirm's richer modal, which
+  // bypasses generate() entirely until its own Regenerate button is
+  // clicked deep inside that modal.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   // Check if downstream data exists — warn before wiping
   const hasDownstream=(capStore&&Object.keys(capStore).length>0)||
     (scCanvas&&scCanvas.length>0)||
@@ -336,9 +540,20 @@ function _mmRegenExport(){
   },2000);
 }
 
-function _mmRegenProceed(refinementText){
+async function _mmRegenProceed(refinementText){
   const modal=document.getElementById('mm-regen-confirm');
   if(modal)modal.remove();
+  // v8.135 fix (item 9): a fresh peek here, not just the one already run
+  // inside regen() before this modal was shown — that earlier check can be
+  // stale by the time the user actually clicks Regenerate on a modal that
+  // may have sat open for a while.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   // Fix 3 (v8.38): set dmRegenAt timestamp BEFORE clearing — used by sessionStoreSyncFromDB
   // to detect stale Supabase snapshots after regen
   if(typeof sessionContext!=='undefined'&&sessionContext){
@@ -362,7 +577,12 @@ function _mmRegenProceed(refinementText){
       }
     } catch(e){ console.warn('dmRegenAt localStorage pre-clear failed:',e); }
   }
-  generate(refinementText);
+  // v8.135 fix (item 9): calls generateConfirmed() directly — the user has
+  // already confirmed via THIS modal; calling generate() again would
+  // re-run its own separate, differently-scoped confirmation check and
+  // could show a second, different confirm dialog on top of this one
+  // (confirmed live — the exact bug this fixes).
+  generateConfirmed(refinementText);
 }
 
 // ── _mmReconcileManualCaps ──
@@ -432,7 +652,7 @@ function renderDiagnosticActionBar(){
   const diagBtn=(featDiag&&!isCap)?`<button class="diag-bar-secondary" id="diag-run-btn" onclick="dvAnalyze()" disabled><i class="ti ti-microscope" style="font-size:12px;" aria-hidden="true"></i> Run Diagnostics</button><a id="diag-rerun-link" onclick="dvAnalyzeForce()" style="display:none;font-size:10px;color:rgba(255,255,255,0.6);cursor:pointer;margin-left:8px;text-decoration:underline;">Run again anyway</a>`:'';
   const refineLbl='Refine Discovery Map';  // v8.38 — always DM regardless of approach
   const refinePlaceholder=isCap?'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Real-Time Inventory Visibility to Live Stock Sync, focus more on returns handling, split Fulfillment into two stages...':'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Promise Accuracy to Delivery Commitment, focus more on exception handling, split Fulfillment into two stages...';
-  const barHint=isCap?`Discovery Map ready &middot; ${metricCount} capabilit${metricCount!==1?'ies':'y'} &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`:`Discovery Map ready &middot; ${metricCount} metrics &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`;
+  const barHint=isCap?`Discovery Map ready &middot; ${metricCount} process area${metricCount!==1?'s':''} &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`:`Discovery Map ready &middot; ${metricCount} metrics &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`;
   const continueCta=`<button class="diag-bar-cta" onclick="revealAndSwitchTab('cc')"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Continue to Capability Canvas</button>`;
   bar.innerHTML=`
     <div class="diag-refine-expand" id="diag-refine-expand" style="display:none;">
@@ -445,7 +665,7 @@ function renderDiagnosticActionBar(){
     <div class="diag-bar-row">
       <span class="diag-bar-hint">${barHint}</span>
       <div class="diag-bar-btns">
-        <button class="diag-refine-btn-tertiary" id="diag-refine-btn" onclick="toggleRefineBar()"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> ${refineLbl}</button>
+        ${((typeof canEditSession!=='function')||canEditSession())?`<button class="diag-refine-btn-tertiary" id="diag-refine-btn" onclick="toggleRefineBar()"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> ${refineLbl}</button>`:''}
         ${diagBtn}
         ${continueCta}
       </div>
@@ -494,6 +714,14 @@ function toggleMmBanner(){
 
 function renderMM(data){
   const c=document.getElementById('mm-out');
+  // v9.06.01 fix: preserve horizontal scroll position across re-renders.
+  // renderMM() fully replaces .stages' innerHTML, which resets scrollLeft
+  // to 0 by default — a real problem once Custom Value Stage sits far to
+  // the right (e.g. stage 8 of 8). Capture BEFORE rebuild; restore AFTER,
+  // using requestAnimationFrame (layout must complete first) and clamped
+  // against the new scrollWidth in case a stage was removed, shrinking it.
+  const _oldStagesEl=c?c.querySelector('.stages'):null;
+  const _savedScrollLeft=_oldStagesEl?_oldStagesEl.scrollLeft:0;
   const stages=data.stages||[];
   const mm=data.measurementModel||null;
   const hasMM=mm&&mm.modelName;
@@ -528,13 +756,21 @@ function renderMM(data){
   h+=`<div class="stages">`;
   stages.forEach((st,idx)=>{
     if(!st||!st.id)return;
-    const stLabel=st.label||st.id;
+    // v9.06.02 fix: previous line unconditionally hardcoded the display
+    // text to 'Custom Value Stage' for st.id==='pi', completely ignoring
+    // any actual user rename — meaning a renamed stage NEVER visually
+    // reflected its new name, even though the underlying data WAS
+    // correctly updated. Now uses the centralized, narrow display helper
+    // (exact-legacy-literal guard only, never overrides a real rename).
+    const stLabel=typeof ccGetStageDisplayLabel==='function'?ccGetStageDisplayLabel(st):(st.label||st.id);
     const stDesc=st.description||'';
     const color=STAGE_PALETTE[idx%STAGE_PALETTE.length];
     const l1list=Array.isArray(st.l1_metrics)&&st.l1_metrics.length>0?st.l1_metrics:null;
 
     const scopeWarn=st._scopeWarning?`<div class="stage-scope-warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i><span>Scope changed &mdash; review ${data.approach==='capability-based'?'capabilities':'metrics'} and evidence for continued relevance</span><button class="stage-scope-warn-dismiss" onclick="event.stopPropagation();dismissScopeWarn(${idx})" title="Dismiss">&times;</button></div>`:'';
-    h+=`<div class="sc"><div class="sh" style="background:${color}"><div class="sh-lbl">Stage ${idx+1}</div><div class="sh-title">${e(stLabel)}</div>${stDesc?`<div class="sh-desc" title="${e(stDesc)}">${e(stDesc)}</div>`:''}<div class="sh-actions"><button class="sh-action-btn" onclick="event.stopPropagation();editStage(${idx})" title="Edit stage"><i class="ti ti-pencil" style="font-size:11px;" aria-hidden="true"></i></button><button class="sh-action-btn" onclick="event.stopPropagation();deleteStage(${idx})" title="Delete stage"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div></div>${scopeWarn}`;
+    // v9.08.02: computed once per stage render, matches L1-metric pattern.
+    const _canEditDmStage=(typeof canEditSession!=='function')||canEditSession();
+    h+=`<div class="sc"><div class="sh" style="background:${color}"><div class="sh-lbl">Stage ${idx+1}</div><div class="sh-title">${e(stLabel)}</div>${stDesc?`<div class="sh-desc" title="${e(stDesc)}">${e(stDesc)}</div>`:''}<div class="sh-actions">${_canEditDmStage?`<button class="sh-action-btn" onclick="event.stopPropagation();editStage(${idx})" title="Edit stage"><i class="ti ti-pencil" style="font-size:11px;" aria-hidden="true"></i></button><button class="sh-action-btn" onclick="event.stopPropagation();deleteStage(${idx})" title="Delete stage"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`:''}</div></div>${scopeWarn}`;
 
     if(!l1list){
       h+=`<div class="stage-empty"><div class="stage-empty-icon"><i class="ti ti-minus" aria-hidden="true"></i></div><div class="stage-empty-msg">No recommended ${data.approach==='capability-based'?'capabilities':'KPIs'} for this stage</div><div class="stage-empty-sub">Refine your product context to generate ${data.approach==='capability-based'?'capabilities':'metrics'} here.</div></div>`;
@@ -543,13 +779,31 @@ function renderMM(data){
         if(!l1||!l1.name)return;
         const lid=`l1-${st.id}-${li}`;
         const aiBadge=l1._aiSuggested?`<span class="l1-ai-badge" title="Added by AI to fill a gap in your capability list"><i class="ti ti-sparkles" style="font-size:9px;" aria-hidden="true"></i> AI suggested</span>`:'';
-        h+=`<div class="l1 l1-flat" id="${lid}"><div class="l1-hdr"><div class="l1-info"><div class="l1-name">${e(l1.name)}${aiBadge}</div><div class="l1-why">${e(l1.why||'')}</div></div><div class="l1-cap-actions"><button class="l1-cap-edit" onclick="event.stopPropagation();editCapability(${idx},${li})" title="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button><button class="l1-cap-remove" onclick="event.stopPropagation();deleteCapability(${idx},${li})" title="Delete capability"><i class="ti ti-x" style="font-size:10px;" aria-hidden="true"></i></button></div></div></div>`;
+        // v9.08.06: this is a separate render branch from Outcome Metrics'
+        // L1 row below (data.approach==='capability-based' vs the else) —
+        // that branch's _canEditDm flag is out of scope here, so Process
+        // Area's edit/delete icons were left ungated despite Outcome
+        // Metrics' identical icons being fixed back in v9.08.
+        const _canEditDmFlat=(typeof canEditSession!=='function')||canEditSession();
+        h+=`<div class="l1 l1-flat" id="${lid}"><div class="l1-hdr"><div class="l1-info"><div class="l1-name">${e(l1.name)}${aiBadge}</div><div class="l1-why">${e(l1.why||'')}</div></div><div class="l1-cap-actions">${_canEditDmFlat?`<button class="l1-cap-edit" onclick="event.stopPropagation();editCapability(${idx},${li})" title="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button><button class="l1-cap-remove" onclick="event.stopPropagation();deleteCapability(${idx},${li})" title="Delete capability"><i class="ti ti-x" style="font-size:10px;" aria-hidden="true"></i></button>`:''}</div></div></div>`;
       });
     } else {
       l1list.forEach((l1,li)=>{
         if(!l1||!l1.name)return;
         const lid=`l1-${st.id}-${li}`;
-        const l1MetKey=st.id+'||'+l1.name;h+=`<div class="l1" id="${lid}" onclick="tog('${lid}')"><div class="l1-hdr"><div class="l1-info"><div class="l1-name">${e(l1.name)}</div><div class="l1-why">${e(l1.why||'')}</div></div><div class="exp">+</div></div><div class="l1-trigger-row"><button class="cap-trigger cap-trigger-dd" onclick="event.stopPropagation();ccOpenDDPanel('${e(l1MetKey)}','${e(l1.name)}','${e(stLabel)}')">Dictionary &#8594;</button><button class="cap-trigger cap-trigger-ev" onclick="event.stopPropagation();kpiOpenEvidenceDrawer('${e(l1.name)}','${e(l1.name)}','${e(stLabel)}','L1')">Evidence &#8594;</button></div><div class="l1-kids">`;
+        const l1MetKey=st.id+'||'+l1.name;
+        // v9.07: only show the expand chevron and attach the row's expand-click
+        // when there are actually L2/L3 children to reveal — previously shown
+        // unconditionally even for childless L1 metrics.
+        const _hasChildren=(l1.l2_metrics||[]).length>0;
+        const _rowOnclick=_hasChildren?` onclick="tog('${lid}')"`:'';
+        const _chevronHtml=_hasChildren?'<div class="exp">+</div>':'';
+        // v9.08: computed once per row render — matches the existing
+        // readOnly-inline-in-template pattern used in settings-page.js's
+        // Company Profile section, rather than inventing a new CSS-class
+        // approach for this codebase.
+        const _canEditDm = (typeof canEditSession !== 'function') || canEditSession();
+        h+=`<div class="l1" id="${lid}"${_rowOnclick}><div class="l1-hdr"><div class="l1-info"><div class="l1-name">${e(l1.name)}</div><div class="l1-why">${e(l1.why||'')}</div></div><div class="l1-cap-actions">${_canEditDm?`<button class="l1-cap-edit" onclick="event.stopPropagation();editCapability(${idx},${li})" title="Edit metric"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button><button class="l1-cap-remove" onclick="event.stopPropagation();deleteCapability(${idx},${li})" title="Delete metric"><i class="ti ti-x" style="font-size:10px;" aria-hidden="true"></i></button>`:''}</div>${_chevronHtml}</div><div class="l1-trigger-row"><button class="cap-trigger cap-trigger-dd" onclick="event.stopPropagation();ccOpenDDPanel('${e(l1MetKey)}','${e(l1.name)}','${e(stLabel)}')">Dictionary &#8594;</button><button class="cap-trigger cap-trigger-ev" onclick="event.stopPropagation();kpiOpenEvidenceDrawer('${e(l1.name)}','${e(l1.name)}','${e(stLabel)}','L1')">Evidence &#8594;</button></div><div class="l1-kids">`;
         (l1.l2_metrics||[]).forEach((l2,l2i)=>{
           if(!l2||!l2.name)return;
           const l2id=`l2-${st.id}-${li}-${l2i}`;
@@ -573,6 +827,15 @@ function renderMM(data){
   });
   h+=`</div>`;
   c.innerHTML=h;
+  if(_savedScrollLeft>0){
+    requestAnimationFrame(function(){
+      const _newStagesEl=c.querySelector('.stages');
+      if(_newStagesEl){
+        const _maxScroll=Math.max(0,_newStagesEl.scrollWidth-_newStagesEl.clientWidth);
+        _newStagesEl.scrollLeft=Math.min(_savedScrollLeft,_maxScroll);
+      }
+    });
+  }
 }
 
 function tog(id){const el=document.getElementById(id);if(el)el.classList.toggle('open');}
@@ -613,9 +876,32 @@ function stageGetAffectedEvidenceCount(stageLabel){
   return count;
 }
 
-function stageExecuteCascade(stageLabel){
-  // 1. Strip capStore keys for this stage
-  Object.keys(capStore).forEach(k=>{if(k.includes('||'+stageLabel))delete capStore[k];});
+function stageExecuteCascade(stageLabel,stageId){
+  // v9.05: label-substring matching (`k.includes('||'+stageLabel)`) never
+  // matches capStore's 'pi||'+capName key format — that substring check
+  // only works for KPI-linked stages where the key IS stageId+'||'+metricName
+  // and metricName directly derives from this stage's own l1_metrics. For
+  // the Custom Value Stage (stageId==='pi'), use identity-based ownership
+  // instead (isPiCapEntry, from pi-bucket.js) so cleanup actually reaches
+  // every custom process area/metric's capabilities, not silently no-op.
+  //
+  // v9.07 fix: the "else" branch below was ALSO never actually working for
+  // ordinary KPI-linked stages, contrary to this comment's original claim.
+  // capStore keys are built as stageId+'||'+metricName (confirmed via direct
+  // read of deleteCapability()/editCapability()), but this matched against
+  // stageLabel (the display title, e.g. "Acquisition") instead of stageId
+  // (the lowercase id, e.g. "acquisition") — for any stage where these
+  // differ, which is every ordinary stage, the substring never matched and
+  // this line silently deleted nothing. Confirmed via direct test: a
+  // capStore entry survived a full stage delete untouched. Fixed to match
+  // on stageId (the actual key prefix), consistent with how every other
+  // capStore lookup in this file already keys these entries.
+  if(stageId==='pi'&&typeof isPiCapEntry==='function'){
+    Object.keys(capStore).forEach(k=>{if(isPiCapEntry(k,capStore[k]))delete capStore[k];});
+  } else {
+    // 1. Strip capStore keys for this stage
+    Object.keys(capStore).forEach(k=>{if(k.startsWith(stageId+'||'))delete capStore[k];});
+  }
   // 2. Merge evidence (discards this stage's metrics) if session exists
   const session=diagnosticSessions&&diagnosticSessions.find(s=>s.id===activeDiagnosticId);
   if(session)dvMergeEvidenceOnRegen(session,gData);
@@ -629,20 +915,45 @@ function stageExecuteCascade(stageLabel){
 
 // ── Stage delete ──
 function deleteStage(idx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!gData||!gData.stages[idx])return;
   const st=gData.stages[idx];
   const stageLabel=st.label||st.id;
+  const _isPiStage=(st.id==='pi');
   const affected=stageGetAffectedFeatures(stageLabel);
   const storyCount=stageGetAffectedStoryCount(affected);
   const evidenceCount=stageGetAffectedEvidenceCount(stageLabel);
   const hasAnalysis=!!(productLeakAnalysis&&productLeakAnalysis.length>0);
+  // v9.05: count custom-bucket capabilities separately — stageGetAffectedFeatures
+  // only tracks scCanvas features linked to AI-generated stages' l1_metrics,
+  // not pi|| capStore entries directly, so this needs its own count.
+  const _piCapCount=_isPiStage&&typeof isPiCapEntry==='function'
+    ?Object.keys(capStore).filter(k=>isPiCapEntry(k,capStore[k])).reduce((a,k)=>a+((capStore[k].capabilities||[]).length),0)
+    :0;
+  // v9.07 fix: ordinary (non-pi) stages had no equivalent capStore-capability
+  // count in this warning — the modal never told the user how many
+  // capabilities (independent of Feature Canvas linkage) were about to be
+  // removed. Matches on st.id (stageId), NOT stageLabel — capStore keys are
+  // built as stageId+'||'+metricName by deleteCapability()/editCapability(),
+  // confirmed via direct read; stageLabel is the display title and would
+  // silently never match (the same class of stale-key bug already
+  // documented, and only partially fixed, for stageExecuteCascade() itself —
+  // flagging that as a separate, pre-existing gap, not fixed here since it's
+  // outside this feature's approved scope).
+  const _stageCapStoreCount=(!_isPiStage)
+    ?Object.keys(capStore).filter(k=>k.startsWith(st.id+'||')).reduce((a,k)=>a+((capStore[k].capabilities||[]).length),0)
+    :0;
 
   // Build consequence list HTML
   let conseqItems='';
+  if(_isPiStage){
+    conseqItems+=`<li class="warn">&#9888; This deletes ALL custom process areas/metrics under Custom Value Stage — ${_piCapCount} capabilit${_piCapCount!==1?'ies':'y'} across every custom bucket, not just one.</li>`;
+  }
+  if(!_isPiStage&&_stageCapStoreCount>0)conseqItems+=`<li class="warn">&#9888; ${_stageCapStoreCount} capabilit${_stageCapStoreCount!==1?'ies':'y'} in Capability Canvas linked to this stage will be removed</li>`;
   if(affected.length>0)conseqItems+=`<li>${affected.length} feature${affected.length!==1?'s':''} on Feature Canvas linked to this stage will be removed</li>`;
   if(storyCount>0)conseqItems+=`<li class="warn">&#9888; ${storyCount} generated stor${storyCount===1?'y':'ies'} across those features will be permanently lost</li>`;
   if(evidenceCount>0)conseqItems+=`<li>Evidence entered for ${evidenceCount} metric${evidenceCount!==1?'s':''} in this stage will be discarded</li>`;
-  if(hasAnalysis)conseqItems+=`<li>Product Diagnostics will be cleared and must be re-run</li>`;
+  if(hasAnalysis)conseqItems+=`<li>Experiment Canvas will be cleared and must be re-run</li>`;
 
   const conseqHTML=conseqItems?`<div class="stage-del-consequence"><div class="stage-del-consequence-title">What will be affected</div><ul>${conseqItems}</ul><div class="stage-del-consequence-note">This cannot be undone.</div></div>`:'<p style="font-size:11px;color:var(--t3);margin:0 0 16px;">No downstream data linked to this stage. Safe to delete.</p>';
 
@@ -662,7 +973,7 @@ function deleteStage(idx){
     </div>
     <div class="stage-modal-footer">
       <button class="stage-modal-cancel" onclick="document.getElementById('stage-modal-overlay').remove()">Cancel</button>
-      <button class="stage-modal-save destructive" onclick="confirmDeleteStage(${idx},'${stageLabel.replace(/'/g,"\\'")}')">Delete stage</button>
+      <button class="stage-modal-save destructive" id="stage-del-save-btn" onclick="confirmDeleteStage(${idx},'${stageLabel.replace(/'/g,"\\'")}')">Delete stage</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
@@ -670,17 +981,23 @@ function deleteStage(idx){
 }
 
 function confirmDeleteStage(idx,stageLabel){
+  // v9.07: disable confirm button immediately to prevent double-click races.
+  const _saveBtn=document.getElementById('stage-del-save-btn');
+  if(_saveBtn)_saveBtn.disabled=true;
   document.getElementById('stage-modal-overlay').remove();
   if(!gData||!gData.stages[idx])return;
+  const _stageId=gData.stages[idx].id;
   gData.stages.splice(idx,1);
-  stageExecuteCascade(stageLabel);
+  stageExecuteCascade(stageLabel,_stageId);
   renderMM(gData);
   renderDiagnosticActionBar();
   stageShowToast('Stage deleted. Downstream data updated.');
+  _dmPersistAndSync();
 }
 
 // ── Stage edit ──
 function editStage(idx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!gData||!gData.stages[idx])return;
   const st=gData.stages[idx];
   const stageLabel=st.label||st.id;
@@ -690,6 +1007,14 @@ function editStage(idx){
   const evidenceCount=stageGetAffectedEvidenceCount(stageLabel);
   const hasAnalysis=!!(productLeakAnalysis&&productLeakAnalysis.length>0);
   const hasDownstream=affected.length>0||evidenceCount>0||hasAnalysis;
+
+  // v9.06.01: Custom Value Stage's name is now editable — the v9.05 lock
+  // is removed since stageRenameDownstream() has been hardened with a
+  // stageId-aware branch (identity-based capStore field update, never a
+  // substring-based re-key that never matched pi|| keys anyway).
+  // Individual process areas/buckets WITHIN this stage remain separately
+  // renameable via their own dedicated edit path (piBucketRename).
+  const _isPiStage=(st.id==='pi');
 
   const _isCapMode=gData.approach==='capability-based';
   const _entityWord=_isCapMode?'capabilities':'metrics';
@@ -735,7 +1060,7 @@ function editStage(idx){
           <input type="radio" name="edit-stage-type" value="scope-reset" onchange="editStageRadioChange()" ${!hasDownstream?'disabled':''}/>
           <div class="stage-modal-radio-text">
             <span class="stage-modal-radio-title">Scope has changed — reset this stage</span>
-            <span class="stage-modal-radio-sub">${_isCapMode?'Capabilities':'Metrics'}, evidence, and stories from this stage will be cleared</span>
+            <span class="stage-modal-radio-sub">${_isPiStage?'This deletes ALL custom process areas/metrics and their capabilities under Custom Value Stage — not just this description.':(_isCapMode?'Capabilities':'Metrics')+', evidence, and stories from this stage will be cleared'}</span>
           </div>
         </label>
       </div>
@@ -789,7 +1114,7 @@ function editStageRadioChange(){
     if(affected.length>0)items+=`<li>${affected.length} feature${affected.length!==1?'s':''} on Feature Canvas will be removed</li>`;
     if(storyCount>0)items+=`<li class="warn">&#9888; ${storyCount} generated stor${storyCount===1?'y':'ies'} will be permanently lost</li>`;
     if(evidenceCount>0)items+=`<li>Evidence for ${evidenceCount} metric${evidenceCount!==1?'s':''} in this stage will be discarded</li>`;
-    if(hasAnalysis)items+=`<li>Product Diagnostics will be cleared and must be re-run</li>`;
+    if(hasAnalysis)items+=`<li>Experiment Canvas will be cleared and must be re-run</li>`;
     const conseq=document.getElementById('edit-stage-consequence');
     if(conseq){
       conseq.innerHTML=`<div class="stage-modal-consequence" style="margin-top:12px;"><div class="stage-modal-consequence-title"><i class="ti ti-alert-triangle" aria-hidden="true"></i> What will be affected</div><ul>${items}</ul><div class="stage-modal-consequence-note">This cannot be undone.</div></div>`;
@@ -807,6 +1132,13 @@ function confirmEditStage(idx,oldLabel){
   const descEl=document.getElementById('edit-stage-desc');
   const radio=document.querySelector('input[name="edit-stage-type"]:checked');
   if(!nameEl||!radio||!gData||!gData.stages[idx])return;
+  const _st=gData.stages[idx];
+  const _isPiStage=(_st.id==='pi');
+  // v9.06.01: re-enabled name editing for the Custom Value Stage — the
+  // v9.05 lock (forcing the label back to 'PI Plan' regardless of input)
+  // is removed now that stageRenameDownstream() has been hardened with a
+  // stageId-aware branch (identity-based capStore.stageLabel update,
+  // never re-keying) — see stageRenameDownstream()'s own comments.
   const newLabel=nameEl.value.trim();
   const newDesc=descEl?descEl.value.trim():'';
   const choice=radio.value;
@@ -818,43 +1150,75 @@ function confirmEditStage(idx,oldLabel){
 
   if(choice==='label'){
     // Case A: rename only
-    stageRenameDownstream(oldLabel,newLabel);
+    if(newLabel!==oldLabel)stageRenameDownstream(oldLabel,newLabel,_st.id);
     renderMM(gData);
     renderDiagnosticActionBar();
     if(typeof newScRender==='function')newScRender();
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
-    stageShowToast('Stage renamed. No downstream changes made.');
+    // v9.06.01: CC's left panel/main view also need refresh when the pi
+    // stage itself is renamed (same reasoning as piBucketRename()'s fix).
+    if(_isPiStage&&typeof curTab!=='undefined'&&curTab==='cc'&&typeof ccOpenMetricNav==='function')ccOpenMetricNav();
+    stageShowToast('Stage updated. No downstream changes made.');
+    _dmPersistAndSync();
   } else if(choice==='scope-shift'){
     // Case B: rename + scope warning
-    stageRenameDownstream(oldLabel,newLabel);
+    if(newLabel!==oldLabel)stageRenameDownstream(oldLabel,newLabel,_st.id);
     gData.stages[idx]._scopeWarning=true;
     renderMM(gData);
     renderDiagnosticActionBar();
     if(typeof newScRender==='function')newScRender();
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
+    if(_isPiStage&&typeof curTab!=='undefined'&&curTab==='cc'&&typeof ccOpenMetricNav==='function')ccOpenMetricNav();
     // Toast if on dv or sc tab
     stageShowToast('Stage updated. Scope warning added — review metrics for relevance.');
+    _dmPersistAndSync();
   } else if(choice==='scope-reset'){
     // Case C: rename + full cascade on OLD label first (before rename propagated)
-    stageExecuteCascade(oldLabel);
+    // v9.05: stageExecuteCascade() is now stageId-aware (see its own definition) —
+    // passing _st.id lets it correctly use identity-based ownership cleanup
+    // for the pi stage instead of the label-substring check that never
+    // matches 'pi||'+capName keys.
+    stageExecuteCascade(oldLabel,_st.id);
+    if(_isPiStage){
+      // Clear the stage's own l1_metrics too — every bucket is gone
+      gData.stages[idx].l1_metrics=[];
+    }
     // Now rename in gData (already done above) — propagate new name downstream (canvas is clear for this stage)
     renderMM(gData);
     renderDiagnosticActionBar();
     if(typeof newScRender==='function')newScRender();
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
     stageShowToast('Stage reset. Downstream data for this stage has been cleared.');
+    _dmPersistAndSync();
   }
 }
 
-function stageRenameDownstream(oldLabel,newLabel){
-  // 1. Re-key capStore
-  Object.keys(capStore).forEach(k=>{
-    if(k.includes('||'+oldLabel)){
-      const newKey=k.replace('||'+oldLabel,'||'+newLabel);
-      capStore[newKey]=capStore[k];
-      delete capStore[k];
-    }
-  });
+function stageRenameDownstream(oldLabel,newLabel,stageId){
+  // v9.06.01: for the Custom Value Stage (stageId==='pi'), capStore keys
+  // are 'pi||'+capabilityName — the stage LABEL never appears as a
+  // substring of that key, so the general substring-based re-key below
+  // silently does nothing for these entries (confirmed defect from
+  // ChatGPT round-3 review). Use identity-based (stageId==='pi') field
+  // update instead: patch stageLabel directly, NEVER re-key (capStore's
+  // key format must stay 'pi||'+capName always, unrelated to stage label).
+  if(stageId==='pi'){
+    Object.keys(capStore).forEach(k=>{
+      const entry=capStore[k];
+      if(entry&&typeof isPiCapEntry==='function'&&isPiCapEntry(k,entry)){
+        entry.stageId='pi';
+        entry.stageLabel=newLabel;
+      }
+    });
+  } else {
+    // 1. Re-key capStore (unchanged — correct for ordinary KPI-linked stages)
+    Object.keys(capStore).forEach(k=>{
+      if(k.includes('||'+oldLabel)){
+        const newKey=k.replace('||'+oldLabel,'||'+newLabel);
+        capStore[newKey]=capStore[k];
+        delete capStore[k];
+      }
+    });
+  }
   // 2. Patch session.tree stage label
   const session=diagnosticSessions&&diagnosticSessions.find(s=>s.id===activeDiagnosticId);
   if(session&&session.tree){
@@ -862,16 +1226,23 @@ function stageRenameDownstream(oldLabel,newLabel){
     if(st)st.label=newLabel;
   }
   // 3. String-patch productLeakAnalysis — iterate all runs
+  // v9.06.01: for the pi stage specifically, also patch the legacy literal
+  // 'PI Plan' alongside oldLabel, in case any productLeakAnalysis entries
+  // predate this fix and still reference the old literal directly (per
+  // ChatGPT round-3 finding — productLeakAnalysis has no stageId, only
+  // plain label strings, so this is a best-effort safety net, not a
+  // guaranteed-complete fix).
+  const _legacyLabelsToPatch=stageId==='pi'?[oldLabel,'PI Plan']:[oldLabel];
   if(productLeakAnalysis&&productLeakAnalysis.length>0){
     productLeakAnalysis.forEach(function(run){
-      if(run.leakingStage===oldLabel)run.leakingStage=newLabel;
+      if(_legacyLabelsToPatch.includes(run.leakingStage))run.leakingStage=newLabel;
       (run.experiments||[]).forEach(function(exp){
-        if(exp.lifecycleStage===oldLabel)exp.lifecycleStage=newLabel;
+        if(_legacyLabelsToPatch.includes(exp.lifecycleStage))exp.lifecycleStage=newLabel;
       });
     });
   }
   // 4. Patch scCanvas stage references
-  (scCanvas||[]).forEach(f=>{if(f.stage===oldLabel)f.stage=newLabel;});
+  (scCanvas||[]).forEach(f=>{if(f&&_legacyLabelsToPatch.includes(f.stage))f.stage=newLabel;});
 }
 
 function stageShowToast(msg){
@@ -901,6 +1272,54 @@ function capGetAffectedFeatures(metricKey){
   });
   return feats;
 }
+// v9.07: shared persist+sync for Discovery Map stage/capability manual
+// edit and delete actions. Mirrors the existing pattern used by every
+// AI-generation call site (capture session id before async, save, only
+// emit on success) but deliberately does NOT acquire the generation lock —
+// these are fast, low-latency manual edits, not multi-second AI
+// generations, and wrapping them in the full acquire/heartbeat/release
+// lock lifecycle would add meaningful latency for a comparatively rare
+// collision. A non-blocking courtesy check (_lsPeekIfLocked) warns if
+// someone is actively generating on this session, but does not block or
+// serialize the save — this is an accepted, documented simplification,
+// not an oversight. See AI_EDITING_RULES.md's live-sync section for the
+// full save/emit contract this follows.
+//
+// Known accepted limitation: because this does not take the real
+// generation lock, a manual DM edit that saves concurrently with someone
+// else's in-flight AI generation on the same session can still race —
+// sessionStoreSave() is a full snapshot overwrite with no version
+// checking (a pre-existing, documented limitation of this app, not
+// introduced here). This mirrors the same accepted risk already present
+// for PI's own non-locked manual edit path (piRemoveStoryFromBacklog).
+async function _dmPersistAndSync(){
+  if(typeof _isDemoSession!=='undefined'&&_isDemoSession)return;
+  if(typeof sessionStoreSave!=='function'||typeof _activeSessionId==='undefined'||!_activeSessionId)return;
+  const saveSessionId=_activeSessionId;
+  const wasSharedSession=(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared);
+  // Non-blocking courtesy check only — does not prevent or serialize the
+  // save that follows. See function-level comment above.
+  if(wasSharedSession&&typeof _lsPeekIfLocked==='function'){
+    try{
+      const _peek=await _lsPeekIfLocked(saveSessionId);
+      if(_peek&&_peek.locked&&typeof showToast==='function'){
+        showToast((_peek.holderName||'Someone on your team')+' is generating on this session right now — your change was saved, but may be overwritten if their generation completes after.','warn');
+      }
+    }catch(e){ /* non-fatal — peek is advisory only */ }
+  }
+  try{
+    const ok=await sessionStoreSave(saveSessionId);
+    if(ok&&wasSharedSession&&typeof _lsEmitContentEvent==='function'){
+      try{
+        await _lsEmitContentEvent(saveSessionId,'mm','discovery_map_updated',null,null);
+      }catch(e){
+        console.warn('[DM edit] Event emission failed (save already succeeded):',e);
+      }
+    }
+  }catch(e){
+    console.warn('[DM edit] sessionStoreSave failed:',e);
+  }
+}
 function capGetAffectedStoryCount(features){
   return features.reduce((sum,f)=>sum+(f.stories&&f.stories.length?f.stories.length:0),0);
 }
@@ -912,15 +1331,40 @@ function capExecuteCascade(metricKey,capName,stageLabel){
 }
 
 function editCapability(stIdx,li){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!gData||!gData.stages[stIdx]||!gData.stages[stIdx].l1_metrics||!gData.stages[stIdx].l1_metrics[li])return;
   const st=gData.stages[stIdx];
   const l1=st.l1_metrics[li];
   const stageLabel=st.label||st.id;
   const capName=l1.name;
   const capDesc=l1.why||'';
-  const metricKey=st.id+'||'+capName;
-  const affected=capGetAffectedFeatures(metricKey);
-  const storyCount=capGetAffectedStoryCount(affected);
+  // v9.05: for the Custom Value Stage (st.id==='pi'), this l1_metrics entry
+  // represents a BUCKET (Custom Process Area/Metric), not a single capability
+  // — l1.name is the bucket's display name, not an individual capability
+  // name. st.id+'||'+capName would look up the wrong thing entirely in
+  // capStore (capStore keys are 'pi||'+individualCapabilityName, never
+  // 'pi||'+bucketDisplayName). Use bucketId-based lookup instead.
+  const _isPiBucket=(st.id==='pi');
+  let affected=[];
+  let storyCount=0;
+  if(_isPiBucket){
+    const _bucketId=l1.bucketId;
+    // v9.07: guard against undefined bucketId matching other undefined-bucketId
+    // entries by coincidence — only aggregate if this bucket genuinely has an id.
+    if(_bucketId){
+      Object.keys(capStore).forEach(k=>{
+        const entry=capStore[k];
+        if(entry&&entry.bucketId===_bucketId){
+          affected=affected.concat(capGetAffectedFeatures(k));
+        }
+      });
+    }
+    storyCount=capGetAffectedStoryCount(affected);
+  } else {
+    const metricKey=st.id+'||'+capName;
+    affected=capGetAffectedFeatures(metricKey);
+    storyCount=capGetAffectedStoryCount(affected);
+  }
   const hasDownstream=affected.length>0;
 
   const existing=document.getElementById('cap-edit-modal-overlay');
@@ -930,23 +1374,23 @@ function editCapability(stIdx,li){
   overlay.className='stage-modal-overlay';
   overlay.innerHTML=`<div class="stage-modal">
     <div class="stage-modal-head">
-      <div class="stage-modal-title">Edit Capability</div>
+      <div class="stage-modal-title">${_isPiBucket?((typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Edit Process Area':'Edit Metric'):(gData&&gData.approach==='capability-based'?'Edit Process Area':'Edit Capability')}</div>
       <button class="stage-modal-close" onclick="document.getElementById('cap-edit-modal-overlay').remove()">&times;</button>
     </div>
     <div class="stage-modal-body">
       <div class="stage-modal-field">
-        <label>Capability name</label>
+        <label>${_isPiBucket?((typeof gData!=='undefined'&&gData&&gData.approach==='capability-based')?'Process area name':'Metric name'):(gData&&gData.approach==='capability-based'?'Process area name':'Capability name')}</label>
         <input type="text" id="edit-cap-name" value="${e(capName)}" maxlength="80" oninput="editCapabilityValidate()"/>
       </div>
       <div class="stage-modal-field">
         <label>Description <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></label>
         <textarea id="edit-cap-desc" rows="2" maxlength="200" oninput="editCapabilityValidate()">${e(capDesc)}</textarea>
       </div>
-      ${hasDownstream?`<div class="stage-modal-radio-disabled-note">This capability has ${affected.length} feature${affected.length!==1?'s':''}${storyCount>0?' and '+storyCount+' stor'+(storyCount===1?'y':'ies'):''} generated. Renaming will keep them linked.</div>`:''}
+      ${hasDownstream?`<div class="stage-modal-radio-disabled-note">This ${_isPiBucket?'process area':(gData&&gData.approach==='capability-based'?'process area':'capability')} has ${affected.length} feature${affected.length!==1?'s':''}${storyCount>0?' and '+storyCount+' stor'+(storyCount===1?'y':'ies'):''} generated. Renaming will keep them linked.</div>`:''}
     </div>
     <div class="stage-modal-footer">
       <button class="stage-modal-cancel" onclick="document.getElementById('cap-edit-modal-overlay').remove()">Cancel</button>
-      <button class="stage-modal-save" id="edit-cap-save" onclick="confirmEditCapability(${stIdx},${li})">Save changes</button>
+      <button class="stage-modal-save" id="edit-cap-save" onclick="confirmEditCapability(${stIdx},${li}${_isPiBucket?",'"+String(l1.bucketId||'').replace(/'/g,"\\'")+"'":',undefined'},'${String(capName).replace(/'/g,"\\'")}')">Save changes</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
@@ -963,18 +1407,71 @@ function editCapabilityValidate(){
   saveBtn.disabled=nameEl.value.trim().length===0;
 }
 
-function confirmEditCapability(stIdx,li){
+function confirmEditCapability(stIdx,li,expectedBucketId,expectedName){
   const nameEl=document.getElementById('edit-cap-name');
   const descEl=document.getElementById('edit-cap-desc');
   if(!nameEl||!gData||!gData.stages[stIdx]||!gData.stages[stIdx].l1_metrics[li])return;
   const st=gData.stages[stIdx];
   const l1=st.l1_metrics[li];
-  const stageLabel=st.label||st.id;
-  const oldName=l1.name;
   const newName=nameEl.value.trim();
   const newDesc=descEl?descEl.value.trim():'';
   document.getElementById('cap-edit-modal-overlay').remove();
 
+  // v9.05: Custom Value Stage's l1_metrics entries are BUCKETS (Custom
+  // Process Area/Metric), not individual capabilities — capRenameDownstream()
+  // assumes exactly one capStore entry maps to one l1_metrics entry, which
+  // is false here (many capStore['pi||'+capName] entries can share the same
+  // bucketId). Redirect to the dedicated piBucketRename() function instead,
+  // which propagates the display name to every entry sharing this bucketId
+  // WITHOUT re-keying any capStore entry (no capability name/key touched).
+  if(st.id==='pi'){
+    // v9.05 defensive guard: stIdx/li are baked into this modal's Save
+    // button at MODAL-OPEN time (editCapability()). If gData.stages was
+    // mutated in the background while the modal sat open — e.g. a
+    // live-sync poll cycle applied a teammate's change and
+    // syncPiStageFromCapStore() spliced/reordered stages — stIdx/li could
+    // now point at a completely different entry than the one the user was
+    // actually looking at. Re-verify identity via bucketId (captured at
+    // modal-open time, immune to array-index drift) before mutating
+    // anything; abort silently rather than risk corrupting the wrong bucket.
+    if(expectedBucketId!==undefined&&l1.bucketId!==expectedBucketId){
+      showToast('This process area changed while you were editing. Please try again.','warn');
+      renderMM(gData);
+      return;
+    }
+    if(typeof piBucketRename==='function'){
+      piBucketRename(stIdx,li,newName,newDesc);
+      renderMM(gData);
+      if(typeof fcRenderCanvas==='function')fcRenderCanvas();
+      if(typeof newScRender==='function')newScRender();
+      // v9.05 fix: CC's own left panel/main area were never refreshed after
+      // a DM-side bucket rename — piBucketRename() correctly updates
+      // capStore[k].metricName for every capability sharing this bucket,
+      // but nothing told CC to re-render and pick up the change. Only
+      // refresh if CC is the currently active tab (consistent with the
+      // curTab guards used elsewhere for this kind of cross-tab sync).
+      if(typeof curTab!=='undefined'&&curTab==='cc'&&typeof ccOpenMetricNav==='function')ccOpenMetricNav();
+      stageShowToast('Process area updated.');
+      _dmPersistAndSync();
+    }
+    return;
+  }
+
+  // v9.07: stale-index guard for the ordinary (non-pi) branch — mirrors the
+  // pi-branch's expectedBucketId re-verification above. stIdx/li are baked
+  // into the Save button at modal-open time; if gData.stages was mutated in
+  // the background while the modal sat open (a live-sync wholesale apply
+  // could replace gData entirely), stIdx/li could now point at a different
+  // L1 entry than the one the user was actually looking at. Re-verify by
+  // name (captured at modal-open time) before mutating anything.
+  if(expectedName!==undefined&&l1.name!==expectedName){
+    showToast('This capability changed while you were editing. Please try again.','warn');
+    renderMM(gData);
+    return;
+  }
+
+  const stageLabel=st.label||st.id;
+  const oldName=l1.name;
   l1.name=newName;
   l1.why=newDesc;
 
@@ -982,6 +1479,7 @@ function confirmEditCapability(stIdx,li){
 
   renderMM(gData);
   stageShowToast('Capability updated.');
+  _dmPersistAndSync();
 }
 
 // Re-keys capStore and patches scCanvas — mirrors stageRenameDownstream() for the
@@ -1000,25 +1498,70 @@ function capRenameDownstream(oldName,newName,stageId,stageLabel){
 }
 
 function deleteCapability(stIdx,li){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!gData||!gData.stages[stIdx]||!gData.stages[stIdx].l1_metrics||!gData.stages[stIdx].l1_metrics[li])return;
   const st=gData.stages[stIdx];
   const l1=st.l1_metrics[li];
   const stageLabel=st.label||st.id;
   const capName=l1.name;
-  const metricKey=st.id+'||'+capName;
-  const affected=capGetAffectedFeatures(metricKey);
+  const _isPiBucket=(st.id==='pi');
+  let affected=[];
+  let _bucketCapCount=0;
+  let _capStoreCount=0; // v9.07: capabilities present in capStore directly, independent of Feature Canvas linkage
+  if(_isPiBucket){
+    const _bucketId=l1.bucketId;
+    // v9.07: guard against undefined bucketId matching other undefined-bucketId
+    // entries by coincidence — only aggregate if this bucket genuinely has an id.
+    if(_bucketId){
+      Object.keys(capStore).forEach(k=>{
+        const entry=capStore[k];
+        if(entry&&entry.bucketId===_bucketId){
+          affected=affected.concat(capGetAffectedFeatures(k));
+          _bucketCapCount+=(entry.capabilities||[]).length;
+        }
+      });
+    }
+  } else {
+    const metricKey=st.id+'||'+capName;
+    affected=capGetAffectedFeatures(metricKey);
+    // v9.07 fix: capGetAffectedFeatures() only detects capabilities whose
+    // features were explicitly sent to Feature Canvas — it has no visibility
+    // into capabilities that exist in capStore but were never pushed
+    // downstream. Confirmed repro: generate capabilities against this metric
+    // in Capability Canvas, never send any features onward, then delete this
+    // metric here — affected.length was 0, triggering an instant silent
+    // delete that orphaned the capStore entry with zero warning. Counting
+    // capStore capabilities directly closes this gap.
+    const _capEntry=capStore[metricKey];
+    _capStoreCount=(_capEntry&&_capEntry.capabilities)?_capEntry.capabilities.length:0;
+  }
   const storyCount=capGetAffectedStoryCount(affected);
+  // v9.07 fix: Outcome Metrics L1 rows can have nested L2/L3 children (unlike
+  // Process Area rows, which are always flat) — now that delete is exposed
+  // on these rows too, a delete with no capStore/feature downstream data but
+  // WITH nested children would previously have silently wiped the whole
+  // subtree via the instant-delete path below with no warning at all.
+  const _nestedCount=(l1.l2_metrics||[]).length;
 
-  if(affected.length===0){
-    // No downstream data — instant delete, no modal
+  if(affected.length===0&&_capStoreCount===0&&_nestedCount===0&&!_isPiBucket){
+    // No downstream data of any kind — instant delete, no modal (KPI-linked
+    // only; pi buckets always show the modal since they may hold multiple
+    // capabilities even without any Feature Canvas downstream data)
     st.l1_metrics.splice(li,1);
     renderMM(gData);
     stageShowToast('Capability deleted.');
+    _dmPersistAndSync();
     return;
   }
 
   // Downstream data exists — consequence modal
-  let conseqItems=`<li>${affected.length} feature${affected.length!==1?'s':''} on Feature Canvas will be removed</li>`;
+  let conseqItems='';
+  if(_isPiBucket){
+    conseqItems+=`<li class="warn">&#9888; This deletes ${_bucketCapCount} capabilit${_bucketCapCount!==1?'ies':'y'} in this process area, not just this entry.</li>`;
+  }
+  if(!_isPiBucket&&_capStoreCount>0)conseqItems+=`<li class="warn">&#9888; ${_capStoreCount} capabilit${_capStoreCount!==1?'ies':'y'} in Capability Canvas will be removed</li>`;
+  if(_nestedCount>0)conseqItems+=`<li class="warn">&#9888; ${_nestedCount} nested L2/L3 metric${_nestedCount!==1?'s':''} beneath it will also be deleted</li>`;
+  if(affected.length>0)conseqItems+=`<li>${affected.length} feature${affected.length!==1?'s':''} on Feature Canvas will be removed</li>`;
   if(storyCount>0)conseqItems+=`<li class="warn">&#9888; ${storyCount} generated stor${storyCount===1?'y':'ies'} will be permanently lost</li>`;
   const conseqHTML=`<div class="stage-del-consequence"><div class="stage-del-consequence-title">What will be affected</div><ul>${conseqItems}</ul><div class="stage-del-consequence-note">This cannot be undone.</div></div>`;
 
@@ -1037,26 +1580,65 @@ function deleteCapability(stIdx,li){
     </div>
     <div class="stage-modal-footer">
       <button class="stage-modal-cancel" onclick="document.getElementById('cap-del-modal-overlay').remove()">Cancel</button>
-      <button class="stage-modal-save destructive" onclick="confirmDeleteCapability(${stIdx},${li})">Delete capability</button>
+      <button class="stage-modal-save destructive" id="cap-del-save-btn" onclick="confirmDeleteCapability(${stIdx},${li}${_isPiBucket?",'"+String(l1.bucketId||'').replace(/'/g,"\\'")+"'":',undefined'},'${String(capName).replace(/'/g,"\\'")}')">Delete capability</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
   overlay.addEventListener('click',function(ev){if(ev.target===overlay)overlay.remove();});
 }
 
-function confirmDeleteCapability(stIdx,li){
+function confirmDeleteCapability(stIdx,li,expectedBucketId,expectedName){
+  // v9.07: disable the confirm button immediately to prevent a double-click
+  // from splicing twice or racing two saves — re-enabling isn't needed since
+  // this function always either removes the overlay or returns early with
+  // the overlay still in place (in which case the user can just retry).
+  const _saveBtn=document.getElementById('cap-del-save-btn');
+  if(_saveBtn)_saveBtn.disabled=true;
   document.getElementById('cap-del-modal-overlay').remove();
   if(!gData||!gData.stages[stIdx]||!gData.stages[stIdx].l1_metrics[li])return;
   const st=gData.stages[stIdx];
   const l1=st.l1_metrics[li];
   const stageLabel=st.label||st.id;
   const capName=l1.name;
+  if(st.id==='pi'){
+    // v9.05 defensive guard: same stale-index risk as confirmEditCapability()
+    // — but here the consequence is destructive (piBucketDelete() removes
+    // capStore entries), so this check is even more important. Re-verify
+    // via bucketId (captured at modal-open time) before deleting anything.
+    if(expectedBucketId!==undefined&&l1.bucketId!==expectedBucketId){
+      showToast('This process area changed while you were viewing it. Please try again.','warn');
+      renderMM(gData);
+      return;
+    }
+    // v9.05: delete the whole bucket by bucketId (all capStore entries
+    // sharing it), not a single KPI-linked capability by metricKey.
+    if(typeof piBucketDelete==='function')piBucketDelete(l1.bucketId);
+    st.l1_metrics.splice(li,1);
+    renderMM(gData);
+    if(typeof fcRenderCanvas==='function')fcRenderCanvas();
+    if(typeof newScRender==='function')newScRender();
+    // v9.05 fix: same missing CC refresh as confirmEditCapability()'s
+    // pi-branch — piBucketDelete() removes capStore entries CC displays,
+    // so CC needs to re-render if it's the active tab.
+    if(typeof curTab!=='undefined'&&curTab==='cc'&&typeof ccOpenMetricNav==='function')ccOpenMetricNav();
+    stageShowToast('Process area deleted. Downstream data updated.');
+    _dmPersistAndSync();
+    return;
+  }
+  // v9.07: stale-index guard for the ordinary (non-pi) branch — mirrors the
+  // pi-branch's expectedBucketId re-verification above.
+  if(expectedName!==undefined&&l1.name!==expectedName){
+    showToast('This capability changed while you were viewing it. Please try again.','warn');
+    renderMM(gData);
+    return;
+  }
   const metricKey=st.id+'||'+capName;
   capExecuteCascade(metricKey,capName,stageLabel);
   st.l1_metrics.splice(li,1);
   renderMM(gData);
   fcRenderCanvas();
   stageShowToast('Capability deleted. Downstream data updated.');
+  _dmPersistAndSync();
 }
 
 // ── Evidence drawer entry point from KPI tree ──
@@ -1177,7 +1759,8 @@ function kpiRenderEvidenceStates(){
         if(valEl)valEl.remove();
       }
       // 3. Update CTA label
-      btn.innerHTML=hasEvidence?'Edit evidence &#8594;':'Evidence &#8594;';
+      const _canEditKpiEv=(typeof canEditSession!=='function')||canEditSession();
+      btn.innerHTML=(hasEvidence&&_canEditKpiEv)?'Edit evidence &#8594;':'Evidence &#8594;';
       btn.classList.toggle('cap-trigger-ev-done',hasEvidence);
     });
   });

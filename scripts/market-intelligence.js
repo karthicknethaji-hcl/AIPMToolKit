@@ -25,6 +25,17 @@ async function miGenerate(){
   const key=getKey();
   if(miGenerating) return; // prevent double-trigger
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
+  // v8.133 fix (item 3): courtesy pre-check, for consistency with the
+  // other four canvases — MI has no confirm dialog to avoid here, but this
+  // still avoids transitioning into the loading UI before discovering a
+  // conflict that was already knowable.
+  if(typeof _lsPeekIfLocked==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
+    const _peek=await _lsPeekIfLocked(_activeSessionId);
+    if(_peek.locked){
+      showToast(_peek.holderName+' is already generating on this session. Try again in a moment.','warn');
+      return;
+    }
+  }
   const ctx=productContext||{
     name:document.getElementById('f-name').value.trim(),
     description:document.getElementById('f-desc').value.trim(),
@@ -74,6 +85,18 @@ async function miGenerate(){
     miRenderLeftPanel(); // Populates #mi-left-panel — CTA shows disabled state (miGenerating=true)
   }
 
+  // Phase 5 (v8.117): unlike the other 9 wrapped functions, miGenerate()'s
+  // tab-switch and two-column layout skeleton (above) are NOT restructured
+  // to wait for lock confirmation — the tab genuinely should switch
+  // immediately on click (that's real, correct feedback, not a misleading
+  // claim that generation has started). Only the RICH stage-by-stage
+  // loader content that follows is at risk of the stale-clobber problem
+  // (a slow, superseded miGenerate() call writing stage-loader HTML after
+  // the user has navigated away from the MI tab, or after a NEWER
+  // miGenerate() call has already written its own content) — that part
+  // gets the marker treatment below.
+  const _attempt=newGenAttempt();
+
   // Render Direction A loader inside .mi-right only — never touches #mi-left-panel
   const miRightEl=document.getElementById('mi-right-loader');
   if(miRightEl){
@@ -106,7 +129,7 @@ async function miGenerate(){
       </div>`;
     }
 
-    miRightEl.innerHTML=buildLoaderHTML(0);
+    miRightEl.innerHTML=markGenAttempt(_attempt,buildLoaderHTML(0));
 
     let stageIdx=0, msgIdx=0;
     let miMsgTimer=setInterval(()=>{
@@ -118,12 +141,17 @@ async function miGenerate(){
 
     window._miLoaderAdvance=function(){
       if(stageIdx>=stages.length-1)return;
+      // Phase 5 (v8.117): only advance the on-screen stage loader if this
+      // attempt still owns #mi-right-loader — a stale, superseded call's
+      // advance should not overwrite whatever a newer call (or the user
+      // navigating away and back) has since put there.
+      if(!getIfCurrentAttempt('mi-right-loader',_attempt))return;
       if(miMsgTimer)clearInterval(miMsgTimer);
       stageIdx++;
       msgIdx=0;
       // Target mi-right-loader only — preserves #mi-left-panel
       const miRight=document.getElementById('mi-right-loader');
-      if(miRight) miRight.innerHTML=buildLoaderHTML(stageIdx);
+      if(miRight) miRight.innerHTML=markGenAttempt(_attempt,buildLoaderHTML(stageIdx));
       const msgs=stages[stageIdx].messages;
       miMsgTimer=setInterval(()=>{
         msgIdx=(msgIdx+1)%msgs.length;
@@ -139,6 +167,12 @@ async function miGenerate(){
     };
   }
 
+  // Phase 5: withGenerationLock wraps the ENTIRE workflow — callAPI, parse,
+  // validate, apply to miData/miCapabilities, and sessionStoreSave() — not
+  // just the callAPI() line. See api.js for the full rationale; pattern
+  // mirrors pi-planning.js's piGenerate() exactly.
+  try{
+    await withGenerationLock(async (_lock) => {
   try{
     const sys=(typeof SYS_MI!=='undefined'?SYS_MI:'');
     const _miCtxFull=Object.assign({},ctx);
@@ -170,7 +204,15 @@ async function miGenerate(){
 
     miRenderScreen();
     miRenderLeftPanel();
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save — see pi-planning.js
+    // for the full rationale (second adversarial review round).
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        await _lsEmitContentEvent(_activeSessionId,'mi','mi_generated',null,null);
+      }
+    }
     endAiGen();
   }catch(err){
     if(window._miLoaderClear) window._miLoaderClear();
@@ -180,18 +222,43 @@ async function miGenerate(){
       endAiGen();
       // Return to whichever tab the user was on before MI generation started
       switchTab(prevTab);
-      return;
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1). A silent return
+      // here made withGenerationLock() treat an aborted generation as a
+      // normal successful completion.
+      throw err;
+    }
+    if(err.message==='generation_lock_lost'){
+      // Toast already shown by withGenerationLock() — avoid a duplicate.
+      // Phase 5 (v8.117): marker-guarded — only clear if this attempt
+      // still owns the loader area.
+      var _llMiTarget=getIfCurrentAttempt('mi-right-loader',_attempt);
+      if(_llMiTarget) _llMiTarget.innerHTML='';
+      endAiGen();
+      throw err;
     }
     endAiGen();
     // Target mi-right-loader only — #mi-left-panel stays intact, CTA restored via miRenderLeftPanel above
-    const miErrTarget=document.getElementById('mi-right-loader')||document.getElementById('mi-tab');
-    if(miErrTarget){
-      miErrTarget.innerHTML=`<div class="mi-error">
+    // Phase 5 (v8.117): marker-guarded — a stale failure must not clobber
+    // a newer attempt's content or a view the user has since navigated to.
+    var _miErrTarget=getIfCurrentAttempt('mi-right-loader',_attempt);
+    if(_miErrTarget){
+      _miErrTarget.innerHTML=`<div class="mi-error">
         <div class="mi-error-icon"><i class="ti ti-alert-triangle" aria-hidden="true"></i></div>
         <div class="mi-error-msg">Error: ${e(err.message)}</div>
         <button class="mi-error-retry" onclick="miGenerate()"><i class="ti ti-refresh" style="font-size:12px;"></i> Try Again</button>
       </div>`;
     }
+  }
+    });
+  }catch(lockErr){
+    // Phase 5: reached in three cases — see pi-planning.js's equivalent
+    // catch for the full breakdown (pre-fn lock failure / rethrown
+    // AbortError / rethrown lock-lost). The inner catch above already did
+    // its own resets in every case that reaches here; this is a final,
+    // idempotent safety net so miGenerating never gets stuck true if
+    // withGenerationLock() itself throws before the inner try/catch ever runs.
+    miGenerating=false;
   }
 }
 
@@ -234,7 +301,7 @@ function miRenderScreen(){
     <div class="mi-right-content">
       <div class="mi-right-hdr">
         <div class="mi-right-hdr-l">
-          <div class="mi-page-title">${e(productName?productName+' — ':'')}${e(titleLabel)}</div>
+          <div class="mi-page-title">Market Intelligence</div>
           <div class="mi-page-sub">${e(subtitle)}</div>
         </div>
         <div class="mi-right-hdr-r">
@@ -602,14 +669,18 @@ function _miCapFooterHtml(){
       <button class="mi-cap-send-btn" onclick="switchTab('cc')"><i class="ti ti-layout-kanban" style="font-size:10px;" aria-hidden="true"></i> Open Capability Canvas</button>
     </div>`;
   }
+  // v9.08: the send/add button is a mutation and gets hidden for view-only
+  // sessions; the count label still displays as informational context.
+  const _canEditMi=(typeof canEditSession!=='function')||canEditSession();
   return`<div class="mi-cap-footer-inner">
     <span class="mi-cap-footer-lbl">${selCount>0?`<strong>${selCount}</strong> selected`:'0 selected'}</span>
-    <button class="mi-cap-send-btn${selCount===0?' mi-cap-send-btn-disabled':''}" ${selCount===0?'disabled':''} onclick="miSendToCC()"><i class="ti ti-layout-kanban" style="font-size:10px;" aria-hidden="true"></i> Add${selCount>0?' '+selCount:''} to Capability Canvas</button>
+    ${_canEditMi?`<button class="mi-cap-send-btn${selCount===0?' mi-cap-send-btn-disabled':''}" ${selCount===0?'disabled':''} onclick="miSendToCC()"><i class="ti ti-layout-kanban" style="font-size:10px;" aria-hidden="true"></i> Add${selCount>0?' '+selCount:''} to Capability Canvas</button>`:''}
   </div>`;
 }
 
 // ── Toggle cap selection ──
 function miToggleCapSelect(capNameEncoded){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const capName=decodeURIComponent(capNameEncoded);
   // Don't allow selecting already-added caps
   const isAdded=capStore['mi||capabilities']&&
@@ -622,6 +693,7 @@ function miToggleCapSelect(capNameEncoded){
 
 // ── Add selected caps to Capability Canvas ──
 function miSendToCC(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(miSelectedCapNames.size===0)return;
   const caps=miData&&miData.capabilities||[];
   let added=0;
@@ -672,6 +744,7 @@ function miSendToCC(){
 
 // ── Remove a cap from Capability Canvas ──
 function miRemoveFromCC(capNameEncoded){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const capName=decodeURIComponent(capNameEncoded);
   const entry=capStore['mi||capabilities'];
   if(!entry)return;
@@ -756,7 +829,7 @@ function miExportCurrentView(){
   const d=document.getElementById('mi-export-drop');
   if(d)d.classList.remove('open');
   if(!miData){showToast('Generate Market Intelligence first.','info');return;}
-  miBuildDocx(miData,productContext||{});
+  miBuildDocx(miData,productContext||{},'current');
 }
 function miExportFullReport(){
   const d=document.getElementById('mi-export-drop');
@@ -776,17 +849,62 @@ async function miDownloadDocx(){
     const ctx=productContext||{name:'',industry:'',productType:''};
     const sys=(typeof SYS_MI_DOCX!=='undefined'?SYS_MI_DOCX:'');
     const usr=buildMIDocxPrompt(ctx, miData);
-    const txt=await callAPI(sys, usr, 8000, undefined, undefined, 'mi-docx-gen');
+    // v9.01-diag fix: raised from 8000 -- the requested payload (multiple
+    // prose paragraphs + several structured arrays covering report
+    // sections 6-8) was likely being truncated before the JSON closed,
+    // causing JSON.parse to fail and silently default to {} below with
+    // no visible error -- exactly matching the reported symptom (sections
+    // 6-8 empty, Full Report indistinguishable from Current View).
+    const txt=await callAPI(sys, usr, 16000, undefined, undefined, 'mi-docx-gen');
     const clean=txt.replace(/```json|```/g,'').trim();
     let docxSections;
+    let parseFailed=false;
     try{docxSections=JSON.parse(clean);}
     catch(e){
       const s=clean.indexOf('{');const l=clean.lastIndexOf('}');
-      if(s>=0&&l>s)try{docxSections=JSON.parse(clean.substring(s,l+1));}catch(e2){}
+      if(s>=0&&l>s){try{docxSections=JSON.parse(clean.substring(s,l+1));}catch(e2){parseFailed=true;}}
+      else parseFailed=true;
     }
+    if(!parseFailed && (!docxSections || typeof docxSections!=='object')) parseFailed=true;
+
+    // Lightweight schema check — confirms the required section-6-8 fields
+    // are present and non-empty, not just that SOMETHING parsed. Valid-
+    // but-incomplete JSON (missing keys, empty arrays/strings) was a real,
+    // separate failure mode from truncation — this catches that class too,
+    // rather than only handling one specific cause.
+    let schemaFailed=false;
+    let missingFields=[];
+    if(!parseFailed){
+      const requiredNonEmptyArrays=['gapMatrix','roadmap','valueAnchors','sources'];
+      const requiredNonEmptyStrings=['methodologyNote','limitations'];
+      requiredNonEmptyArrays.forEach(function(k){
+        if(!Array.isArray(docxSections[k])||docxSections[k].length===0)missingFields.push(k);
+      });
+      requiredNonEmptyStrings.forEach(function(k){
+        if(typeof docxSections[k]!=='string'||docxSections[k].trim().length===0)missingFields.push(k);
+      });
+      schemaFailed=missingFields.length>0;
+    }
+
+    if(parseFailed||schemaFailed){
+      // v9.01-diag fix: previously silently defaulted to {} here with NO
+      // visible error -- the Full Report would render with sections 6-8
+      // empty and no indication anything had gone wrong. Now surfaced
+      // exactly like any other generation failure, using the same
+      // Retry-toast pattern already used elsewhere in this function.
+      console.warn('[MI docx] Full Report generation incomplete.', {parseFailed, schemaFailed, missingFields, responseLength:txt?txt.length:0});
+      miShowToast(
+        '<i class="ti ti-alert-circle" style="font-size:13px;vertical-align:-2px;" aria-hidden="true"></i> Full Report generation returned incomplete content. ',
+        'Retry',
+        'miDownloadDocx()'
+      );
+      if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-download" aria-hidden="true"></i> Export Report';}
+      return;
+    }
+
     // Merge docxSections into miData for the export function
     const enrichedData={...miData, docxSections:docxSections||{}};
-    if(typeof miBuildDocx==='function') miBuildDocx(enrichedData, ctx);
+    if(typeof miBuildDocx==='function') miBuildDocx(enrichedData, ctx, 'full');
     else showToast('DOCX export module not loaded.','error');
   }catch(err){
     miShowToast(

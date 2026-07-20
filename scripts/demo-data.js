@@ -11,6 +11,44 @@ function loadDemoData(productKey){
   _demoLoadFocusly();
 }
 
+// ── Outcome Verification Loop: demo hypothesis population (Phase D) ──
+// Attaches a realistic outcomeHypothesis to a small, named subset of each
+// demo product's features, by exact name match against scCanvas (already
+// populated by this point in each loader). Deliberately covers every
+// signal state (aligned/opposed/no-change/awaiting/not-applicable) plus a
+// deliberately empty (no hypothesis) feature, so the Outcome Pulse tab
+// demos meaningfully on first load rather than showing an empty state.
+// entries: array of {name, primary:{...}, signal, actual} — signal/actual
+// are merged onto primary here rather than repeated in every call site.
+function _demoAttachOutcomeHypotheses(entries){
+  entries.forEach(function(entry){
+    const feat=scCanvas.find(f=>f.name===entry.name);
+    if(!feat)return;
+    const p=entry.primary;
+    feat.outcomeHypothesis={
+      primary:{
+        metric:p.metric,unit:p.unit,customLabel:p.customLabel||'',
+        baseline:p.baseline,target:p.target,
+        direction:(typeof computeDirection==='function')?computeDirection(p.baseline,p.target):null,
+        directionSource:'computed',rationale:p.rationale,source:'ai',
+        actual:entry.actual!==undefined?entry.actual:null,
+        signal:entry.signal!==undefined?entry.signal:null,
+        loggedAt:(entry.actual!==undefined&&entry.actual!==null)?new Date(Date.now()-1000*60*60*24*Math.floor(Math.random()*10+1)).toISOString():null
+      },
+      secondary:p.secondary||[]
+    };
+  });
+}
+
+// ── Set NSM baseline/target/actual/updatedAt on the just-generated gData.nsm ──
+function _demoSetNsmTracking(baseline,target,actual){
+  if(!gData||!gData.nsm)return;
+  gData.nsm.baseline=baseline;
+  gData.nsm.target=target;
+  gData.nsm.actual=actual;
+  gData.nsm.updatedAt=new Date(Date.now()-1000*60*60*24*2).toISOString();
+}
+
 // Capture the user's real profile state before the first demo load overwrites
 // it. Only snapshots once - if already in demo mode (switching between demo
 // products), the existing snapshot of the user's real data is preserved.
@@ -841,6 +879,26 @@ function _demoLoadFocusly(){
   // Refresh Home tab selector so Focusly shows as selected if PM returns to Home
   if(typeof _homeRenderProductSelector==='function')_homeRenderProductSelector();
 
+  // Outcome Verification Loop: demo hypothesis population — covers
+  // aligned/opposed/awaiting/not-applicable, plus one feature deliberately
+  // left with no hypothesis, so Outcome Pulse demos meaningfully.
+  _demoAttachOutcomeHypotheses([
+    {name:'One-tap session start from home screen',
+      primary:{metric:'First Focus Session Completion Rate',unit:'%',baseline:38,target:60,
+        rationale:'Removing setup friction should let more new users complete a first session within 48 hours.'},
+      actual:57,signal:'aligned'},
+    {name:'User can view and manage cookie consent preferences so that they have control over their data',
+      primary:{metric:'Onboarding Completion Rate',unit:'%',baseline:72,target:85,
+        rationale:'A clearer consent flow should reduce early drop-off during onboarding.'},
+      actual:68,signal:'opposed'},
+    {name:'User can share focus streak so that friends are inspired to start their own',
+      primary:{metric:'Referral Install Rate',unit:'%',baseline:4,target:9,
+        rationale:'Prompting a share at the peak streak moment should lift referral conversion.'}
+      // no actual/signal — deliberately left Awaiting
+    }
+  ]);
+  _demoSetNsmTracking(18,32,24.6);
+
   console.log('Demo data loaded — Focusly product, 12 metrics, '+Object.keys(capStore).length+' metrics with capabilities, '+scCanvas.length+' features on Story Canvas');
 }
 
@@ -1447,6 +1505,20 @@ function _demoLoadOrderHub(){
 
   // Refresh Home tab selector so OrderHub shows as selected if PM returns to Home
   if(typeof _homeRenderProductSelector==='function')_homeRenderProductSelector();
+
+  // Outcome Verification Loop: demo hypothesis population
+  _demoAttachOutcomeHypotheses([
+    {name:'GDPR Consent Settings',
+      primary:{metric:'EU Signup Completion Rate',unit:'%',baseline:41,target:65,
+        rationale:'Regulatory compliance removes a legal blocker preventing EU market signups entirely.'}
+      // Not applicable — this is a pure compliance/legal feature, not an outcome bet
+      ,signal:'not-applicable'},
+    {name:'Extended Holiday Return Window',
+      primary:{metric:'Return Processing Time',unit:'days',baseline:6,target:3,
+        rationale:'Guided reasons and in-store drop-off should cut average return handling time.'},
+      actual:3.4,signal:'aligned'}
+  ]);
+  _demoSetNsmTracking(64,80,71.2);
 
   console.log('Demo data loaded \u2014 OrderHub product (capability-driven), '+Object.keys(capStore).length+' capability groups, '+scCanvas.length+' features on Story Canvas');
 }
@@ -2224,6 +2296,16 @@ function _demoLoadUnifiedCart(){
 
   // Refresh Home tab selector so OneCart shows as selected if PM returns to Home
   if(typeof _homeRenderProductSelector==='function')_homeRenderProductSelector();
+
+  // Outcome Verification Loop: demo hypothesis population
+  _demoAttachOutcomeHypotheses([
+    {name:'Single-charge checkout summary',
+      primary:{metric:'Unified Checkout Completion Rate',unit:'%',baseline:52,target:74,
+        rationale:'A single combined payment should reduce the perceived complexity of a multi-business cart.',
+        secondary:[{metric:'Cart Abandonment Rate by Business Line Count',unit:'%',baseline:31,target:20,direction:'decrease',actual:24}]},
+      actual:58,signal:'no-change'}
+  ]);
+  _demoSetNsmTracking(22,30,24.6);
 
   console.log('Demo data loaded \u2014 OneCart product (outcome-based), '+Object.keys(capStore).length+' capability groups, '+scCanvas.length+' features on Story Canvas');
 }

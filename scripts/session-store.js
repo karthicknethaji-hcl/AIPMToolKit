@@ -14,9 +14,70 @@
 // ── Constants ──
 const _SS_PREFIX = 'pgt_session_';
 const _SS_INDEX  = 'pgt_session_index'; // ordered list of session IDs
+// mt_ prefix is permanent — Phase 6 (rename cutover) was evaluated and
+// deliberately decided against: mt_ reads as "multi-tenant," a genuinely
+// self-documenting convention, and the rename carried real cutover risk
+// (coordinated Render/Netlify/DB deploy, stale open-tab handling, forced
+// client reload) for zero user-facing benefit. See multi-user-rbac-spec.md
+// for the full decision record.
+const _SS_TABLE = 'mt_sessions';
 
 // Active session ID — set by sessionStoreCreate, cleared by homeClearSession
 var _activeSessionId = null;
+// Phase 5: tracks whether the CURRENTLY ACTIVE session is shared (is_shared).
+// Set alongside _activeSessionId in sessionStoreCreate()/sessionStoreRestore(),
+// cleared in homeClearSession(). Read by withGenerationLock() (api.js) to
+// decide whether to acquire/heartbeat/release the generation lock at all —
+// private sessions skip locking entirely, zero added latency.
+var _activeSessionIsShared = false;
+// v8.128: tracks the owner (user_id) of the CURRENTLY ACTIVE session — set
+// alongside _activeSessionIsShared at the same points, cleared in
+// homeClearSession(). Unlike is_shared, ownership never changes for an
+// existing session, so there's no equivalent staleness concern here. Read
+// by hdrApplySessionNameVisibility()/hdrRenameSession() to gate the header
+// rename control for non-owners of a shared session — a real, live gap
+// found in testing: that control had no ownership check of any kind.
+var _activeSessionOwnerId = null;
+// v9.08: tracks the share mode ('view'|'edit') of the CURRENTLY ACTIVE
+// session. Defaults to 'view' (fail-closed), not 'edit' — an earlier draft
+// of this design defaulted to 'edit', which would silently render a
+// session as fully editable if some restore path ever failed to set this
+// explicitly. Set alongside _activeSessionIsShared/_activeSessionOwnerId
+// at both existing capture points (sessionStoreCreate, sessionStoreRestore),
+// cleared in homeClearSession(). Read only by canEditSession() below.
+var _activeSessionShareMode = 'view';
+
+// v9.08: single source of truth for "can the current user mutate the
+// active session." Owner can always edit their own session regardless of
+// its share mode (matches the server-side RPC logic exactly). A private,
+// non-shared session is always editable by its owner. A shared session is
+// editable only if share_mode is explicitly 'edit'. Any unrecognized/
+// missing state falls through to false — fails closed, not open.
+function canEditSession(){
+  var uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
+  if (!uid) return false;
+  // v9.09 — role check runs FIRST, before ownership. Closes two real gaps
+  // found in adversarial review: (1) a user demoted to 'readonly' who still
+  // owns older sessions previously retained full edit rights via the
+  // ownership branch below, since that branch never checked role at all;
+  // (2) fails CLOSED on any unrecognized/null/undefined role, not just an
+  // exact 'readonly' match — a stale or failed role load now denies edit
+  // rather than falling through to the permissive ownership/share-mode
+  // checks. This also means company-level readonly now correctly overrides
+  // even an 'edit'-mode session share (confirmed decision — role wins).
+  // NOTE — load order: session-store.js loads before main.js in index.html,
+  // but currentUserRole is only READ here at call time (this function body
+  // doesn't execute at script-parse time), and `var` is script-globally
+  // scoped — so main.js has always run and set currentUserRole by the time
+  // any caller actually invokes canEditSession(). Safe, but fragile if this
+  // function is ever called synchronously during initial script evaluation
+  // rather than in response to a later event/render.
+  if (typeof currentUserRole === 'undefined' || currentUserRole === null || currentUserRole === 'readonly') return false;
+  if (_activeSessionOwnerId && _activeSessionOwnerId === uid) return true;
+  if (_activeSessionIsShared === true) return _activeSessionShareMode === 'edit';
+  if (_activeSessionIsShared === false) return true;
+  return false;
+}
 
 // ── Supabase client helper ──
 // Returns the initialised Supabase client, or null if unavailable.
@@ -25,38 +86,133 @@ function _ssGetClient() {
   return (typeof authInit === 'function') ? authInit() : null;
 }
 
+// v8.149 fix (Issue 2): "Last Active" needs to be a real, per-user,
+// per-account property — following the person to any device — not
+// derived from a session's own global last-saved timestamp (which any
+// collaborator's edit can bump, silently hijacking what shows as this
+// specific person's own last active session). This calls a dedicated RPC
+// (mt_users_companies has no direct UPDATE policy — confirmed — so a
+// security-definer RPC does its own access check before writing) and
+// updates a local in-memory cache immediately, optimistically, rather
+// than waiting on a round trip before Home can reflect it.
+var _pgtMyLastActiveSessionId = null;
+async function _ssUpdateMyLastActiveSession(sessionId) {
+  _pgtMyLastActiveSessionId = sessionId; // optimistic, immediate
+  var client = _ssGetClient();
+  if (!client || !sessionId) return;
+  try {
+    await client.rpc('update_my_last_active_session', { p_session_id: sessionId });
+  } catch(e) {
+    console.warn('[session-store] update_my_last_active_session failed:', e);
+  }
+}
+
 // ── Private DB upsert helper ──
 // Maps a session entry { meta, snapshot } to the Supabase sessions table schema.
 // Used by both sessionStoreCreate and sessionStoreSave to avoid duplication.
 // Requires currentUser global (set in main.js after auth gate).
 // Skips silently if client unavailable or currentUser not set.
+// Phase 2 (v8.123, live sync): now returns true/false to reflect whether the
+// write genuinely succeeded, instead of always resolving with no result.
+// Both existing callers (sessionStoreCreate, sessionStoreSave) already
+// ignore the return value entirely — confirmed via grep — so this is not a
+// behavior change for either. Added specifically so sessionStoreSave() can
+// tell ITS new awaiting callers (the content-event emission call sites)
+// whether the DB write actually committed, not just whether the function
+// call didn't throw.
 async function _ssUpsertToDB(sessionId, entry) {
   const client = _ssGetClient();
-  if (!client) return;
+  if (!client) return false;
   const uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
   if (!uid) {
     console.warn('sessionStore: no currentUser, skipping DB write');
-    return;
+    return false;
   }
+  // Phase 1: every session write is stamped with the active company id and
+  // last-editor id. company_id is required by mt_sessions' RLS insert policy
+  // (must match an active membership) — without it, inserts fail outright.
+  const activeCompanyId = (function(){
+    try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+  })();
   const meta = entry.meta;
+
+  // v8.129: a non-owner's save was ALWAYS silently failing — RLS only
+  // permits a direct UPDATE by the session's owner, confirmed live (a
+  // real, pre-existing gap unrelated to this feature, only surfaced now
+  // that a non-owner's own save was actually exercised and checked). Fails
+  // open toward "owner" for legacy records missing userId, same fallback
+  // already used elsewhere in this codebase for the identical reason.
+  const _isOwner = !meta.userId || meta.userId === uid;
+  if (!_isOwner) {
+    try {
+      const { data, error } = await client.rpc('save_shared_session_content', {
+        p_session_id: sessionId,
+        p_last_tab: meta.lastTab || 'mm',
+        p_last_stage: meta.lastStage || '',
+        p_counts: meta.counts || {},
+        p_snapshot: entry.snapshot || {},
+        p_saved_at: new Date(meta.savedAt || Date.now()).toISOString()
+      });
+      if (error) { console.warn('sessionStore RPC save failed:', error.message); return false; }
+      // v9.08: the RPC returning a clean `false` (not an error) means the
+      // save was rejected by server-side authorization — most likely
+      // because access changed (mode flipped to view, or unshared)
+      // between this client's last check and this save attempt. Distinct
+      // from a network/thrown error, and worth telling the user about
+      // specifically, since their work may not have persisted.
+      if (data !== true && typeof showToast === 'function') {
+        showToast('Your access to this session may have changed. Refresh to confirm your latest changes were saved.', 'warn');
+      }
+      return data === true;
+    } catch(e) {
+      console.warn('sessionStore RPC save exception:', e);
+      return false;
+    }
+  }
+
   try {
-    const { error } = await client.from('sessions').upsert({
-      id:           sessionId,
-      user_id:      uid,
-      name:         meta.name         || 'Session',
-      product_name: meta.productName  || '',
-      company_name: meta.companyName  || '',
-      product_type: meta.productType  || '',
-      approach:     meta.approach     || '',
-      last_tab:     meta.lastTab      || 'mm',
-      last_stage:   meta.lastStage    || '',
-      counts:       meta.counts       || {},
-      snapshot:     entry.snapshot    || {},
-      saved_at:     new Date(meta.savedAt || Date.now()).toISOString()
+    // Phase 5: resolve the saving user's own display name once per upsert —
+    // available client-side with zero extra query (authGetUser() reads the
+    // already-active Supabase session, no network round-trip beyond what's
+    // already cached). Denormalized onto every save, not just shared ones —
+    // matches last_edited_by's own existing "cheap to always populate"
+    // rationale, and means the name isn't blank if a private session gets
+    // shared later. Only ever DISPLAYED on shared cards (home.js) — see B3.
+    let _editorName = '';
+    try {
+      if(typeof authGetUser === 'function'){
+        const _u = await authGetUser();
+        _editorName = (_u && _u.displayName) || '';
+      }
+    } catch(e) { console.warn('sessionStore: could not resolve editor display name', e); }
+    const { error } = await client.from(_SS_TABLE).upsert({
+      id:              sessionId,
+      user_id:         uid,
+      company_id:      activeCompanyId,
+      last_edited_by:  uid,
+      last_edited_by_name: _editorName,
+      is_shared:       !!meta.isShared,
+      // v9.08: written on every owner save so a session created before
+      // this feature (share_mode defaulting to 'view' at the DB level)
+      // gets an explicit value the first time its owner saves, rather
+      // than silently inheriting the column default forever.
+      share_mode:      meta.shareMode === 'edit' ? 'edit' : 'view',
+      name:            meta.name         || 'Session',
+      product_name:    meta.productName  || '',
+      company_name:    meta.companyName  || '',
+      product_type:    meta.productType  || '',
+      approach:        meta.approach     || '',
+      last_tab:        meta.lastTab      || 'mm',
+      last_stage:      meta.lastStage    || '',
+      counts:          meta.counts       || {},
+      snapshot:        entry.snapshot    || {},
+      saved_at:        new Date(meta.savedAt || Date.now()).toISOString()
     }, { onConflict: 'id' });
-    if (error) console.warn('sessionStore DB upsert failed:', error.message);
+    if (error) { console.warn('sessionStore DB upsert failed:', error.message); return false; }
+    return true;
   } catch(e) {
     console.warn('sessionStore DB upsert exception:', e);
+    return false;
   }
 }
 
@@ -69,10 +225,38 @@ async function _ssUpsertToDB(sessionId, entry) {
 async function sessionStoreSyncFromDB() {
   const client = _ssGetClient();
   if (!client) return;
+  // Phase 1, most serious adversarial finding: this query originally had zero
+  // company filtering — for anyone in 2+ companies it would have merged every
+  // company's sessions into one local index simultaneously, breaking the
+  // "switching companies is a separate context" principle this entire feature
+  // depends on. The active company id is read from the same key main.js's
+  // boot sequence writes before this function is ever allowed to run.
+  const activeCompanyId = (function(){
+    try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+  })();
+  if (!activeCompanyId) {
+    // v8.113: previously just returned here, silently skipping the cleanup
+    // step below entirely — meaning a zero-company user's previously-cached
+    // sessions stayed in localStorage indefinitely, surviving even hard
+    // refreshes, since this was the only guard standing between them and the
+    // pruning logic that runs later in this function. Now explicitly runs
+    // the same cleanup here: delete each individual cached session entry
+    // (not just the index array) — stricter than the zero-DB-rows branch
+    // below strictly needs, but avoids relying on "nothing ever reads an
+    // orphaned entry directly" staying true forever.
+    console.warn('sessionStoreSyncFromDB: no active company id — clearing local session cache rather than fetching unscoped data');
+    try {
+      var staleIds = JSON.parse(localStorage.getItem(_SS_INDEX) || '[]');
+      staleIds.forEach(function(id){ try { localStorage.removeItem(_SS_PREFIX + id); } catch(e) {} });
+    } catch(e) {}
+    try { localStorage.setItem(_SS_INDEX, JSON.stringify([])); } catch(e) {}
+    return;
+  }
   try {
     const { data, error } = await client
-      .from('sessions')
+      .from(_SS_TABLE)
       .select('*')
+      .eq('company_id', activeCompanyId)
       .order('saved_at', { ascending: false });
 
     if (error) {
@@ -80,7 +264,13 @@ async function sessionStoreSyncFromDB() {
       return;
     }
     if (!data || data.length === 0) {
-      // No sessions in DB — clear local index so stale entries don't show
+      // No sessions in DB — clear local index so stale entries don't show.
+      // v8.113: also deletes individual entries, not just the index array,
+      // matching the stricter cleanup now used in the zero-company branch above.
+      try {
+        var staleIds2 = JSON.parse(localStorage.getItem(_SS_INDEX) || '[]');
+        staleIds2.forEach(function(id){ try { localStorage.removeItem(_SS_PREFIX + id); } catch(e) {} });
+      } catch(e) {}
       try { localStorage.setItem(_SS_INDEX, JSON.stringify([])); } catch(e) {}
       return;
     }
@@ -99,7 +289,27 @@ async function sessionStoreSyncFromDB() {
         lastStage:   row.last_stage   || '',
         counts:      row.counts       || { caps: 0, features: 0, stories: 0, sprintActive: null },
         createdAt:   row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-        savedAt:     row.saved_at   ? new Date(row.saved_at).getTime()   : Date.now()
+        savedAt:     row.saved_at   ? new Date(row.saved_at).getTime()   : Date.now(),
+        // Phase 5: sharing fields, read straight off the row. last_edited_by_name
+        // is a denormalized snapshot (see _ssUpsertToDB) — deliberately not a
+        // live lookup of the editor's CURRENT display name. activeUserId/
+        // activeAt/activeUserName drive the "[Name] is generating now" meta
+        // line state — activeUserName is written directly by
+        // withGenerationLock() (api.js) the moment a lock is acquired, not
+        // by this sync path, since sync only runs on login/tab-load, not
+        // continuously while someone else might be generating.
+        isShared:        !!row.is_shared,
+        // v9.08: read straight off the row, same denormalized-snapshot
+        // pattern as the other Phase 5 sharing fields above.
+        shareMode:       row.share_mode === 'edit' ? 'edit' : 'view',
+        lastEditedByName: row.last_edited_by_name || '',
+        activeUserId:    row.active_user_id || null,
+        activeAt:        row.active_at ? new Date(row.active_at).getTime() : null,
+        activeUserName:  row.active_user_name || '',
+        // Phase 5 (v8.117 fix): the session's owner id, read straight off
+        // row.user_id — see sessionStoreCreate's own comment for the full
+        // rationale on why this was missing and what it enables.
+        userId:          row.user_id || null
       };
       try {
         // Fix 3 (v8.38): protect against stale Supabase snapshot overwriting
@@ -172,7 +382,23 @@ function sessionStoreCreate(sc) {
     productType: (sc && sc.productProfile && sc.productProfile.productType) || '',
     approach: (sc && sc.approach) || 'outcome-based',
     generationMode: (sc && sc.generationMode) || 'ai-generated',
-    counts: { caps: 0, features: 0, stories: 0, sprintActive: null }
+    counts: { caps: 0, features: 0, stories: 0, sprintActive: null },
+    // Phase 5: sharing fields. New sessions always start private — sharing
+    // is an explicit opt-in action from the session card, never a default.
+    isShared: false,
+    lastEditedByName: '',
+    // Phase 5 (v8.117 fix): the session's owner id — written to
+    // mt_sessions.user_id on every DB save (see _ssUpsertToDB below) but,
+    // confirmed as a real gap via grep, was never read back into the
+    // local meta object at all until this fix. Without it, no card-render
+    // function anywhere in the app had any way to know who actually owns
+    // a given session, which is what let the 3-dot menu render
+    // Rename/Unshare/Delete unconditionally for ANY viewer of a shared
+    // session — including a non-owner, for whom those actions would
+    // silently fail server-side (RLS already blocks a non-owner's
+    // UPDATE/DELETE) while still optimistically mutating LOCAL state,
+    // creating a "looked like it worked, then silently reverted" bug.
+    userId: (typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null
   };
 
   const snapshot = _sessionStoreBuildSnapshot();
@@ -187,6 +413,18 @@ function sessionStoreCreate(sc) {
   }
 
   _activeSessionId = id;
+  // Phase 5: tracks whether the CURRENTLY ACTIVE session is shared, for the
+  // generation-lock wrapper (withGenerationLock in api.js) to read without
+  // needing a session object threaded through every call site. Captured
+  // once per session load/create, cleared in homeClearSession(). Consumers
+  // (withGenerationLock) re-capture this into a local at call time — this
+  // global is only ever the SOURCE of that capture, never read live
+  // mid-generation, per the "_activeSessionIsShared staleness" risk logged
+  // during adversarial review.
+  _activeSessionIsShared = false;
+  // v9.08: new sessions always start private, so share mode is irrelevant
+  // until first shared — set to the safe default regardless.
+  _activeSessionShareMode = 'view';
 
   // Fix 1 (v8.40): show session name in header immediately on launch
   if(typeof hdrSetSessionName==='function') hdrSetSessionName(name);
@@ -195,6 +433,9 @@ function sessionStoreCreate(sc) {
   (async function() {
     try {
       await _ssUpsertToDB(id, { meta, snapshot });
+      // v8.149 fix (Issue 2): only after the session genuinely exists in
+      // the DB — the RPC's own lookup would otherwise find nothing.
+      _ssUpdateMyLastActiveSession(id);
     } catch(e) {
       console.warn('sessionStoreCreate DB write failed:', e);
     }
@@ -205,8 +446,31 @@ function sessionStoreCreate(sc) {
 
 // Save current state to the active session.
 // Called after every meaningful state mutation.
-function sessionStoreSave(sessionId) {
-  if (!sessionId) return;
+// Phase 2 (v8.123, live sync): now an async function that AWAITS its own DB
+// write before returning, instead of firing it and returning early. Returns
+// true/false reflecting whether the DB write actually succeeded. This is a
+// deliberate, minimal change made specifically for the new content-event
+// emission call sites (capability-canvas.js) — they need to know the save
+// genuinely committed before emitting an event, closing a real sequencing
+// gap found while building that feature (an event could otherwise become
+// visible to a teammate before its own content was actually fetchable).
+// Confirmed via grep, NOT a behavior change for any of the ~50 existing
+// call sites app-wide: every one of them calls this as a bare, unawaited
+// statement and never reads a return value, so an async function that
+// still catches and logs every error internally (never throwing past this
+// function) behaves identically from their point of view. Only the new
+// call sites in capability-canvas.js explicitly await this.
+async function sessionStoreSave(sessionId) {
+  if (!sessionId) return false;
+  // v9.08: central defense-in-depth guard. Private (non-shared) sessions
+  // are unaffected — canEditSession() returns true for those via the
+  // _activeSessionIsShared===false branch. This exists to catch any
+  // per-screen gate that might be missed, not to replace them.
+  if (!canEditSession()) {
+    console.error('[sessionStoreSave blocked] view-only session attempted save', sessionId);
+    return false;
+  }
+  let _dbWriteOk = false;
   try {
     const raw = localStorage.getItem(_SS_PREFIX + sessionId);
     const entry = raw ? JSON.parse(raw) : { meta: {}, snapshot: {} };
@@ -244,20 +508,19 @@ function sessionStoreSave(sessionId) {
     localStorage.setItem(_SS_PREFIX + sessionId, json);
     _ssShowSaved();
 
-    // Async DB write — fire and forget, does not block callers
+    // DB write — now awaited inline (was fire-and-forget pre-v8.123).
     // Re-reads from localStorage to get exact entry written (including stripped version if applicable)
-    (async function() {
-      try {
-        const saved = localStorage.getItem(_SS_PREFIX + sessionId);
-        if (saved) await _ssUpsertToDB(sessionId, JSON.parse(saved));
-      } catch(e) {
-        console.warn('sessionStoreSave DB write failed:', e);
-      }
-    })();
+    try {
+      const saved = localStorage.getItem(_SS_PREFIX + sessionId);
+      if (saved) _dbWriteOk = await _ssUpsertToDB(sessionId, JSON.parse(saved));
+    } catch(e) {
+      console.warn('sessionStoreSave DB write failed:', e);
+    }
 
   } catch(e) {
     console.warn('sessionStoreSave failed:', e);
   }
+  return _dbWriteOk;
 }
 
 // Load a session by ID — returns { meta, snapshot } or null
@@ -299,13 +562,24 @@ function hdrApplySessionNameVisibility(){
   if(!el)return;
   var hasName=!!(el.textContent||'').trim();
   var onHome=(typeof curTab!=='undefined'&&curTab==='home');
+  // v8.128: a non-owner of a shared session sees no rename control at all —
+  // same stated principle already used for the session-card's own 3-dot
+  // menu ("non-owner sees NO trigger at all, not an empty menu"). Missing
+  // owner id (legacy records) fails OPEN toward showing it, matching that
+  // same existing precedent exactly, not a stricter new rule.
+  var _canRename=true;
+  if(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared){
+    var _ownerId=(typeof _activeSessionOwnerId!=='undefined')?_activeSessionOwnerId:null;
+    var _myId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
+    _canRename=(!_ownerId||_ownerId===_myId);
+  }
   el.classList.toggle('has-name',hasName);
   if(onHome||!hasName){
     el.style.display='none';
     if(btn)btn.style.display='none';
   } else {
     el.style.display='';
-    if(btn)btn.style.display='';
+    if(btn)btn.style.display=_canRename?'':'none';
   }
 }
 
@@ -337,6 +611,14 @@ function hdrSetSessionName(name){
 
 function hdrRenameSession(event){
   if(event){event.preventDefault();event.stopPropagation();}
+  // v8.128: defense in depth — mirrors hdrApplySessionNameVisibility()'s
+  // gate, in case this is ever reachable by something other than the
+  // (correctly hidden) button.
+  if(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared){
+    var _ownerId=(typeof _activeSessionOwnerId!=='undefined')?_activeSessionOwnerId:null;
+    var _myId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
+    if(_ownerId&&_ownerId!==_myId)return;
+  }
   var wrap=document.getElementById('hdr-session-wrap');
   var el=document.getElementById('hdr-product-name');
   if(!wrap||!el)return;
@@ -425,27 +707,39 @@ function sessionStoreUpdateLastTab(tab){
 }
 
 // Restore a session — writes all state vars, reveals tabs, navigates to lastTab
-function sessionStoreRestore(sessionId) {
-  const entry = sessionStoreLoad(sessionId);
-  if (!entry || !entry.snapshot) {
-    showToast('Could not load session — data may be corrupted.', 'warn');
-    return;
-  }
+// Phase 3b (v8.126, live sync): restore-sequence token. Bumped at the very
+// start of every call — if a second resume starts before the first's async
+// pre-fetch (below) resolves, the first call's continuation detects it's
+// stale (seq mismatch) and abandons entirely rather than applying anything
+// or racing the second call's own restore. Confirmed via grep this function
+// has exactly 2 callers, both bare/unawaited — converting it to async is
+// not an observable behavior change for either.
+var _ssRestoreSeq = 0;
 
-  _ssRestoring = true;  // prevent switchTab from overwriting lastTab during restore
-
-  // Clear current session first (saves it if active)
-  // Must happen BEFORE setting _activeSessionId to avoid double-active badge
-  if (typeof homeClearSession === 'function') homeClearSession();
-
-  const s = entry.snapshot;
-  const meta = entry.meta;
-
-  // Restore all state
+// v8.136 (item 10 redesign): the single, authoritative "apply a snapshot's
+// fields to the app's globals" logic — extracted verbatim from what used
+// to be inlined directly in sessionStoreRestore() below. Deliberately
+// pure: takes only the snapshot object, touches only in-memory globals,
+// never the DOM, never sessionStoreSave, never emits anything, never
+// fetches. This is what makes it safe to call from a second place
+// (live-sync.js's cross-user wholesale apply) without risking the
+// save-before-clear landmine documented there — this function never
+// saves anything, so calling it twice, from two different callers, has
+// no side effects beyond the assignments themselves.
+function _ssApplySnapshotFields(s) {
   if (s.sessionContext !== undefined) sessionContext = s.sessionContext;
   if (s.gData !== undefined) gData = s.gData;
   if (s.productContext !== undefined) productContext = s.productContext;
   if (s.capStore !== undefined) capStore = s.capStore;
+  // v9.05: heal/derive Discovery Map's "Custom Value Stage" from whatever
+  // custom-bucket capabilities already exist in capStore — covers legacy
+  // sessions (capStore['pi||'+X] entries created before this feature
+  // shipped, missing bucketId) AND normal resume (in case gData.stages'
+  // pi entry ever drifted out of sync with capStore, e.g. from a stale
+  // save). Both gData and capStore must be set before this call.
+  if (typeof gData !== 'undefined' && gData && typeof capStore !== 'undefined' && capStore && typeof syncPiStageFromCapStore === 'function') {
+    syncPiStageFromCapStore(gData, capStore);
+  }
   if (s.scCanvas !== undefined) scCanvas = s.scCanvas;
   // Restore story ID counter — use max(saved, highest ST-NNN found in canvas)
   // to prevent collisions on session resume regardless of how stories were created
@@ -466,6 +760,10 @@ function sessionStoreRestore(sessionId) {
   }
   if (s.piPlan !== undefined) piPlan = s.piPlan;
   if (s.piInputs !== undefined) piInputs = s.piInputs;
+  // FIX 2.1 (v9.03): Migrate old sessions with removed prev-pi type
+  if (typeof ccMigrateLegacyPIInputs === 'function' && piInputs) {
+    ccMigrateLegacyPIInputs(piInputs);
+  }
   if (s.piSquads !== undefined) piSquads = s.piSquads;
   if (s.diagnosticSessions !== undefined) diagnosticSessions = s.diagnosticSessions;
   if (s.activeDiagnosticId !== undefined) activeDiagnosticId = s.activeDiagnosticId;
@@ -486,55 +784,168 @@ function sessionStoreRestore(sessionId) {
       productLeakAnalysis = s.productLeakAnalysis || [];
     }
   }
-  // Rebuild laSentIds cache from scCanvas (source of truth)
+  // Rebuild laSentIds cache from scCanvas (source of truth) — confirmed
+  // pure, no save/DOM side effects, verified before this extraction.
   if (typeof laRebuildSentIdsFromCanvas === 'function') laRebuildSentIdsFromCanvas();
+  // v9.06.01: narrowly migrate the Custom Value Stage's legacy literal
+  // label ('PI Plan') to the new default ('Custom Value Stage'), and patch
+  // every downstream field that would otherwise go stale — mirrors what a
+  // manual rename via stageRenameDownstream() does, but automatic and
+  // narrowly scoped (only fires if the label is EXACTLY the old literal;
+  // never touches a label a user has already customized). Placed here,
+  // after gData/capStore/scCanvas/productLeakAnalysis are all restored,
+  // since migratePiStageLegacyLabel() reads all four.
+  if (typeof migratePiStageLegacyLabel === 'function') {
+    migratePiStageLegacyLabel(gData, capStore, scCanvas, productLeakAnalysis);
+  }
   if (s.miData !== undefined) miData = s.miData;
   if (s.miGenerated !== undefined) miGenerated = s.miGenerated;
   if (s.miProductMode !== undefined) miProductMode = s.miProductMode;
   if (s.miCapabilities !== undefined) miCapabilities = s.miCapabilities;
   if (s.ddGenerated !== undefined) ddGenerated = s.ddGenerated;
+  // v9.08.04 fix: restore the actual dictionary content alongside the flag
+  // that claims it exists — window._ddRows is read directly by
+  // ccRenderDDPanel()'s per-metric lookup (capability-canvas.js), which
+  // expects this exact flat-array shape ({name, sl, lvl, def, bm, rf}) with
+  // no transformation, confirmed against both places that populate it.
+  if (s.ddRows !== undefined && typeof window !== 'undefined') window._ddRows = s.ddRows;
   if (s.mmBannerCollapsed !== undefined) mmBannerCollapsed = s.mmBannerCollapsed;
   // Restore protoStore — unconditional, old sessions without it get empty {}
   protoStore = s.protoStore || {};
-  // Decompress wireframe HTML from LZString-compressed field (v8.81+)
-  // Backward compatible: old snapshots have wireframeHTMLCompressed:null — wireframeHTML stays null
-  if (typeof LZString !== 'undefined' && typeof LZString.decompressFromUTF16 === 'function') {
-    Object.keys(protoStore).forEach(function(featId) {
-      var entry = protoStore[featId];
-      if (!entry || !entry.variants) return;
-      Object.keys(entry.variants).forEach(function(vid) {
-        var v = entry.variants[vid];
-        if (!v) return;
-        // Always reset transient fields — never restore in-flight state
-        v.generating = false;
-        v.generatingPhase = null;
-        v.wireframeBlobUrl = null;
-        if (v.wireframeHTMLCompressed) {
-          try {
-            var html = LZString.decompressFromUTF16(v.wireframeHTMLCompressed);
-            v.wireframeHTML = html || null;
-          } catch(_) {
-            v.wireframeHTML = null;
-          }
-        } else {
+  // v8.147: decompression extracted to a shared, pure function — used here
+  // AND by live-sync's Prototype Canvas apply (which mutates protoStore
+  // via a completely separate code path and would otherwise silently skip
+  // this step, exactly the "two copies of the same logic drift apart"
+  // class of bug the tab-visibility fix (v8.136) was built to prevent).
+  _ssDecompressProtoStoreWireframes(protoStore);
+}
+
+// Pure: decompresses every variant's wireframeHTMLCompressed field into a
+// live wireframeHTML string, in place, on the given protoStore object.
+// Always resets transient fields (generating/generatingPhase/wireframeBlobUrl)
+// — never restores in-flight generation state, regardless of caller.
+function _ssDecompressProtoStoreWireframes(protoStoreObj) {
+  var lzAvail = typeof LZString !== 'undefined' && typeof LZString.decompressFromUTF16 === 'function';
+  Object.keys(protoStoreObj).forEach(function(featId) {
+    var entry = protoStoreObj[featId];
+    if (!entry || !entry.variants) return;
+    Object.keys(entry.variants).forEach(function(vid) {
+      var v = entry.variants[vid];
+      if (!v) return;
+      v.generating = false;
+      v.generatingPhase = null;
+      v.wireframeBlobUrl = null;
+      if (lzAvail && v.wireframeHTMLCompressed) {
+        try {
+          var html = LZString.decompressFromUTF16(v.wireframeHTMLCompressed);
+          v.wireframeHTML = html || null;
+        } catch(_) {
           v.wireframeHTML = null;
         }
-      });
+      } else {
+        v.wireframeHTML = null;
+      }
     });
-  } else {
-    // LZString not available — ensure clean state
-    Object.keys(protoStore).forEach(function(featId) {
-      var entry = protoStore[featId];
-      if (!entry || !entry.variants) return;
-      Object.keys(entry.variants).forEach(function(vid) {
-        var v = entry.variants[vid];
-        if (v) { v.generating = false; v.wireframeBlobUrl = null; v.wireframeHTML = null; }
-      });
-    });
+  });
+}
+
+async function sessionStoreRestore(sessionId) {
+  const _restoreSeq = ++_ssRestoreSeq;
+  const localEntry = sessionStoreLoad(sessionId);
+  if (!localEntry || !localEntry.snapshot) {
+    showToast('Could not load session. Data may be corrupted.', 'warn');
+    return;
   }
 
+  _ssRestoring = true;  // prevent switchTab from overwriting lastTab during restore
+
+  // v8.150 fix (Issue 2, corrected): the v8.149 attempt computed this
+  // condition here and passed it as an explicit skipSave flag — confirmed
+  // via live testing that this missed the actual failure mode (navigating
+  // to Home first, a different call site, already did the damage before
+  // this ever ran). The detection now lives inside homeClearSession()
+  // itself, automatically, so this call site is back to a plain call.
+  if (typeof homeClearSession === 'function') homeClearSession();
+
+  // Phase 3b (v8.126): for a cached-shared session, fetch that row fresh
+  // from the DB before applying anything — today's local-cache-only resume
+  // (the code below this point, unchanged) doesn't reflect a teammate's
+  // content generated while this browser wasn't watching. Private sessions
+  // take the exact pre-v8.126 path unchanged (no await ever happens, zero
+  // added latency or risk).
+  let entry = localEntry;
+  let _lsCursorSeed = null;
+  let _lsPreFetchFailed = false;
+  if (localEntry.meta && localEntry.meta.isShared && typeof _lsResumePreFetch === 'function') {
+    try {
+      const _fresh = await _lsResumePreFetch(sessionId);
+      // Re-check after the only await in this function — a second resume
+      // started while this one was in flight wins; this one bows out.
+      if (_restoreSeq !== _ssRestoreSeq) { _ssRestoring = false; return; }
+      if (_fresh && _fresh.ok) {
+        entry = { meta: _fresh.meta, snapshot: _fresh.snapshot };
+        _lsCursorSeed = _fresh.cursorEventId;
+        // Write the fresh entry into localStorage immediately — this
+        // function's own tail logic (savedAt/lastTab stamping) re-reads
+        // localStorage directly rather than reusing this local variable;
+        // without this write, that later re-read would silently see stale
+        // cached data instead of what was just fetched.
+        try { localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry)); } catch(e) {}
+      } else if (_fresh && _fresh.reason === 'no-access') {
+        // Fix (v8.127): confirmed no access (a clean, error-free query that
+        // simply returned nothing — RLS has excluded this row) must NOT
+        // fall back to serving stale local content, unlike a genuine
+        // network failure. Found in testing: a session card could still be
+        // "resumed" into a stale cached copy after being unshared, in the
+        // window before the next Home poll cycle noticed it was gone.
+        if (typeof _lsRemoveLocalSessionEntry === 'function') _lsRemoveLocalSessionEntry(sessionId);
+        if (typeof showToast === 'function') showToast('This session is no longer shared with you.', 'warn');
+        if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
+        _ssRestoring = false;
+        return;
+      } else {
+        // Genuine error (network, malformed response) — fall back to
+        // cached content, but say so explicitly rather than failing silent.
+        _lsPreFetchFailed = true;
+      }
+    } catch(e) {
+      _lsPreFetchFailed = true;
+    }
+  }
+  if (_restoreSeq !== _ssRestoreSeq) { _ssRestoring = false; return; }
+
+  const s = entry.snapshot;
+  const meta = entry.meta;
+
+  _ssApplySnapshotFields(s);
+
   _activeSessionId = sessionId;
+  // Phase 5: capture the restored session's sharing state once, here — the
+  // single point where "which session is active" changes. Never re-derived
+  // mid-generation; withGenerationLock() (api.js) captures ITS OWN local
+  // copy from this global at call time, so a later stale read of this
+  // global can't retroactively affect an already-running generation.
+  _activeSessionIsShared = !!meta.isShared;
+  _activeSessionOwnerId = meta.userId || null;
+  // v9.08: read the restored session's share mode. Falls back to 'view'
+  // (fail-closed) if the field is missing on an old cached entry rather
+  // than defaulting to 'edit'.
+  _activeSessionShareMode = meta.shareMode === 'edit' ? 'edit' : 'view';
   sessionActive = true;
+
+  // Phase 3b/3c (v8.126): watch starts here, not earlier — this is the
+  // single point where the active session's identity and sharing state are
+  // both already final for this restore. Seeded with the cursor captured
+  // BEFORE the snapshot fetch above (deliberate ordering — see
+  // _lsResumePreFetch), so anything generated in the gap between those two
+  // fetches surfaces as a redundant-but-safe banner rather than being
+  // silently acknowledged as already-seen.
+  if (_activeSessionIsShared && typeof _lsSessionWatchStart === 'function' && canEditSession()) {
+    _lsSessionWatchStart(sessionId, _lsCursorSeed);
+  }
+  if (_lsPreFetchFailed && typeof showToast === 'function') {
+    showToast('Could not confirm the latest version of this session. Showing the last saved copy.', 'warn');
+  }
 
   // v8.45: seed el.textContent early so it's available if switchTab reads it
   // Do NOT call hdrSetSessionName here — curTab is still 'home', visibility would hide it
@@ -547,19 +958,10 @@ function sessionStoreRestore(sessionId) {
   const tabHint = document.querySelector('.tab-hint');
   if (tabHint) tabHint.style.display = 'none';
 
-  // Hide all tabs first — prevents prior session tabs bleeding into restored session.
-  // Also clear data-home-hidden so switchTab('mm') restore logic doesn't re-show them.
-  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc'].forEach(function(id){
-    const el=document.getElementById(id);
-    if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
-  });
-  ['tab-sc','tab-pi'].forEach(function(id){
-    const el=document.getElementById(id);
-    if(el) el.classList.remove('revealed');
-  });
-
-  // Reveal only tabs relevant to this session
-  _ssRevealTabs(s);
+  // Hide-then-reveal tab visibility, matching this session's actual data —
+  // now a single shared function (see _ssSyncTabVisibility below), also
+  // used by the cross-user wholesale apply path.
+  _ssSyncTabVisibility(s);
 
   // Navigate to last active tab — switchTab handles all left panel / content visibility
   const targetTab = meta.lastTab || 'mm';
@@ -631,6 +1033,10 @@ function sessionStoreRestore(sessionId) {
   }
 
   showToast('Session restored.', 'info');
+  // v8.149 fix (Issue 2): mark this as this person's own last active
+  // session, once the resume has genuinely completed — not earlier, and
+  // not on a failed/aborted resume path above.
+  if (typeof _ssUpdateMyLastActiveSession === 'function') _ssUpdateMyLastActiveSession(sessionId);
 }
 
 // Delete a session by ID
@@ -649,7 +1055,18 @@ function sessionStoreDelete(sessionId) {
     try {
       const client = _ssGetClient();
       if (client) {
-        const { error } = await client.from('sessions').delete().eq('id', sessionId);
+        // company_id added per adversarial review — not because RLS is
+        // insufficient (a bare id match can't let anyone touch a session
+        // they don't already have rights to), but to stop a stale local
+        // index entry from letting a delete succeed against a session in a
+        // company other than the one presently active, if that entry ever
+        // pointed at one.
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
+        let q = client.from(_SS_TABLE).delete().eq('id', sessionId);
+        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
+        const { error } = await q;
         if (error) console.warn('sessionStoreDelete DB delete failed:', error.message);
       }
     } catch(e) {
@@ -678,16 +1095,99 @@ function sessionStoreRename(sessionId, newName) {
     try {
       const client = _ssGetClient();
       if (client) {
-        const { error } = await client
-          .from('sessions')
-          .update({ name: trimmed })
-          .eq('id', sessionId);
+        // Same company_id guard as sessionStoreDelete above, same reasoning.
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
+        let q = client.from(_SS_TABLE).update({ name: trimmed }).eq('id', sessionId);
+        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
+        const { error } = await q;
         if (error) console.warn('sessionStoreRename DB update failed:', error.message);
       }
     } catch(e) {
       console.warn('sessionStoreRename DB update exception:', e);
     }
   })();
+}
+
+// Phase 5: toggle a session's is_shared flag. Mirrors sessionStoreRename's
+// pattern exactly — local write first (instant), async DB update (fire and
+// forget, company_id-guarded). Deliberately does NOT call sessionStoreSave()
+// or rebuild the full snapshot — this is a single boolean flip, not a
+// content change, and the existing size-guard/wireframe-compression logic
+// in sessionStoreSave() would be wasted work for what's happening here.
+function homeSessionToggleShare(sessionId){
+  let _nextShared = null;
+  // v9.08.01 fix: hoisted alongside _nextShared. The DB-write block below
+  // is a separate async IIFE, outside this function's try block — `entry`
+  // is const-declared INSIDE the try block and goes out of scope before
+  // that IIFE runs. Referencing entry.meta.shareMode there threw
+  // "ReferenceError: entry is not defined" on every single toggle, share
+  // AND unshare alike (confirmed: the reference isn't behind an
+  // if(_nextShared) check), meaning the async DB write crashed before ever
+  // reaching client.from(...).update() — is_shared and share_mode were
+  // never actually persisted to Supabase in either direction, even though
+  // localStorage updated correctly and the toast fired.
+  let _nextShareMode = null;
+  try {
+    const raw = localStorage.getItem(_SS_PREFIX + sessionId);
+    if (!raw) return;
+    const entry = JSON.parse(raw);
+    _nextShared = !entry.meta.isShared;
+    entry.meta.isShared = _nextShared;
+    // v9.08: re-derive share_mode from the company default every time a
+    // session transitions private→shared — not just the first time it's
+    // ever shared. Without this, unsharing then re-sharing a session
+    // would silently keep whatever share_mode it had from a previous
+    // share cycle instead of reflecting the current company policy.
+    if (_nextShared) {
+      entry.meta.shareMode = (typeof appSettings !== 'undefined' && appSettings.defaultShareMode === 'edit') ? 'edit' : 'view';
+    }
+    _nextShareMode = entry.meta.shareMode || 'view';
+    localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry));
+    // Keep the live "is the ACTIVE session shared" flag in sync if this
+    // toggle is happening on the session currently open — otherwise
+    // withGenerationLock() would read a stale value until next restore.
+    if (typeof _activeSessionId !== 'undefined' && _activeSessionId === sessionId) {
+      _activeSessionIsShared = _nextShared;
+      if (_nextShared) _activeSessionShareMode = entry.meta.shareMode;
+    }
+  } catch(e) {
+    console.warn('homeSessionToggleShare localStorage failed:', e);
+    return;
+  }
+
+  if (typeof showToast === 'function') {
+    if (_nextShared) {
+      const _companyName = (function(){
+        try { return (typeof companyProfile !== 'undefined' && companyProfile && companyProfile.companyName) || 'your company'; } catch(e) { return 'your company'; }
+      })();
+      showToast('Shared with your team. Anyone at '+e(_companyName)+' can now open this session.', 'success');
+    } else {
+      showToast('Made private. Only you can see this session now.', 'info');
+    }
+  }
+
+  // Async DB update — fire and forget
+  (async function() {
+    try {
+      const client = _ssGetClient();
+      if (client) {
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
+        let q = client.from(_SS_TABLE).update({ is_shared: _nextShared, share_mode: _nextShareMode || 'view' }).eq('id', sessionId);
+        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
+        const { error } = await q;
+        if (error) console.warn('homeSessionToggleShare DB update failed:', error.message);
+      }
+    } catch(e) {
+      console.warn('homeSessionToggleShare DB update exception:', e);
+    }
+  })();
+
+  // Re-render the card so the shared icon / menu label / meta line update
+  if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
 }
 
 // Return array of session metadata sorted by savedAt desc (default)
@@ -814,6 +1314,12 @@ function _sessionStoreBuildSnapshot(opts) {
     miProductMode: (typeof miProductMode !== 'undefined') ? miProductMode : 'market',
     miCapabilities: (typeof miCapabilities !== 'undefined') ? miCapabilities : [],
     ddGenerated: (typeof ddGenerated !== 'undefined') ? ddGenerated : false,
+    // v9.08.04 fix: ddGenerated (the flag) was already being saved, but the
+    // actual dictionary content it claims to represent never was — every
+    // collaborator opening the session in their own browser started with
+    // an empty window._ddRows regardless of what a teammate had already
+    // generated, causing silent, redundant regeneration on every open.
+    ddRows: (typeof window !== 'undefined' && window._ddRows) ? window._ddRows : [],
     mmBannerCollapsed: (typeof mmBannerCollapsed !== 'undefined') ? mmBannerCollapsed : false,
     protoStore: _ssStripProtoTransient(typeof protoStore !== 'undefined' ? protoStore : {}, opts || {})
   };
@@ -893,6 +1399,45 @@ function _ssComputeCounts() {
   return { caps, features, stories, sprintActive, docs:_docs, protos };
 }
 
+// Phase 5 fix (v8.118): single source of truth for "should the MI tab be
+// visible for this session," used by BOTH reveal code paths (this resume
+// path, and generateConfirmed()'s own post-generation reveal in
+// kpi-tree.js) so they can't silently drift apart on the logic again.
+// Strict === true checks throughout (not loose truthy) per adversarial
+// review — a corrupted/old serialization that somehow stored the string
+// "false" would be loosely truthy but must not be treated as enabled.
+// undefined (the correct case for every session saved before this fix
+// shipped) correctly fails both strict checks and falls through to
+// whichever of the two conditions is actually true, unchanged from
+// today's behavior for old sessions.
+function _ssShouldShowMiTab(s) {
+  if (!s) return false;
+  if (s.miGenerated === true) return true;
+  if (s.gData && s.gData.marketIntelligenceEnabled === true) return true;
+  return false;
+}
+
+// v8.136 (item 10 redesign): hide-then-reveal, matching a snapshot's
+// actual data — generalizing what used to be inline-only in
+// sessionStoreRestore() (the hide-first step) plus the existing
+// reveal-only _ssRevealTabs() into one function usable from both the
+// normal resume path and the cross-user wholesale apply path. Order
+// matters: hide unconditionally first, so a stale "revealed" state (from
+// this session's own prior data, or — for cross-user apply — the
+// receiving viewer's own current tabs) never survives into what's shown
+// next; only then reveal what THIS snapshot's data actually supports.
+function _ssSyncTabVisibility(s) {
+  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-op'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
+  });
+  ['tab-sc','tab-pi'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.classList.remove('revealed');
+  });
+  _ssRevealTabs(s);
+}
+
 function _ssRevealTabs(s) {
   if (s.gData) {
     const tabMm = document.getElementById('tab-mm');
@@ -902,7 +1447,7 @@ function _ssRevealTabs(s) {
     const tabCc = document.getElementById('tab-cc');
     if (tabCc) tabCc.style.display = '';
   }
-  if (s.miGenerated) {
+  if (_ssShouldShowMiTab(s)) {
     const tabMi = document.getElementById('tab-mi');
     if (tabMi) tabMi.style.display = '';
   }
@@ -917,7 +1462,38 @@ function _ssRevealTabs(s) {
     const tabSc = document.getElementById('tab-sc');
     if (tabSc) tabSc.classList.add('revealed');
   }
-  if (s.piPlan) {
+  // Outcome Verification Loop (v9.10.00 feedback item 8, confirmed real
+  // gap via code read): applyFeats() is never called during session
+  // resume — _ssSyncTabVisibility()/_ssRevealTabs() is the actual
+  // resume-time tab-visibility mechanism, and it had no knowledge of
+  // tab-op at all. Without this, tab-op would silently retain whatever
+  // display state it happened to have BEFORE resume started, rather than
+  // being correctly recalculated for the session actually being opened —
+  // exactly the class of bug this feedback item was warning about, not
+  // yet actually broken by coincidence, but a real latent gap. Matches
+  // the same combined condition now enforced in applyFeats(): feature
+  // flag on AND a Discovery Map (s.gData) present in the resumed
+  // snapshot.
+  if (s.gData && typeof appSettings !== 'undefined' && appSettings && appSettings.featOutcomePulse) {
+    const tabOp = document.getElementById('tab-op');
+    if (tabOp) tabOp.style.display = '';
+  }
+  // v9.01-diag fix: was `if (s.piPlan)` -- a bare truthiness check that's
+  // true for ANY non-null piPlan object, including the default empty one
+  // created at session start before anything is ever staged for PI. That
+  // meant this check couldn't actually distinguish "nothing staged" from
+  // "stories staged" -- now requires genuine staged content (a non-empty
+  // backlog or at least one sprint assignment) before revealing the tab.
+  const hasPiContent = s.piPlan && (
+    (Array.isArray(s.piPlan.backlogStoryIds) && s.piPlan.backlogStoryIds.length > 0) ||
+    (s.piPlan.storyAssignments && Object.keys(s.piPlan.storyAssignments).length > 0)
+  );
+  // TEMP DIAGNOSTIC (v9.01-diag) — remove once the PI-tab-resume issue is
+  // confirmed fixed across a few real reproductions. Logs the actual
+  // restored piPlan content and the reveal decision, so if the tab still
+  // doesn't appear after this fix, we have real evidence of what the
+  // restored snapshot actually contained instead of guessing again.
+  if (hasPiContent) {
     const tabPi = document.getElementById('tab-pi');
     if (tabPi) tabPi.classList.add('revealed');
   }

@@ -1,6 +1,75 @@
 function sc(id){return{acquisition:'s-acq',activation:'s-act',engagement:'s-eng',retention:'s-ret'}[id]||'';}
 function pc(id){return{acquisition:'p-acq',activation:'p-act',engagement:'p-eng',retention:'p-ret'}[id]||'';}
 function e(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// ── Safe inline-JS-string-argument escape ──
+// Phase 5: e() is an HTML-escape helper, not a JS-string-escape helper —
+// confirmed via adversarial review as a real, pre-existing bug (predates
+// this phase) at every call site that splices e(someValue) directly into a
+// single-quoted argument inside an onclick="..." attribute. e() escapes
+// &<>" for safe HTML, but does NOT escape ' or \ — a value like "Bob's
+// plan" breaks the surrounding single-quoted JS string outright, and a
+// deliberately crafted value (e.g. "x');alert(1);//") can inject arbitrary
+// JS into the handler. Use ejs() for exactly this one situation: a value
+// being placed inside a JS string literal that itself sits inside an HTML
+// attribute (the "double escaping" case — first JS-string-escape the raw
+// value, THEN HTML-escape the whole resulting attribute content via e()
+// at the call site, same as always). ejs() alone is not a substitute for
+// e() — they compose, they don't replace each other.
+// Usage: onclick="...fn(\''+ejs(sess.name)+'\')..."  — same call pattern
+// as before, just wrap the spliced value in ejs() instead of e().
+function ejs(s){if(s==null)return'';return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r/g,'\\r').replace(/\n/g,'\\n').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');}
+
+// ── Phase 5 (v8.117): generation-attempt markers ──
+// Found via adversarial review: a naive "re-query by ID, then overwrite"
+// fix for the stuck-loader bug (see api.js's withGenerationLock) is unsafe
+// in a no-virtual-DOM app — a SLOW, stale generation attempt (e.g. one
+// whose lock-check RPC round-trip is unusually slow) can finish failing
+// well after the user has navigated elsewhere or a NEWER attempt on the
+// same target has already succeeded, and a bare re-query-and-overwrite
+// would clobber whatever is currently on screen with a stale error,
+// including overwriting a genuinely successful newer render. Re-querying
+// by element ID only answers "does this element exist right now" — it
+// does NOT answer "does this element still belong to MY attempt." These
+// helpers answer the second question, via a small marker element stamped
+// with a unique attempt ID at loader-write time, checked before any later
+// write (success, error, or retry-restore) is allowed to proceed.
+//
+// This is NOT a general-purpose UI framework — it's a minimal, targeted
+// fix for exactly this one failure class, sized for ~10 call sites, not a
+// rewrite of how this app renders anything.
+let _genAttemptSeq = 0;
+
+// Call once at the START of a generation function (before withGenerationLock),
+// capturing whatever identifies THIS specific target (e.g. metricKey).
+// Returns a plain object — not stored anywhere global, just threaded
+// through the function's own closures via normal JS scoping.
+function newGenAttempt(){
+  return { id: 'genattempt_' + (++_genAttemptSeq) + '_' + Date.now() };
+}
+
+// Wraps loader/status HTML with the attempt marker. Call this INSIDE
+// withGenerationLock()'s callback (after the lock is confirmed acquired),
+// not before — writing a "Generating..." loader before the lock check
+// even runs is itself misleading (the generation hasn't actually started;
+// the app is still checking whether it's ALLOWED to start).
+function markGenAttempt(attempt, html){
+  return '<span data-gen-attempt="'+e(attempt.id)+'" style="display:contents;">'+html+'</span>';
+}
+
+// Before any LATER write (success render, error render, row-retry-restore),
+// call this first. Returns the container element if attempt.id's marker is
+// still present inside it (meaning nothing newer has replaced this
+// content since the loader was written) — or null if the marker is gone
+// (meaning something else already replaced this content; the caller
+// should skip its own write entirely, not force it through).
+// containerId: the element to re-query fresh (e.g. 'cc-main-area').
+function getIfCurrentAttempt(containerId, attempt){
+  const container = document.getElementById(containerId);
+  if(!container) return null;
+  const marker = container.querySelector('[data-gen-attempt="'+attempt.id+'"]');
+  if(!marker) return null;
+  return container;
+}
 
 // ── Shared product context getter ──
 // Returns {name, industry} for AI prompts and exports across CC, PI Canvas,
@@ -42,11 +111,20 @@ function showToast(msg, type, linkLabel, linkAction){
 }
 
 // ── Shared confirm modal utility ──
-// Usage: showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onCancel)
+// Usage: showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onCancel, secondAction)
 // type: 'warn' | 'danger' | 'info' | 'stay' (default: 'warn')
 // cancelLabel: text for the dismiss/cancel button (default: 'Cancel')
 // onCancel: optional callback for the cancel/ghost button (default: just closes)
-function showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onCancel){
+// secondAction: Phase 5 addition — optional {label, bg, color, borderColor, onClick}.
+// When present, renders a THIRD button between Cancel and the primary confirm
+// button: "Cancel | secondAction | confirm". Exists so a caller with two
+// distinct non-cancel outcomes (e.g. "Reassign to me" vs "Delete") doesn't
+// need its own bespoke modal — before this, the Team Management
+// shared-session delete flow was the ONLY modal in the app built as its own
+// document.createElement block instead of using this shared shell, and it
+// visually diverged as a result (see B8). The icon/title/body block above
+// is completely unchanged — only the button row gains a slot.
+function showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onCancel, secondAction){
   type = type || 'warn';
   confirmLabel = confirmLabel || 'Continue';
   cancelLabel = cancelLabel || 'Cancel';
@@ -59,6 +137,9 @@ function showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onC
   const overlay = document.createElement('div');
   overlay.id = 'app-confirm-overlay';
   overlay.className = 'modal-overlay';
+  const secondBtnHtml = secondAction
+    ? `<button id="app-confirm-second-btn" style="background:${secondAction.bg||'var(--blue-pale)'};color:${secondAction.color||'var(--blue)'};border:1px solid ${secondAction.borderColor||'var(--blue-mid)'};border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;">${secondAction.label}</button>`
+    : '';
   overlay.innerHTML = `<div class="modal" style="max-width:400px;position:relative;">
     <button onclick="document.getElementById('app-confirm-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div style="padding:20px 52px 20px 20px;display:flex;align-items:flex-start;gap:12px;">
@@ -72,6 +153,7 @@ function showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onC
     </div>
     <div style="padding:10px 20px 16px;display:flex;justify-content:flex-end;gap:6px;">
       <button class="modal-cancel-btn" id="app-confirm-cancel-btn">${cancelLabel}</button>
+      ${secondBtnHtml}
       <button id="app-confirm-btn" style="background:${btnBg[type]||btnBg.warn};color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;">${confirmLabel}</button>
     </div>
   </div>`;
@@ -84,6 +166,13 @@ function showConfirm(msg, title, onConfirm, confirmLabel, type, cancelLabel, onC
     overlay.remove();
     if(typeof onCancel === 'function') onCancel();
   };
+  if(secondAction){
+    const secondBtnEl = document.getElementById('app-confirm-second-btn');
+    if(secondBtnEl) secondBtnEl.onclick = function(){
+      overlay.remove();
+      if(typeof secondAction.onClick === 'function') secondAction.onClick();
+    };
+  }
   const _escC=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_escC,true);}};
   document.addEventListener('keydown',_escC,true);
   trapFocus(overlay);
@@ -660,4 +749,77 @@ function chunkText(text,chunkWords,overlapWords){
     i+=chunkWords-overlapWords;
   }
   return chunks;
+}
+
+// ── Shared row-menu mechanics (Phase 4) ──
+// Content-agnostic open/position/close for a small dropdown menu anchored to a
+// trigger button — e.g. the 3-dot Actions menu on a Team Management row.
+// Built as a shared mechanical helper (not baked into team-management.js)
+// specifically because Phase 5's session-card redesign needs the identical
+// open/close/single-open-at-a-time behavior later — only the menu CONTENT
+// differs per consumer, so only the content stays local to each caller.
+// Usage: _uiRowMenuToggle(triggerEl, menuHtml) — call from the trigger's onclick.
+var _uiRowMenuOpen = null; // { menuEl, triggerEl, outsideHandler, escHandler }
+
+function _uiRowMenuClose(){
+  if(!_uiRowMenuOpen) return;
+  var o=_uiRowMenuOpen;
+  if(o.menuEl && o.menuEl.parentNode) o.menuEl.parentNode.removeChild(o.menuEl);
+  document.removeEventListener('mousedown', o.outsideHandler, true);
+  document.removeEventListener('keydown', o.escHandler, true);
+  document.removeEventListener('scroll', o.scrollHandler, true);
+  window.removeEventListener('scroll', o.scrollHandler, true);
+  if(o.triggerEl){
+    o.triggerEl.setAttribute('aria-expanded','false');
+    o.triggerEl.focus();
+  }
+  _uiRowMenuOpen = null;
+}
+
+function _uiRowMenuToggle(triggerEl, menuHtml){
+  // Toggling the same trigger again closes it. Opening a different trigger's
+  // menu closes any menu already open — only one open at a time across the table.
+  var reopening = _uiRowMenuOpen && _uiRowMenuOpen.triggerEl === triggerEl;
+  _uiRowMenuClose();
+  if(reopening) return;
+
+  // Mounted on document.body with position:fixed, computed from the
+  // trigger's own bounding rect — NOT appended as a child of the row.
+  // A dimmed row (opacity < 1) composites its entire subtree as one layer;
+  // no child can opt back to full opacity from inside it. Mounting outside
+  // the row entirely also escapes any ancestor's overflow:hidden as a side
+  // effect, not just the opacity issue. Simpler than tracking position on
+  // every scroll tick: the menu just closes if the page scrolls at all,
+  // which is the standard pattern for this kind of lightweight dropdown.
+  var rect = triggerEl.getBoundingClientRect();
+  var menuEl = document.createElement('div');
+  menuEl.setAttribute('role','menu');
+  menuEl.style.position='fixed';
+  menuEl.style.top=(rect.bottom+4)+'px';
+  menuEl.style.left='auto';
+  menuEl.style.right=(window.innerWidth-rect.right)+'px';
+  menuEl.style.zIndex='999';
+  menuEl.innerHTML = menuHtml;
+  document.body.appendChild(menuEl);
+  triggerEl.setAttribute('aria-expanded','true');
+
+  var firstItem = menuEl.querySelector('[role="menuitem"]');
+  if(firstItem) firstItem.focus();
+
+  var outsideHandler = function(ev){
+    if(!menuEl.contains(ev.target) && ev.target !== triggerEl) _uiRowMenuClose();
+  };
+  var escHandler = function(ev){
+    if(ev.key === 'Escape') _uiRowMenuClose();
+  };
+  var scrollHandler = function(){ _uiRowMenuClose(); };
+  document.addEventListener('mousedown', outsideHandler, true);
+  document.addEventListener('keydown', escHandler, true);
+  // capture:true + both document and window, since scroll can originate from
+  // either the page itself or an internal overflow:auto container (e.g.
+  // Settings' #sp-scroll-wrap), and scroll events don't bubble by default.
+  document.addEventListener('scroll', scrollHandler, true);
+  window.addEventListener('scroll', scrollHandler, true);
+
+  _uiRowMenuOpen = { menuEl, triggerEl, outsideHandler, escHandler, scrollHandler };
 }

@@ -325,8 +325,8 @@ ${frameworkStr?'Reference frameworks: '+frameworkStr:''}
 ${frameworkStr?'Use framework-aligned capability naming where applicable.':''}
 North Star Metric: ${nsm}
 Stage: ${stageLabel}
-Parent Capability: "${capName}"
-${capDescription?'Parent Capability description: '+capDescription:''}
+Process Area: "${capName}"
+${capDescription?'Process Area description: '+capDescription:''}
 ${ctx.problem?'Known problem: '+ctx.problem:''}
 ${ctx.icp?'Primary user: '+ctx.icp:''}
 ${ctx.additionalContext?'Additional context: '+ctx.additionalContext:''}
@@ -348,7 +348,7 @@ Return ONLY this JSON — no markdown, no backticks:
 }
 
 Rules:
-- Return ${_spRange(2,typeof appSettings!=='undefined'?appSettings.maxCaps:4)} capabilities that together decompose "${capName}". Fewer for narrow parent capabilities, more for broad ones. Calibrate to what genuinely belongs under this parent capability — don't pad.
+- Return ${_spRange(2,typeof appSettings!=='undefined'?appSettings.maxCaps:4)} capabilities that together decompose "${capName}". Fewer for narrow process areas, more for broad ones. Calibrate to what genuinely belongs under this process area — don't pad.
 - sub_capabilities: ${(typeof appSettings==='undefined'||appSettings.includeSubCaps)?'include ONLY if a capability is genuinely complex enough to sub-divide further. If not needed, return null for sub_capabilities':'always return null — sub-capabilities are disabled for this workspace'}
 - If nested sub_capabilities exist, return 2-3 of them
 - All capabilities must be genuine components of "${capName}" — not generic product features
@@ -363,6 +363,14 @@ function buildCapFeaturesPrompt(ctx,nsm,stageLabel,metricName,capName,subCapName
   const _fcDocText=ctx.docContext||'';
   const _fcHasDoc=String(_fcDocText).trim().length>0;
   const _fcEnrichment=_fcHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction():'';
+  // Outcome Verification Loop (A4): OUTCOME_HYP_UNITS is defined in
+  // feature-canvas.js, which loads AFTER prompts.js (see index.html script
+  // order) — safe here only because this reference executes at CALL time
+  // (when the function body runs), not at file-parse time, by which point
+  // feature-canvas.js has always finished loading. Same load-order
+  // reasoning already documented in main.js for currentUserRole. Defensive
+  // fallback list included in case this is ever called before that.
+  const OUTCOME_HYP_UNITS_PROMPT_LIST=(typeof OUTCOME_HYP_UNITS!=='undefined'?OUTCOME_HYP_UNITS:['%','days','hours','minutes','seconds','currency','count','score/rating']).join(', ');
   return `You are a senior product strategist. Generate features for a specific product capability. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.
 
 Product: ${ctx.name}
@@ -381,7 +389,14 @@ Return ONLY this JSON — no markdown, no backticks:
   "features": [
     {
       "name": "feature name — specific and actionable",
-      "why": "how this feature delivers the capability and moves ${metricName} — one sentence"
+      "why": "how this feature delivers the capability and moves ${metricName} — one sentence",
+      "hypothesis": {
+        "metric": "specific outcome metric this feature should move — can differ from ${metricName}, be more granular",
+        "unit": "one of: ${OUTCOME_HYP_UNITS_PROMPT_LIST}",
+        "baseline": 0,
+        "target": 0,
+        "rationale": "why you expect this outcome — one sentence, concrete mechanism, max 30 words"
+      }
     }
   ]
 }
@@ -391,6 +406,11 @@ Rules:
 - Feature names must be specific to ${ctx.name} — never generic
 - Each feature must have a clear, direct link to moving "${metricName}"
 - why field: concrete mechanism, not vague benefit language
+- hypothesis is mandatory for every feature — never omit it, never return an empty object
+- hypothesis.metric should be the MOST SPECIFIC, MOST DIRECTLY MEASURABLE metric this feature moves — often more granular than "${metricName}" itself (e.g. if ${metricName} is "Conversion Rate", a feature's hypothesis.metric might be "Cart Abandonment Rate" or "Checkout Step Completion Rate")
+- hypothesis.baseline and hypothesis.target must be plausible, realistic numeric estimates — never placeholder values like 0 or 100 unless genuinely appropriate for that metric and unit
+- hypothesis.rationale must end with a short, explicit note that baseline/target are an industry-plausible estimate, not the client's actual data — e.g. "(estimate — replace with your actual baseline once known)". This still counts toward the 30-word max, so keep the mechanism explanation itself concise.
+- hypothesis.unit must be exactly one of the listed values, chosen to match what the metric is actually measured in
 - If PM refinement context is provided, honour it precisely`;
 }
 
@@ -454,6 +474,52 @@ ${changedMetrics.length>1?'Produce '+Math.min(12,Math.max(6,changedMetrics.lengt
 
 Return ONLY strict JSON, no markdown, no backticks:
 {"leakingStage":"","primaryBottleneckMetric":"","secondaryConcern":"","severity":"Low|Medium|High|Critical","evidenceStrength":"Weak|Moderate|Strong","diagnosticCaveat":"","evidenceSummary":["string","string"],"instrumentationGaps":["string","string"],"problemStatement":"","experiments":[{"experimentTitle":"","lifecycleStage":"","linkedMetricId":"","linkedMetricName":"","hypothesis":"","priority":"P1|P2|P3","successMetric":{"metricId":"","metricName":"","currentValue":"","targetValue":"","measurementWindow":""},"experimentType":"","instrumentationNeeded":"","assumptions":["string"],"description":""}]}`;
+}
+
+// ── buildOutcomePulseExperimentPrompt — v9.11, Outcome Pulse Iteration Loop.
+// Distinct trigger and inputs from buildProductLeakPrompt (that one runs off
+// KPI-tree evidence strength; this one runs off a single feature's own
+// hypothesis, its shipped stories, and everything already tried against
+// this metric) — but MUST emit the same per-experiment JSON shape so the
+// existing Experiment Canvas / Send-to-Feature-Canvas pipeline can consume
+// either origin identically, with zero new architecture for the experiment
+// object itself. Adds one thing buildProductLeakPrompt does not need:
+// no_recommendation/reason, since this path can genuinely run out of new
+// angles for a single, already-well-tried metric in a way a fresh
+// evidence-driven diagnostic run rarely does.
+function buildOutcomePulseExperimentPrompt(feature,priorExperiments,refinement){
+  const p=feature.outcomeHypothesis.primary;
+  const storyTitles=(feature.stories||[]).map(function(s){return s.title||s.name||'';}).filter(Boolean);
+  const priorText=priorExperiments.length
+    ?priorExperiments.map(function(x){return'- "'+x.experimentTitle+'": '+x.hypothesis;}).join('\n')
+    :'(none yet)';
+  return `You are a senior product growth consultant helping a PM decide what to try next on a feature whose outcome hypothesis has not moved the needle as hoped. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.
+
+Feature: ${feature.name}
+Why it matters: ${feature.why||''}
+
+Hypothesis metric: ${p.metric}
+Baseline: ${p.baseline!=null?p.baseline:'not set'}
+Target: ${p.target!=null?p.target:'not set'}
+Current actual: ${p.actual!=null?p.actual:'not logged yet'}
+Signal so far: ${p.signal||'awaiting result'}
+Original rationale: ${p.rationale||''}
+
+Stories already shipped under this feature:
+${storyTitles.length?storyTitles.map(function(t){return'- '+t;}).join('\n'):'(none shipped yet)'}
+
+Experiments already suggested or tried against this SAME metric (real diagnostic runs and prior Outcome Pulse suggestions alike) — DO NOT propose anything that duplicates or closely paraphrases any of these:
+${priorText}
+
+${refinement?'Additional constraint from the PM: '+refinement+'\n':''}
+CRITICAL RULES:
+1. Propose exactly ONE new experiment idea, genuinely distinct from every item in the "already suggested or tried" list above — not a reworded restatement of an existing title or hypothesis.
+2. If, given everything already tried and this refinement (if any), you cannot find a genuinely new, plausible angle for this specific metric, set "no_recommendation" to true and explain why in "reason" — do not force a weak or duplicate suggestion just to return something.
+3. If signal is "awaiting result" (no result logged yet), do not imply the prior feature already failed or succeeded — frame this as exploring an additional angle in parallel, not a pivot away from a proven failure.
+4. successMetric must reference the same hypothesis metric above unless a clearly different, closely related metric is more appropriate.
+
+Return ONLY strict JSON, no markdown, no backticks:
+{"no_recommendation":false,"reason":"","experimentTitle":"","lifecycleStage":"","linkedMetricId":"","linkedMetricName":"","hypothesis":"","priority":"P1|P2|P3","successMetric":{"metricId":"","metricName":"","currentValue":"","targetValue":"","measurementWindow":""},"experimentType":"","instrumentationNeeded":"","assumptions":["string"],"description":""}`;
 }
 
 function buildDDPrompt(metrics){
@@ -998,15 +1064,4 @@ function buildPrototypeBriefPrompt(ctx, feat, storySnapshot, screenTitle, wirefr
     + '- Never use em dashes. Use hyphens or rewrite.';
 
   return { sys: sys, usr: usr };
-}
-
-
-
-// ── buildAIRecommendationsPrompt ──
-// Extracted from home.js AI recommendations panel.
-// Returns {sys, usr} for the next-action recommendations call.
-function buildAIRecommendationsPrompt(sessionSummaries){
-  var sys='You are a senior product management advisor helping a PM prioritise their work. You will be given a list of active product sessions with their current pipeline stage and counts. Return ONLY a valid JSON array with no preamble, no markdown, no code fences. Maximum 3 items. Each item must have: sessionId (string), text (string — one clear actionable sentence telling the PM exactly what to do next and why), tag (string — product name + stage, append session name in brackets only if multiple sessions share the same product name), targetTab (string — the tab where the session currently is, NOT where it should go next; use: mm for Discovery Map, cc for Capability Canvas, fc for Feature Canvas, sc for Story Canvas, pi for PI Canvas), priority (string: "high" or "medium"). IMPORTANT: targetTab must reflect the current stage of the session, not a future recommendation. If a session is at Feature Canvas, targetTab must be "fc".';
-  var usr='Here are the active sessions:\n\n'+JSON.stringify(sessionSummaries,null,2)+'\n\nReturn up to 3 prioritised next-action recommendations as a JSON array. Be specific — reference the product name, what has been done, and what should happen next.';
-  return {sys:sys, usr:usr};
 }

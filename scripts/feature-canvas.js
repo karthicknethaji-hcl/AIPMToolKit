@@ -20,6 +20,146 @@ function fcToggleGroup(groupKey){
 // Traceability panel state
 let scPanelLineageOpen=false;
 
+// ══════════════════════════════════════════════════════════════════════
+// OUTCOME VERIFICATION LOOP — shared helpers (Phase A)
+// Every surface that reads or aggregates outcomeHypothesis data MUST use
+// these functions — never recompute independently. This is a deliberate
+// deviation from this codebase's usual per-render-site computation style
+// (see e.g. fcRenderCanvas()'s own inline doneCount), justified because
+// this feature's premise depends on counts agreeing across the Outcome
+// Pulse dashboard, the filter, and (future) PDF export. Divergent
+// independent counts would directly undermine the feature's leadership-
+// facing credibility. See outcome-verification-loop-spec.md §6.5 Findings
+// C and D for the full reasoning.
+// ══════════════════════════════════════════════════════════════════════
+
+// Fixed default unit-of-measure list — no Settings-configurable list (see
+// spec §1 scope discipline). 'custom' is always the escape hatch alongside
+// this list, paired with a separate customLabel field.
+const OUTCOME_HYP_UNITS=['%','days','hours','minutes','seconds','currency','count','score/rating'];
+
+// ── Deep-clone a hypothesis object ──
+// Guards against accidental shared-reference mutation — e.g. capStore's
+// own copy of a feature (which can be regenerated/replaced later by a
+// refinement re-generation) must never be the SAME object reference as
+// the copy living in a scCanvas entry. Plain JSON round-trip is sufficient
+// here since every field in this shape is a primitive, string, or array
+// of primitives/strings — no functions, no Dates, no circular refs.
+function cloneOutcomeHypothesis(hypothesis){
+  if(!hypothesis)return null;
+  try{return JSON.parse(JSON.stringify(hypothesis));}
+  catch(e){return null;}
+}
+
+// ── Compute direction from baseline vs target ──
+// Returns null when either input is missing/non-numeric — callers must
+// treat null as "cannot compute," never coerce it to a default direction.
+function computeDirection(baseline,target){
+  // Defensive against empty-string inputs specifically (found via unit
+  // testing, not yet reachable via any current call site since every
+  // caller pre-normalizes '' to null before calling this — but this
+  // function is a shared, reusable helper and should not rely on every
+  // future caller remembering to do that normalization itself).
+  if(baseline==='' || target==='')return null;
+  const b=Number(baseline),t=Number(target);
+  if(!isFinite(b)||!isFinite(t)||baseline===null||baseline===undefined||target===null||target===undefined)return null;
+  if(t===b)return null; // no meaningful direction when baseline equals target
+  return t<b?'decrease':'increase';
+}
+
+// ── Compute a SUGGESTED signal from actual vs baseline/target/direction ──
+// This is advisory only — the PM can select any of the four signal values
+// regardless of what this returns (per resolved design decision: signal
+// entry has no numeric-value gate). Returns null when there isn't enough
+// data to suggest anything; callers must treat null as "show no
+// suggestion chip," never as a default signal value.
+// Tolerance: within 1% of baseline-to-target range counts as "no change"
+// rather than a false-precision Aligned/Opposed call on essentially flat
+// movement. This tolerance is a deliberate, named constant so it can be
+// tuned in one place rather than a magic number scattered across callers.
+const OUTCOME_NOCHANGE_TOLERANCE_PCT=0.01;
+function computeSuggestedSignal(primary){
+  if(!primary)return null;
+  const b=Number(primary.baseline),t=Number(primary.target),a=Number(primary.actual);
+  if(!isFinite(b)||!isFinite(t)||!isFinite(a))return null;
+  if(primary.baseline===null||primary.baseline===undefined)return null;
+  if(primary.target===null||primary.target===undefined)return null;
+  if(primary.actual===null||primary.actual===undefined)return null;
+  const range=Math.abs(t-b);
+  if(range===0)return null; // baseline===target — no directional signal is computable
+  const movedFraction=(a-b)/(t-b); // 0 = no movement from baseline, 1 = reached target exactly
+  const distFromBaseline=Math.abs(a-b);
+  if(distFromBaseline<=range*OUTCOME_NOCHANGE_TOLERANCE_PCT)return'no-change';
+  // Moving in the correct direction (movedFraction>0) counts as aligned,
+  // regardless of whether it reached or overshot the target — the
+  // "directionally correct but short of target" case collapses into
+  // Aligned at this level by design (see spec §5.7). Moving the wrong way
+  // (movedFraction<0) is opposed.
+  return movedFraction>0?'aligned':'opposed';
+}
+
+// ── Is this feature tracked by Outcome Pulse at all? ──
+// Per resolved design decision: any feature with outcomeHypothesis
+// defined is tracked — no build/ship/release state exists anywhere in
+// this app's data model to gate on instead (see spec §6.5 Finding A).
+function isOutcomeTrackableFeature(feature){
+  return!!(feature&&feature.outcomeHypothesis);
+}
+
+// ── Aggregate hypothesis signal counts across scCanvas ──
+// The ONE function every Outcome Pulse surface must call for counts —
+// the NSM-adjacent Hypothesis Health card, the Outcome Breakdown stage
+// rows, the signal-status filter, and (future) PDF export all consume
+// this same result, never their own independent tally.
+function computeHypothesisAggregates(canvas){
+  const out={aligned:0,opposed:0,noChange:0,awaiting:0,notApplicable:0,trackedCount:0};
+  if(!Array.isArray(canvas))return out;
+  canvas.forEach(f=>{
+    if(!isOutcomeTrackableFeature(f))return;
+    out.trackedCount++;
+    const sig=f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.signal;
+    if(sig==='aligned')out.aligned++;
+    else if(sig==='opposed')out.opposed++;
+    else if(sig==='no-change')out.noChange++;
+    else if(sig==='not-applicable')out.notApplicable++;
+    else out.awaiting++; // null/undefined signal = awaiting, per data model §3.1
+  });
+  return out;
+}
+
+// ── Format a unit for display, handling the 'custom' escape hatch ──
+function formatOutcomeUnit(unit,customLabel){
+  if(unit==='custom')return customLabel||'';
+  return unit||'';
+}
+
+// ── Normalize a raw AI-returned hypothesis object into the real shape ──
+// Used at both Capability Canvas generation call sites (§4.1) to convert
+// the AI's {metric, unit, baseline, target, rationale} response into a
+// full primary-hypothesis object with computed direction and source
+// tagging. Returns null for anything malformed/missing rather than
+// throwing — a broken hypothesis sub-object must never fail the whole
+// feature-generation response (spec §6.5 Finding J).
+function normalizeAIHypothesis(raw){
+  if(!raw||typeof raw!=='object')return null;
+  const metric=(raw.metric||'').toString().trim().slice(0,60);
+  if(!metric)return null;
+  const unit=OUTCOME_HYP_UNITS.includes(raw.unit)?raw.unit:'custom';
+  const customLabel=unit==='custom'?(raw.unit||'').toString().trim().slice(0,20):'';
+  const baseline=isFinite(Number(raw.baseline))?Number(raw.baseline):null;
+  const target=isFinite(Number(raw.target))?Number(raw.target):null;
+  const direction=computeDirection(baseline,target);
+  const rationale=(raw.rationale||'').toString().trim().slice(0,400);
+  return{
+    primary:{metric,unit,customLabel,baseline,target,direction,directionSource:'computed',rationale,source:'ai',actual:null,signal:null,loggedAt:null},
+    secondary:[]
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// END Outcome Verification Loop shared helpers
+// ══════════════════════════════════════════════════════════════════════
+
 // ── Add Feature dropdown (C1, v7.84) ──
 // Mirrors ccToggleAddCapDrop's pattern for CC's "Add Capability" dropdown.
 function scToggleAddFeatDrop(evt){
@@ -81,12 +221,18 @@ function fcRenderCapNav(){
   const stageColors=stageColorMap;
 
   // Build: stage → metric → cap → count
-  // PI Plan caps are grouped under single "Custom Capabilities" metric
   const treeData={};
+  // v9.06.02: removed the hardcoded 'Custom Capabilities' generic grouping
+  // key — previously ALL pi-stage features merged under one undifferentiated
+  // group regardless of which specific bucket/process-area they actually
+  // belonged to, discarding the real name entirely. Now groups by f.metric
+  // directly, exactly like KPI-linked features already do — the real bucket
+  // name (already correctly maintained by piBucketRename(), including after
+  // a rename, per item 7's fix) is what naturally distinguishes buckets from
+  // each other here, with zero special-casing needed.
   scCanvas.forEach(f=>{
     const st=f.stage||'Other';
-    const isPIStage=st==='PI Plan';
-    const mt=isPIStage?'Custom Capabilities':(f.metric||'Unknown');
+    const mt=f.metric||'Unknown';
     const cp=f.cap||'Uncategorised';
     if(!treeData[st])treeData[st]={metrics:{}};
     if(!treeData[st].metrics[mt])treeData[st].metrics[mt]={caps:{}};
@@ -108,15 +254,27 @@ function fcRenderCapNav(){
     if(!sg)return;
     const color=stageColors[stage]||'var(--blue)';
 
+    // v9.06.01: kept as a defensive safety net — once migration runs (see
+    // migratePiStageLegacyLabel() in pi-bucket.js), 'stage' should already
+    // say 'Custom Value Stage' directly, making this a harmless no-op. Left
+    // in place in case any edge case still surfaces the raw legacy literal.
+    const _dispStage=stage==='PI Plan'?'Custom Value Stage':stage;
     // Stage — coloured bar + label
     h+=`<div class="sc-nav-stage">
       <div class="sc-nav-stage-bar" style="background:${color}"></div>
-      <span class="sc-nav-stage-lbl" style="color:${color}">${e(stage)}</span>
+      <span class="sc-nav-stage-lbl" style="color:${color}">${e(_dispStage)}</span>
     </div>`;
 
     Object.entries(sg.metrics).forEach(([metric,md])=>{
       // Check if any feature under this metric came from diagnostic
       const hasDiagFeature=scCanvas.some(f=>f.metric===metric&&f.stage===stage&&f.origin==='diagnostic');
+      // v9.06.02: removed the "Custom Capabilities" -> mode-aware-term
+      // display transformation — metric is never literally that generic
+      // string anymore (grouping now uses f.metric directly, always the
+      // bucket's real, correctly-maintained name). getOrCreateCurrentDefaultPiBucket()
+      // already stores the mode-aware default name ('Custom Process Area'
+      // or 'Custom Metric') directly in l1.name at creation time, so metric
+      // is already correct as-is — no display-layer override needed.
       // Metric label — not interactive, just structural
       h+=`<div class="sc-nav-metric">${hasDiagFeature?'<span class="sc-nav-diag-dot" title="Contains diagnostic-origin features"></span>':''}<span class="sc-nav-metric-name">${e(metric)}</span></div>`;
 
@@ -173,6 +331,16 @@ function scMakeFeatureId(metric,cap,feat){
 function scToggleFeatureFromDrawer(checkEl){
   const item=checkEl.closest('[data-fid]');
   if(!item)return;
+  // Outcome Verification Loop (Phase A/B): look up the live hypothesis from
+  // capStore by identity (metric key + cap name + feature name) rather than
+  // serializing a nested object into a data-* attribute — avoids having to
+  // JSON-stringify + escape a whole object into HTML, and stays consistent
+  // with every other field on this element being a flat string. capStore is
+  // the drawer's own live in-memory source, so this lookup is always fresh
+  // at the moment of toggle, never a stale copy.
+  const _hyp=(typeof scFindDrawerFeatureHypothesis==='function')
+    ?scFindDrawerFeatureHypothesis(item.dataset.metric,item.dataset.cap,item.dataset.fname)
+    :null;
   scToggleFeature(
     item.dataset.fid,
     item.dataset.metric,
@@ -180,11 +348,35 @@ function scToggleFeatureFromDrawer(checkEl){
     item.dataset.cap,
     item.dataset.fname,
     item.dataset.fwhy,
-    checkEl
+    checkEl,
+    _hyp
   );
 }
 
-function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl){
+// ── Outcome Verification Loop: capStore hypothesis lookup for drawer toggle ──
+// capStore is keyed by stageId+'||'+metricName (KPI-linked) or 'pi||'+capName
+// (PI-first) — see PROJECT_MAP.md's capStore structure. This does a linear
+// scan across capStore entries matching on cap name + feature name, since the
+// drawer's data-* attributes don't carry the exact capStore key. Cheap in
+// practice — capStore entries and their feature lists are both small (tens,
+// not thousands, of items) for any real product.
+function scFindDrawerFeatureHypothesis(metric,capName,featName){
+  if(typeof capStore==='undefined'||!capStore)return null;
+  for(const entry of Object.values(capStore)){
+    if(!entry||!entry.capabilities)continue;
+    const cap=entry.capabilities.find(c=>c.name===capName);
+    if(!cap||!cap.featStore)continue;
+    for(const feats of Object.values(cap.featStore)){
+      if(!Array.isArray(feats))continue;
+      const f=feats.find(x=>x.name===featName);
+      if(f&&f.outcomeHypothesis)return f.outcomeHypothesis;
+    }
+  }
+  return null;
+}
+
+function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothesis){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const idx=scCanvas.findIndex(x=>x.id===fid);
   if(idx>=0){
     // Remove from canvas
@@ -200,13 +392,26 @@ function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl){
   } else {
     // Add to canvas — compute full metric path from gData hierarchy
     const metricPath=scGetMetricPath(metric);
-    scCanvas.push({id:fid,metric,metricPath,stage,cap,name:fname,why:fwhy,stories:null,origin:'kpi'});
+    // Outcome Verification Loop: carry hypothesis through if the drawer
+    // lookup found one; cloned defensively so this scCanvas entry never
+    // shares a reference with the capStore copy (per spec §6.5 Finding
+    // on nested-object cloning risk — capStore's own copy could still be
+    // regenerated/replaced later by a refinement re-generation).
+    const _clonedHyp=(outcomeHypothesis&&typeof cloneOutcomeHypothesis==='function')
+      ?cloneOutcomeHypothesis(outcomeHypothesis):null;
+    scCanvas.push({id:fid,metric,metricPath,stage,cap,name:fname,why:fwhy,stories:null,origin:'kpi',outcomeHypothesis:_clonedHyp});
     checkEl.classList.add('checked');
     checkEl.closest('.feat-item').classList.add('on-canvas');
   }
   scUpdateCapDrawerFooter();
   fcUpdateTabBadge();
   fcRenderCanvas();
+  // v8.147 fix: confirmed missing entirely — a third entry point (drawer
+  // checkbox) for adding/removing a whole feature, same coarse semantics
+  // as CC's own send/remove actions.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+  }
 }
 
 function scUpdateCapDrawerFooter(){
@@ -472,11 +677,16 @@ function fcRenderCanvas(){
   if(scGroupMode==='metric'){
     const map={};
     visibleCanvas.forEach(f=>{
-      // All PI Plan caps merge under single Custom Capabilities group
-      const isPIStage=f.stage==='PI Plan';
-      const k=isPIStage?'PI Plan||Custom Capabilities':f.stage+'||'+f.metric;
-      const label=isPIStage?'Custom Capabilities':(f.metricPath||f.metric);
-      const metricKey=isPIStage?'Custom Capabilities':f.metric;
+      // v9.06.02: removed the "merge all Custom Value Stage caps into one
+      // group" special case — f.metric is now always the real, correctly-
+      // maintained bucket name (including after a rename, per piBucketRename()'s
+      // downstream-patching fix), so grouping by stage+metric works
+      // identically for pi-origin and KPI-linked features alike, with two
+      // distinct buckets under Custom Value Stage correctly staying separate
+      // groups instead of collapsing into one.
+      const k=f.stage+'||'+f.metric;
+      const label=f.metricPath||f.metric;
+      const metricKey=f.metric;
       if(!map[k])map[k]={label,metricKey,stage:f.stage,features:[]};
       map[k].features.push(f);
     });
@@ -543,6 +753,42 @@ function fcRenderCanvas(){
     if(_fcIsCollapsed){
       h+=`<div class="nsc-collapsed-hint">Features hidden — click ▶ to expand</div>`;
     } else {
+// ── Outcome Verification Loop: feature card hypothesis chip (B3) ──
+// Pure read display — no canEditSession() gating needed, matches every
+// other read-only badge/tag already on this card.
+function scBuildOutcomeHypChipHTML(f){
+  if(!isOutcomeTrackableFeature(f)){
+    const _canEdit=(typeof canEditSession!=='function')||canEditSession();
+    if(!_canEdit)
+      return`<div class="sc-hyp-chip sc-hyp-chip-empty" style="cursor:default;opacity:0.6;" title="No outcome hypothesis set"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> No hypothesis</div>`;
+    return`<div class="sc-hyp-chip sc-hyp-chip-empty" onclick="event.stopPropagation();scShowEditFeatModal('${e(ejs(f.id))}')" style="cursor:pointer;" title="Add an outcome hypothesis for this feature"><i class="ti ti-plus" style="font-size:9px;" aria-hidden="true"></i> Define hypothesis</div>`;
+  }
+  const p=f.outcomeHypothesis.primary;
+  const arrow=p.direction==='decrease'?'↓':(p.direction==='increase'?'↑':'');
+  const label=(p.metric||'')+(arrow?' '+arrow:'');
+  // Tooltip content: full metric name + baseline->target, richer than the
+  // truncated chip label itself (Item 3 fix) — no direction arrow repeated
+  // (already on the chip) and no secondary mention (chip only ever
+  // represents primary), per explicit design decision.
+  const hasBT=p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined;
+  const tooltipText=(p.metric||'')+(hasBT?' | '+p.baseline+' \u2192 '+p.target:'');
+  // Bug 1 fix (v9.10.02 feedback round, adversarially confirmed): the
+  // tooltip is a ::after pseudo-element of whichever DOM node carries the
+  // pgt-tooltip class/data-tooltip attribute. Putting overflow:hidden (
+  // required for text-overflow:ellipsis to truncate the long label) on
+  // that SAME node clips its own tooltip content before it can ever
+  // become visible — a real, unavoidable CSS conflict, not a z-index or
+  // propagation issue. Fixed by splitting the two concerns onto two
+  // nested elements, matching the identical pattern already proven
+  // elsewhere in this codebase (home.js's .home-sdoc-name /
+  // .home-sdoc-name-inner split): the OUTER span carries pgt-tooltip +
+  // data-tooltip and NO overflow rule of its own; the INNER span carries
+  // all the truncation styling (overflow:hidden, text-overflow:ellipsis,
+  // white-space:nowrap, max-width) that used to live directly on
+  // .sc-hyp-chip.
+  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}"><span class="sc-hyp-chip-inner"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> ${e(label)}</span></span>`;
+}
+
     h+=`<div class="sc-cards">`;
     g.features.forEach(f=>{
       const hasDone=f.stories&&f.stories.length>0;
@@ -568,20 +814,21 @@ function fcRenderCanvas(){
       if(isActive)cls+=' sc-card-active';
 
       const cardClick=`scOpenPanel('${e(f.id)}')`;
+      const _canEditFcCard=(typeof canEditSession!=='function')||canEditSession();
       h+=`<div class="${cls}" id="sc-card-${e(f.id)}" onclick="${cardClick}" style="cursor:pointer;">`;
       h+=`<div class="sc-card-top">`;
       h+=scBuildCapBreadcrumb(f.cap);
       h+=`<div class="sc-card-actions">`;
-      h+=`<button class="sc-card-pencil" onclick="event.stopPropagation();scShowEditFeatModal('${e(f.id)}')" title="Edit feature" aria-label="Edit feature"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+      if(_canEditFcCard)h+=`<button class="sc-card-pencil" onclick="event.stopPropagation();scShowEditFeatModal('${e(f.id)}')" title="Edit feature" aria-label="Edit feature"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
       if(!hasDone){
         // No-story cards: checkbox selects feature for story generation
-        h+=`<div class="sc-card-check" onclick="event.stopPropagation();scToggleSelect('${e(f.id)}')" title="Select for story generation">`;
+        h+=`<div class="sc-card-check${_canEditFcCard?'':' sc-card-check-disabled'}" ${_canEditFcCard?`onclick="event.stopPropagation();scToggleSelect('${e(f.id)}')"`:''} title="Select for story generation">`;
         if(isSel)h+=`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
         h+=`</div>`;
       } else {
         // Done cards: checkbox selects stories for PI planning (full/partial/none)
         const piCheckTitle=isPiSel?'Deselect from PI planning':'Select for PI planning';
-        h+=`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();scTogglePiSelect('${e(f.id)}')" title="${piCheckTitle}">`;
+        h+=`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}${_canEditFcCard?'':' sc-card-check-disabled'}" ${_canEditFcCard?`onclick="event.stopPropagation();scTogglePiSelect('${e(f.id)}')"`:''} title="${piCheckTitle}">`;
         if(isPiSel&&!piSelIsPartial){
           h+=`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
         } else if(piSelIsPartial){
@@ -589,14 +836,16 @@ function fcRenderCanvas(){
         }
         h+=`</div>`;
       }
-      h+=`<button class="sc-card-remove" onclick="event.stopPropagation();scRemoveFeature('${e(f.id)}')" title="Remove from canvas">`;
-      h+=`<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-      h+=`</button>`;
+      if(_canEditFcCard){
+        h+=`<button class="sc-card-remove" onclick="event.stopPropagation();scRemoveFeature('${e(f.id)}')" title="Remove from canvas">`;
+        h+=`<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+        h+=`</button>`;
+      }
       h+=`</div></div>`;
       // Origin icon + name
       const isDoc=f.origin==='doc';
       const _scOriginIcon=isDiag?'ti-microscope':isMI?'ti-world-search':isDoc?'ti-file-text':f.origin==='pi'?'ti-clipboard-list':'ti-hierarchy-2';
-      const _scOriginTitle=isDiag?'From Product Diagnostics':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From KPI Tree Capability';
+      const _scOriginTitle=isDiag?'From Experiment Canvas':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From KPI Tree Capability';
       const _scOriginClass=isDiag?'sc-origin-icon-diag':isMI?'sc-origin-icon-market':isDoc?'sc-origin-icon-doc':f.origin==='pi'?'sc-origin-icon-pi':'sc-origin-icon-kpi';
       h+=`<div class="sc-card-name-row"><span class="sc-origin-icon ${_scOriginClass}" title="${_scOriginTitle}" style="width:14px;height:14px;flex-shrink:0;border-radius:3px;"><i class="ti ${_scOriginIcon}" style="font-size:9px;" aria-hidden="true"></i></span><div class="sc-card-name">${e(f.name)}</div></div>`;
       h+=`<div class="sc-card-why">${e(f.why)}</div>`;
@@ -612,6 +861,7 @@ function fcRenderCanvas(){
       } else {
         h+=`<div class="sc-status-none"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="6" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> No stories yet</div>`;
       }
+      h+=scBuildOutcomeHypChipHTML(f);
       h+=`</div></div>`;
     });
     if(!_fcIsCollapsed){h+=`</div>`;}
@@ -650,12 +900,43 @@ function fcGetSCQueueCount(){
 }
 
 function scUpdateActionBar(visibleCanvas){
+  const bar=document.getElementById('sc-action-bar');
+  // v9.08.02: matches ccUpdateActionBar/newScUpdateActionBar — this bar
+  // exists only to select+generate stories, nothing a view-only session
+  // can do.
+  const _canEditFcBar=(typeof canEditSession!=='function')||canEditSession();
+  if(bar)bar.style.display=_canEditFcBar?'':'none';
+  // Add Feature is a static button in index.html, not part of a
+  // dynamically-rendered template — synced here since this function
+  // already runs on every FC render/tab-enter cycle.
+  const addFeatWrap=document.getElementById('sc-add-feat-wrap');
+  if(addFeatWrap)addFeatWrap.style.display=_canEditFcBar?'':'none';
+  // Refine bar + Send to Story Canvas — also static elements in index.html,
+  // outside sc-action-bar's own scope, synced here for the same reason.
+  const refineBar=document.getElementById('sc-refine-bar');
+  if(refineBar)refineBar.style.display=_canEditFcBar?'':'none';
+  const sendToScWrap=document.getElementById('fc-panel-sc-btn');
+  if(sendToScWrap)sendToScWrap.closest('.sc-panel-split-cta-wrap').style.display=_canEditFcBar?'':'none';
+
   if(!visibleCanvas)visibleCanvas=scCanvas;
+  const total=visibleCanvas.length;
+
+  // v9.08.03 fix: Export lives in its own wrapper (sc-export-wrap-toolbar
+  // in index.html), OUTSIDE sc-action-bar's actual DOM scope — unlike
+  // select-all/info-count/generate-button below, which genuinely are
+  // inside the bar. The previous early return here (before this line)
+  // caused Export to never reach its own enable/disable logic for a
+  // view-only session, leaving it stuck disabled. Export must reflect
+  // "is there anything to export," never edit permission, so this now
+  // runs unconditionally, before any edit-mode branching.
+  const expBtn=document.getElementById('sc-export-btn');
+  if(expBtn&&!fcExportInFlight){expBtn.disabled=total===0;}
+
+  if(!_canEditFcBar)return;
   const visibleIds=new Set(visibleCanvas.map(f=>f.id));
   const sel=Array.from(scSelectedIds).filter(id=>visibleIds.has(id)).length;
   const done=scCanvas.filter(f=>f.stories&&f.stories.length>0).length;
   const doneVisible=visibleCanvas.filter(f=>f.stories&&f.stories.length>0).length;
-  const total=visibleCanvas.length;
   const totalStories=scCanvas.reduce((a,f)=>a+(f.stories?f.stories.length:0),0);
 
   // Select All toggle state
@@ -680,10 +961,6 @@ function scUpdateActionBar(visibleCanvas){
   if(genBtn){genBtn.disabled=sel===0;}
   const genLbl=document.getElementById('sc-gen-btn-label');
   if(genLbl)genLbl.textContent=sel>1?'Generate for '+sel+' Features':sel===1?'Generate Stories':'Generate Stories';
-
-  // Export button — enable when any features are visible (FC exports Feature Brief, not stories)
-  const expBtn=document.getElementById('sc-export-btn');
-  if(expBtn&&!fcExportInFlight){expBtn.disabled=total===0;}
 }
 
 function scSetGroup(mode){
@@ -694,6 +971,7 @@ function scSetGroup(mode){
 }
 
 function scToggleSelect(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(scSelectedIds.has(fid))scSelectedIds.delete(fid);
   else scSelectedIds.add(fid);
   // Refresh panel tag if this feature is currently open
@@ -814,6 +1092,7 @@ function fcClearFilter(){
 
 
 function scRemoveFeature(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat)return;
   const storyCount=feat.stories&&feat.stories.length>0?feat.stories.length:0;
@@ -850,6 +1129,13 @@ function scDoRemoveFeature(fid){
   if(idx<0)return;
   if(typeof pcDeleteProto==='function')pcDeleteProto(fid);
   scCanvas.splice(idx,1);
+  // v9.11: laSentIds (product-leak-analysis.js) is a cache derived from
+  // scCanvas, previously only ever rebuilt on session load or a live-sync
+  // event — never on a plain feature deletion. Without this, deleting a
+  // diagnostic/experiment-origin card left Experiment Canvas's own "Sent"
+  // indicator stuck showing sent for an experiment no longer actually on
+  // the canvas. Rebuilding here closes that gap at its actual source.
+  if(typeof laRebuildSentIdsFromCanvas==='function')laRebuildSentIdsFromCanvas();
   scSelectedIds.delete(fid);
   scPiSelectedIds.delete(fid);
   if(scPanelFeatureId===fid)scClosePanel();
@@ -860,6 +1146,10 @@ function scDoRemoveFeature(fid){
   if(chk){
     const checkEl=chk.querySelector('.feat-item-check');
     if(checkEl){checkEl.classList.remove('checked');chk.classList.remove('on-canvas');}
+  }
+  // v8.147 fix: confirmed missing entirely.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
   }
 }
 
@@ -898,13 +1188,21 @@ function scRenderLineage(feat,targetElId){
   const isMI=origin==='market';
   const isPI=origin==='pi';
   const hasMetric=!!(feat.metric&&feat.metric.trim());
-  const hasStage=!!(feat.stage&&feat.stage.trim()&&feat.stage!=='PI Plan');
+  // v9.06.01: removed the 'PI Plan' exclusion — the synthetic stage now has
+  // a real, meaningful, user-editable name ('Custom Value Stage' by
+  // default), so it's worth showing in traceability like any other stage.
+  // Sequenced deliberately AFTER Issue #2's dynamic-label-resolution and
+  // migration fixes, so this never surfaces the raw internal literal.
+  const hasStage=!!(feat.stage&&feat.stage.trim());
   const _isCap=typeof gData!=='undefined'&&gData&&gData.approach==='capability-based';
-  const _metricLbl=_isCap?'Parent Capability':'Metric';
+  const _metricLbl=_isCap?'Process Area':'Metric';
   const _capDefaultLbl='Capability';
 
   // Build breadcrumb preview for collapsed state
-  const segs=[feat.stage,feat.metric,feat.cap].filter(s=>s&&s.trim()&&s!=='PI Plan');
+  // v9.06.01: defensive relabel for the stage segment specifically (see
+  // note above) — metric/cap segments never had this literal, untouched.
+  const _dispFeatStageForPreview=feat.stage==='PI Plan'?'Custom Value Stage':feat.stage;
+  const segs=[_dispFeatStageForPreview,feat.metric,feat.cap].filter(s=>s&&s.trim());
   const preview=segs.join(' › ')||feat.cap||'—';
 
   // Dot helper
@@ -937,10 +1235,14 @@ function scRenderLineage(feat,targetElId){
       <span class="sc-panel-lineage-val" style="font-style:italic;color:var(--t3);">Not linked</span>
     </div>`;
   } else {
+    // v9.06.01: defensive relabel — harmless no-op once migration has run
+    // (feat.stage will already say 'Custom Value Stage' directly); only
+    // matters for any edge case where the raw legacy literal still appears.
+    const _dispFeatStage=feat.stage==='PI Plan'?'Custom Value Stage':feat.stage;
     rows+=`<div class="sc-panel-lineage-row">
       <span class="sc-panel-lineage-key" style="color:#0F6E56;">Stage</span>
       ${dot('#0F6E56',false,false)}
-      <span class="sc-panel-lineage-val" style="color:#085041;">${e(feat.stage)}</span>
+      <span class="sc-panel-lineage-val" style="color:#085041;">${e(_dispFeatStage)}</span>
     </div>`;
   }
 
@@ -1013,7 +1315,7 @@ function scRenderLineage(feat,targetElId){
   } else {
     // Has metric
     const hierIcon=feat.metricPath&&feat.metricPath.includes(' › ')
-      ?`<i class="ti ti-hierarchy-2 sc-panel-lineage-icon" title="${e(feat.metricPath)}" aria-label="${_isCap?'Parent capability path':'Parent metric path'}: ${e(feat.metricPath)}"></i>`:'';
+      ?`<i class="ti ti-hierarchy-2 sc-panel-lineage-icon" title="${e(feat.metricPath)}" aria-label="${_isCap?'Process area path':'Parent metric path'}: ${e(feat.metricPath)}"></i>`:'';
     rows+=`<div class="sc-panel-lineage-row">
       <span class="sc-panel-lineage-key" style="color:#185FA5;">${_metricLbl}</span>
       ${dot('#185FA5',false,false)}
@@ -1093,7 +1395,7 @@ function scConfirmLinkMetric(fid){
     }
   }
   if(!selectedStageLabel){
-    showToast('Could not resolve stage for this metric — please try again.','warn');
+    showToast('Could not resolve stage for this metric. Please try again.','warn');
     return;
   }
 
@@ -1211,8 +1513,10 @@ function scConfirmLinkMetric(fid){
   } else {
     scOpenPanel(feat.id);
   }
-  showToast('Metric linked — traceability chain complete.','success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  showToast('Metric linked. Traceability chain complete.','success');
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+  }
 }
 
 
@@ -1329,7 +1633,7 @@ function scRenderPanel(feat){
       emptyEl.innerHTML=`<i class="ti ti-writing" style="font-size:28px;color:var(--label);margin-bottom:10px;" aria-hidden="true"></i>
         <div style="font-size:12px;font-weight:600;color:var(--t2);margin-bottom:4px;">No stories yet</div>
         <div style="font-size:11px;color:var(--t3);max-width:180px;line-height:1.4;margin-bottom:14px;text-align:center;">AI will generate user stories for this feature.</div>
-        <button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="scPanelGenerateStories('${e(feat.id)}')"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Stories</button>`;
+        ${((typeof canEditSession!=='function')||canEditSession())?`<button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="scPanelGenerateStories('${e(feat.id)}')"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Stories</button>`:''}`;
       emptyEl.classList.add('on');
     }
     content.classList.add('is-hidden');
@@ -1341,21 +1645,24 @@ function scRenderPanel(feat){
   if(_emptyEl){_emptyEl.classList.remove('on');_emptyEl.innerHTML='';}
   content.classList.remove('is-hidden');
   const piSelCount=(feat.stories||[]).filter(st=>st._stagedForPI).length;
+  const _canEditFcPiPanel=(typeof canEditSession!=='function')||canEditSession();
   let h='';
   h+=`<div class="sc-panel-pi-hdr">`;
   h+=`<span class="sc-panel-pi-lbl"><i class="ti ti-list-details" style="font-size:10px;margin-right:3px;" aria-hidden="true"></i>SC selection &middot; <strong>${piSelCount} of ${feat.stories.length}</strong> selected</span>`;
-  h+=`<div style="display:flex;gap:5px;">`;
-  h+=`<button class="sc-panel-pi-sel-btn" onclick="scSelectAllPiStories('${e(feat.id)}')">All</button>`;
-  h+=`<button class="sc-panel-pi-sel-btn" onclick="scClearAllPiStories('${e(feat.id)}')">None</button>`;
-  h+=`</div>`;
+  if(_canEditFcPiPanel){
+    h+=`<div style="display:flex;gap:5px;">`;
+    h+=`<button class="sc-panel-pi-sel-btn" onclick="scSelectAllPiStories('${e(feat.id)}')">All</button>`;
+    h+=`<button class="sc-panel-pi-sel-btn" onclick="scClearAllPiStories('${e(feat.id)}')">None</button>`;
+    h+=`</div>`;
+  }
   h+=`</div>`;
   feat.stories.forEach((st,si)=>{
     const isPiChecked=!!st._stagedForPI;
     const isInSC=!!st._inSC;
     const itemCls='sc-story-item sc-story-item-pi-mode'+(isInSC?' sc-story-item-insc':'');
     const _clickHandler=isInSC?`scTogglePiStoryInSC('${e(feat.id)}',${si})`:`scTogglePiStory('${e(feat.id)}',${si})`;
-    h+=`<div class="${itemCls}" onclick="${_clickHandler}">`;
-    h+=`<div class="sc-story-pi-check${isInSC?' checked insc':isPiChecked?' checked':''}" onclick="event.stopPropagation();${_clickHandler}">`;
+    h+=`<div class="${itemCls}" ${_canEditFcPiPanel?`onclick="${_clickHandler}"`:''}>`;
+    h+=`<div class="sc-story-pi-check${isInSC?' checked insc':isPiChecked?' checked':''}${_canEditFcPiPanel?'':' sc-story-pi-check-disabled'}" ${_canEditFcPiPanel?`onclick="event.stopPropagation();${_clickHandler}"`:''}>`;
     if(isPiChecked||isInSC)h+=`<svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
     h+=`</div>`;
     h+=`<div style="flex:1;min-width:0;">`;
@@ -1367,11 +1674,11 @@ function scRenderPanel(feat){
     h+=`</div>`;
     h+=`<div class="sc-story-title-row">`;
     h+=`<div class="sc-story-title" id="sc-st-title-${si}">${e(st.title)}</div>`;
-    h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryTitle('${e(feat.id)}',${si})" title="Edit title"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+    if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryTitle('${e(feat.id)}',${si})" title="Edit title"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
     h+=`</div>`;
     h+=`<div class="sc-story-stmt-row">`;
     h+=`<div class="sc-story-stmt" id="sc-st-stmt-${si}">${e(st.statement)}</div>`;
-    h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+    if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
     h+=`</div>`;
     if(st.scenarios&&st.scenarios.length>0){
       h+=`<div class="sc-ac-block"><div class="sc-ac-label">Acceptance criteria</div>`;
@@ -1380,7 +1687,7 @@ function scRenderPanel(feat){
         h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
         h+=`<div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name)}\n<span class="sc-ac-kw">Given</span> ${e(sc.given)}\n<span class="sc-ac-kw">When</span>  ${e(sc.when)}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then)}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}`;
         h+=`</div>`;
-        h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+        if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
         h+=`</div>`;
         h+=`</div>`;
       });
@@ -1393,6 +1700,7 @@ function scRenderPanel(feat){
 
 // ── PI Selection (card ↔ panel bidirectional sync) ──
 function scTogglePiSelect(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||feat.stories.length===0)return;
   // None/partial → select all; all → deselect all
@@ -1406,9 +1714,13 @@ function scTogglePiSelect(fid){
   }
   fcRenderCanvas();
   if(scPanelFeatureId===fid)scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely. PI-staging state only — no
+  // live-edit mark, matching the established selection-state convention.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 function scTogglePiStory(fid,storyIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const st=feat.stories[storyIdx];
@@ -1418,9 +1730,13 @@ function scTogglePiStory(fid,storyIdx){
   else scPiSelectedIds.delete(fid);
   fcRenderCanvas();
   if(scPanelFeatureId===fid)scRenderPanel(feat);
+  // v8.147 fix (your A6 finding): confirmed missing entirely. PI-staging
+  // state only — no live-edit mark, same convention as scTogglePiSelect.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 function scTogglePiStoryInSC(fid,storyIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const warnId='sc-insc-warn-'+fid+'-'+storyIdx;
@@ -1450,9 +1766,11 @@ function scTogglePiStoryInSC(fid,storyIdx){
 }
 
 function scConfirmRemoveInSCStory(fid,storyIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const st=feat.stories[storyIdx];
+  const _sid=st.id;
   st._inSC=false;
   st._stagedForPI=false;
   st._hiddenFromSC=true;
@@ -1468,28 +1786,39 @@ function scConfirmRemoveInSCStory(fid,storyIdx){
   // Re-render panel
   if(scPanelFeatureId===fid)scRenderPanel(feat);
   showToast('Story removed from Story Canvas.','info');
+  // v8.147 fix: confirmed missing entirely.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP+_sid); });
+  }
 }
 
 function scSelectAllPiStories(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories)return;
   feat.stories.forEach(st=>{st._stagedForPI=true;});
   scPiSelectedIds.add(fid);
   fcRenderCanvas();
   if(scPanelFeatureId===fid)scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely. PI-staging only, no mark.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 function scClearAllPiStories(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories)return;
   feat.stories.forEach(st=>{st._stagedForPI=false;});
   scPiSelectedIds.delete(fid);
   fcRenderCanvas();
   if(scPanelFeatureId===fid)scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely. PI-staging only, no mark.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
 }
 
 // ── Inline story title edit ──
 function scEditStoryTitle(fid,storyIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const titleEl=document.getElementById('sc-st-title-'+storyIdx);
@@ -1505,16 +1834,23 @@ function scEditStoryTitle(fid,storyIdx){
 }
 
 function scSaveStoryTitle(fid,storyIdx,newVal){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const trimmed=newVal.trim();
   if(!trimmed||trimmed===feat.stories[storyIdx].title)return;
+  const _sid=feat.stories[storyIdx].id;
   feat.stories[storyIdx].title=trimmed;
   if(typeof pcMarkStale==='function')pcMarkStale(fid);
   scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP+_sid); });
+  }
 }
 
 function scEditStoryStmt(fid,storyIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const el=document.getElementById('sc-st-stmt-'+storyIdx);
@@ -1529,13 +1865,19 @@ function scEditStoryStmt(fid,storyIdx){
 }
 
 function scSaveStoryStmt(fid,storyIdx,newVal){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const trimmed=newVal.trim();
   if(!trimmed||trimmed===feat.stories[storyIdx].statement)return;
+  const _sid=feat.stories[storyIdx].id;
   feat.stories[storyIdx].statement=trimmed;
   if(typeof pcMarkStale==='function')pcMarkStale(fid);
   scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP+_sid); });
+  }
 }
 
 function scACToText(sc){
@@ -1560,6 +1902,7 @@ function scTextToAC(text,fallback){
 }
 
 function scEditStoryAC(fid,storyIdx,scenarioIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const sc=feat.stories[storyIdx].scenarios&&feat.stories[storyIdx].scenarios[scenarioIdx];
@@ -1581,27 +1924,27 @@ function scEditStoryAC(fid,storyIdx,scenarioIdx){
 }
 
 function scSaveStoryAC(fid,storyIdx,scenarioIdx){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat||!feat.stories||!feat.stories[storyIdx])return;
   const scenarios=feat.stories[storyIdx].scenarios;
   if(!scenarios||!scenarios[scenarioIdx])return;
   const ta=document.getElementById('sc-ac-txt-'+storyIdx+'-'+scenarioIdx);
   if(!ta)return;
+  const _sid=feat.stories[storyIdx].id;
   const parsed=scTextToAC(ta.value,scenarios[scenarioIdx]);
   scenarios[scenarioIdx]=parsed;
   if(typeof pcMarkStale==='function')pcMarkStale(fid);
   scRenderPanel(feat);
+  // v8.147 fix: confirmed missing entirely.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP+_sid); });
+  }
 }
 
 
 function scPanelGenerateStories(fid){
-  const feat=scCanvas.find(x=>x.id===fid);
-  if(!feat){showToast('Feature not found.','warn');return;}
-  scSelectedIds=new Set([fid]);
-  scGenerateStories([fid]);
-}
-
-function scPanelGenerateStories(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat){showToast('Feature not found.','warn');return;}
   scSelectedIds=new Set([fid]);
@@ -1610,6 +1953,7 @@ function scPanelGenerateStories(fid){
 
 // ── FC: Send feature stories to Story Canvas ──
 function fcPanelSendToSC(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   if(!scPanelFeatureId)return;
   const feat=scCanvas.find(x=>x.id===scPanelFeatureId);
   if(!feat||!feat.stories||feat.stories.length===0){showToast('Generate stories first.','info');return;}
@@ -1653,7 +1997,14 @@ function fcPanelSendToSC(){
   }
   if(sentCount>0)showToast(`${sentCount} stor${sentCount!==1?'ies':'y'} sent to Story Canvas.`,'success');
   if(sentCount>0&&typeof pcMarkStale==='function')pcMarkStale(scPanelFeatureId);
-  if(sentCount>0&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(sentCount>0&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    const _sentIds=feat.stories.filter(s=>s._inSC&&!s._inPIPlan).map(s=>s.id);
+    const _fpFid=scPanelFeatureId;
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _sentIds.forEach(function(sid){ _lsMarkManualEdit('sc',_fpFid+_LS_SC_TARGET_SEP+sid); });
+    });
+  }
 }
 
 function scRefineStories(){
@@ -1738,6 +2089,7 @@ function scModalProceed(){
 }
 
 async function scGenerateStories(featureIds){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const key=getKey();
   if(aiGenInFlight.active){showToast("Still working on your last request. Hang tight, this won't take long.",'info');return;}
   const features=featureIds.map(id=>scCanvas.find(f=>f.id===id)).filter(Boolean);
@@ -1750,12 +2102,10 @@ async function scGenerateStories(featureIds){
   if(typeof scRenderLineage==='function')scRenderLineage(firstFeat);
   document.getElementById('sc-main').classList.add('panel-open');
   document.getElementById('sc-panel').classList.add('open');
-  document.getElementById('sc-panel-loading').classList.add('on');
-  document.getElementById('sc-panel-content').classList.add('is-hidden');
-  document.getElementById('sc-panel-content').innerHTML='';
-  const _genEmptyEl=document.getElementById('sc-panel-empty');
-  if(_genEmptyEl){_genEmptyEl.classList.remove('on');_genEmptyEl.innerHTML='';}
-  // Disable generate button during generation
+  // Phase 5 (v8.117): immediate button-disable, before the lock check —
+  // matching the pattern used across the other 9 functions. The loading-
+  // class toggle on sc-panel-loading/sc-panel-content (the RICH loading
+  // state) is deferred to inside the lock callback, below.
   document.getElementById('sc-gen-btn').disabled=true;
   const _scCtx=(typeof getFullProductCtx==='function')?getFullProductCtx():{name:(productContext&&productContext.name)||'the product',icp:(productContext&&productContext.icp)||'product manager'};
   _scCtx.docContext=(typeof buildDocContext==='function')?buildDocContext('sc'):'';
@@ -1765,6 +2115,37 @@ async function scGenerateStories(featureIds){
   const _whatCooking=features.length===1
     ?`Stories for "${features[0].name}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`
     :`Stories for ${features.length} features are being generated. Leaving now discards this batch, you'll need to start again.`;
+  // Phase 5 (v8.117): attempt marker. Note: scOpenPanel() already has its
+  // own guard (blockIfGenerating()) preventing the user from switching to
+  // a DIFFERENT feature's panel while aiGenInFlight.active is true — a
+  // more robust, block-at-the-source mechanism than the marker system,
+  // for the specific window that guard covers. The marker still adds real
+  // value for the narrower window BEFORE aiGenInFlight.active is set
+  // (during the lock-check RPC itself, which runs before startAiGen() is
+  // called inside the callback below) — added for consistency + that gap.
+  const _attempt=newGenAttempt();
+  // Phase 5: withGenerationLock wraps callAPI through applying stories to
+  // scCanvas and sessionStoreSave(). scRenderLineage(firstFeat) above stays
+  // OUTSIDE this wrap — per the known defect note in PROJECT_MAP.md, it
+  // must run before generation starts to preserve the traceability toggle
+  // strip, unrelated to lock timing.
+  try{
+    await withGenerationLock(async (_lock) => {
+  // Lock confirmed — show the rich loading state now, marker-stamped.
+  document.getElementById('sc-panel-loading').classList.add('on');
+  document.getElementById('sc-panel-loading').setAttribute('data-gen-attempt',_attempt.id);
+  document.getElementById('sc-panel-content').classList.add('is-hidden');
+  document.getElementById('sc-panel-content').innerHTML='';
+  const _genEmptyEl=document.getElementById('sc-panel-empty');
+  if(_genEmptyEl){_genEmptyEl.classList.remove('on');_genEmptyEl.innerHTML='';}
+  // Phase 5 (v8.117): local self-attribute marker check — sc-panel-loading
+  // gets the attribute directly on itself (not a child), so the standard
+  // getIfCurrentAttempt helper (which checks descendants via querySelector)
+  // would never match it. Same class of fix as kpi-tree.js/diagnostic-view.js.
+  function _scLoadingStillCurrent(){
+    var el=document.getElementById('sc-panel-loading');
+    return !!(el&&el.getAttribute('data-gen-attempt')===_attempt.id);
+  }
   try{
     const _signal=startAiGen(_whatCooking);
   // Dynamic token limit: scale with features × stories to prevent truncation at higher settings.
@@ -1825,7 +2206,7 @@ async function scGenerateStories(featureIds){
           if(wasPiSelected){
             feat.stories.forEach(st=>{st._stagedForPI=true;});
             // Stories regenerated while PI-selected — user should review panel
-            showToast('Stories regenerated — review PI selection in the panel.','info');
+            showToast('Stories regenerated. Review PI selection in the panel.','info');
           }
         }
         // Clear the refinement flag after use
@@ -1843,24 +2224,82 @@ async function scGenerateStories(featureIds){
     const feat=scCanvas.find(f=>f.id===scPanelFeatureId)||features[0];
     const _panelScBtn=document.getElementById('fc-panel-sc-btn');
     if(_panelScBtn)_panelScBtn.disabled=!(feat.stories&&feat.stories.length>0);
-    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+    // Phase 5: checkpoint immediately before the save.
+    _lock.throwIfLost();
+    if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+      const _ok=await sessionStoreSave(_activeSessionId);
+      if(_ok&&typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared&&typeof _lsEmitContentEvent==='function'){
+        // Build B: one event per feature actually in this batch, matching
+        // the existing ccGenerateAll precedent — not one event for the
+        // whole batch. Coarse target (no story-id half) since this
+        // replaces the feature's entire story list.
+        for(const _fid of featureIds){
+          await _lsEmitContentEvent(_activeSessionId,'sc','stories_generated',_fid,null);
+        }
+      }
+    }
   }catch(err){
-    if(err.name==='AbortError'){endAiGen();return;}
-    const _errEmptyEl=document.getElementById('sc-panel-empty');
-    if(_errEmptyEl){_errEmptyEl.classList.remove('on');_errEmptyEl.innerHTML='';}
-    document.getElementById('sc-panel-content').classList.remove('is-hidden');
-    document.getElementById('sc-panel-content').innerHTML='<div style="padding:16px;text-align:center;"><div style="color:var(--orange);font-size:13px;font-weight:600;margin-bottom:8px;">&#9888; Generation failed</div><div style="font-size:11px;color:var(--t3);">'+e(err.message)+'</div></div>';
+    if(err.name==='AbortError'){
+      endAiGen();
+      // Phase 5: rethrow rather than return — see pi-planning.js for the
+      // full rationale (adversarial review Finding 1).
+      throw err;
+    }
+    // Phase 5 (v8.117): marker-guarded — a stale attempt's failure must
+    // not clobber a newer attempt's panel content.
+    if(_scLoadingStillCurrent()){
+      const _errEmptyEl=document.getElementById('sc-panel-empty');
+      if(_errEmptyEl){_errEmptyEl.classList.remove('on');_errEmptyEl.innerHTML='';}
+      document.getElementById('sc-panel-content').classList.remove('is-hidden');
+      document.getElementById('sc-panel-content').innerHTML='<div style="padding:16px;text-align:center;"><div style="color:var(--orange);font-size:13px;font-weight:600;margin-bottom:8px;">&#9888; Generation failed</div><div style="font-size:11px;color:var(--t3);">'+e(err.message)+'</div></div>';
+    }
+    throw err; // propagate so the outer finally-equivalent below still resets loading/button state
   }finally{
-    document.getElementById('sc-panel-loading').classList.remove('on');
+    // Phase 5 (v8.117): marker-guarded for the loading-class removal — a
+    // stale attempt should not hide a newer attempt's own loading state.
+    // The button re-enable is intentionally NOT marker-guarded — sc-gen-btn
+    // is a single, app-wide generate button (not per-feature), and it
+    // should always end up enabled again once ANY generation using it
+    // finishes, regardless of which attempt.
+    if(_scLoadingStillCurrent()){
+      document.getElementById('sc-panel-loading').classList.remove('on');
+    }
     document.getElementById('sc-gen-btn').disabled=scSelectedIds.size===0;
     endAiGen();
+  }
+    });
+  }catch(lockErr){
+    // Phase 5 (v8.117): since the rich loading state is only ever shown
+    // INSIDE the lock callback now, a pre-flight rejection never touched
+    // sc-panel-loading/sc-panel-content at all — nothing to clean up
+    // there. sc-gen-btn still needs resetting since it was disabled
+    // BEFORE the lock check.
+    document.getElementById('sc-gen-btn').disabled=scSelectedIds.size===0;
   }
 }
 
 function scBuildStoryPrompt(ctx,features,refinement){
   const product=(ctx&&ctx.name)?ctx.name:'the product';
   const icp=(ctx&&ctx.icp)?ctx.icp:'product manager';
-  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})\n  Why: ${f.why}`).join('\n');
+  // Outcome Verification Loop (A5): append hypothesis context per feature
+  // when it exists, omitted entirely when it doesn't — no placeholder, no
+  // empty structure for features without a hypothesis. Feeds whatever is
+  // present (primary always if present, secondary too if present), per
+  // spec §4.5. This does NOT change the returned story object's shape —
+  // hypothesis is prompt context only, never persisted onto a story.
+  const _scHypBlock=f=>{
+    if(!isOutcomeTrackableFeature(f))return'';
+    const p=f.outcomeHypothesis.primary;
+    let block=`\n  Outcome hypothesis: this feature is expected to ${p.direction==='decrease'?'decrease':'increase'} "${p.metric}"`
+      +(p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined?` from ${p.baseline} to ${p.target}${formatOutcomeUnit(p.unit,p.customLabel)?' '+formatOutcomeUnit(p.unit,p.customLabel):''}`:'')
+      +(p.rationale?`. Rationale: ${p.rationale}`:'.');
+    const sec=(f.outcomeHypothesis.secondary||[]).filter(s=>s.metric);
+    if(sec.length){
+      block+='\n  Secondary hypotheses: '+sec.map(s=>`${s.metric}${s.direction?' ('+(s.direction==='decrease'?'decrease':'increase')+')':''}`).join(', ');
+    }
+    return block;
+  };
+  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})\n  Why: ${f.why}${_scHypBlock(f)}`).join('\n');
   const _scDocText=(ctx&&ctx.docContext)?ctx.docContext:'';
   const _scHasDoc=String(_scDocText).trim().length>0;
   const _scEnrichment=_scHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction():'';
@@ -1906,6 +2345,7 @@ Rules:
 - scenarios: minimum 2 per story, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — one happy path, one edge/error case always included
 - given/when/then/and: concrete, testable language — never vague
 - and: empty string if not needed
+- If a feature lists an outcome hypothesis above, favor acceptance criteria that would plausibly move that specific metric in that direction — do not ignore this context when present
 - Return ONLY the JSON array. No other text.`;
 }
 
@@ -1961,6 +2401,15 @@ function scPurgeStage(stageLabel){
   fcRenderCapNav();
   // Notify new Story Canvas
   if(typeof newScRender==='function')newScRender();
+  // v8.147 fix: confirmed missing entirely — a bulk removal of possibly
+  // many features at once. One coarse mark per removed feature.
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    const _purgedIds=Array.from(removeIds);
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _purgedIds.forEach(function(id){ _lsMarkManualEdit('sc',id+_LS_SC_TARGET_SEP); });
+    });
+  }
 }
 
 
@@ -2000,6 +2449,17 @@ function scClearPIPlannedBadges(){
 
 // ── Add Feature manually ──
 function scShowAddFeatureModal(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
+  // Duplicate-open guard (v9.10.02 feedback round, adversarially found):
+  // this overlay uses a fixed, non-unique id — a fast double-click on the
+  // trigger before the first overlay is visually registered could
+  // otherwise create two elements sharing the same id, and
+  // document.getElementById()/querySelector() are spec-defined to return
+  // only the first one in document order. Removing any existing instance
+  // before creating a new one makes this structurally impossible rather
+  // than something later code has to defensively work around.
+  const _existingAddOverlay=document.getElementById('sc-add-feat-overlay');
+  if(_existingAddOverlay)_existingAddOverlay.remove();
   // Build capability options: union of all cap names from capStore + unique caps already on scCanvas
   const capSet=new Set();
   if(typeof capStore!=='undefined'){
@@ -2014,10 +2474,19 @@ function scShowAddFeatureModal(){
   const defaultCap=scCapNavFilter||null;
   let capOpts=`<option value="" ${!defaultCap?'selected':''}>— Select a capability —</option>`;
   sortedCaps.forEach(c=>{capOpts+=`<option value="${e(c)}"${defaultCap===c?' selected':''}>${e(c)}</option>`;});
+  // Outcome Verification Loop: reset per-modal secondary-hypothesis working
+  // state each time this modal opens fresh — see _scAddFeatSecondary below.
+  _scAddFeatSecondary=[];
+  // v9.10.02 (item 5 fix): also reset entry-mode state per fresh open —
+  // without this, a previous session's "AI mode, already auto-switched"
+  // state would leak into a subsequent Add Feature open, permanently
+  // suppressing the one-time auto-switch behavior after its first use.
+  _scHypEntryMode='manual';
+  _scAiGateAutoSwitched=false;
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
   overlay.id='sc-add-feat-overlay';
-  overlay.innerHTML=`<div class="modal" style="max-width:400px;;position:relative;">
+  overlay.innerHTML=`<div class="modal" style="max-width:400px;max-height:88vh;overflow-y:auto;position:relative;">
     <button onclick="document.getElementById('sc-add-feat-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
       <div style="font-size:13px;font-weight:500;color:var(--t1);">Add Feature</div>
@@ -2028,7 +2497,7 @@ function scShowAddFeatureModal(){
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Feature Name<span style="color:var(--red);margin-left:1px;">*</span></label>
         <input id="sc-add-feat-name" type="text" placeholder="e.g. One-click re-onboarding"
           style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);"
-          oninput="scAddFeatValidate()" />
+          oninput="scAddFeatValidate();scAddFeatSyncAIGate();" />
         <div id="sc-add-feat-name-err" style="display:none;font-size:9px;color:var(--red);margin-top:2px;align-items:center;gap:3px;">
           <i class="ti ti-alert-circle" style="font-size:9px;" aria-hidden="true"></i> A feature with this name already exists on the canvas.
         </div>
@@ -2050,6 +2519,7 @@ function scShowAddFeatureModal(){
         </div>
         <div style="font-size:9px;color:var(--label);margin-top:2px;">All features must belong to a capability.</div>
       </div>
+      ${scBuildOutcomeHypothesisSectionHTML('add')}
     </div>
     <div class="modal-footer">
       <button class="modal-cancel-btn" onclick="document.getElementById('sc-add-feat-overlay').remove()">Cancel</button>
@@ -2057,10 +2527,420 @@ function scShowAddFeatureModal(){
     </div>
   </div>`;
   document.body.appendChild(overlay);
+  // Bug 2 fix (v9.10.02 feedback round): _scAddFeatSecondary was already
+  // reset to [] earlier in this function, so this call renders zero rows
+  // harmlessly for the normal add-new-feature case — included here
+  // unconditionally, not just for symmetry with the Edit modal, but so a
+  // future pre-fill/duplicate-from-template path can seed this array
+  // before opening the modal and have it render correctly on first paint
+  // without needing a separate code path.
+  scRenderSecondaryHypRows(overlay);
   const _escHandler=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_escHandler,true);}};
   document.addEventListener('keydown',_escHandler,true);
   trapFocus(overlay);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// OUTCOME VERIFICATION LOOP — shared modal section (Phase B)
+// One HTML builder + one set of supporting functions, used identically by
+// both scShowAddFeatureModal() and scShowEditFeatModal() — per resolved
+// design decision, both modals must have full parity, no scope reduction
+// for Add Feature. mode is 'add' or 'edit'; existingHyp is the feature's
+// current outcomeHypothesis object when editing, or null when adding.
+// ══════════════════════════════════════════════════════════════════════
+
+// Working state for the modal currently open — cleared/populated each
+// time a modal opens, read back by scDoAddFeat()/scDoEditFeat() on save.
+// Only one hypothesis-bearing modal is ever open at once in this app
+// (modals are singletons, per existing convention), so one shared working
+// array is safe — same pattern as e.g. _scUploadFeatRows elsewhere in
+// this file.
+let _scAddFeatSecondary=[];
+
+function _scOutcomeUnitOptionsHTML(selected){
+  let h='';
+  OUTCOME_HYP_UNITS.forEach(u=>{h+=`<option value="${e(u)}"${selected===u?' selected':''}>${e(u)}</option>`;});
+  h+=`<option value="custom"${selected==='custom'?' selected':''}>Custom label</option>`;
+  return h;
+}
+
+function scBuildOutcomeHypothesisSectionHTML(mode,existingHyp){
+  const isEdit=mode==='edit';
+  const p=(existingHyp&&existingHyp.primary)||null;
+  const secondary=(existingHyp&&existingHyp.secondary)||[];
+  // Seed the working array from the existing feature's secondary entries
+  // when editing; scShowAddFeatureModal() already reset it to [] for the
+  // add case before calling this function.
+  if(isEdit)_scAddFeatSecondary=secondary.map(s=>({...s}));
+  const badge=isEdit&&p
+    ?`<span style="font-size:8px;font-weight:700;background:${p.source==='ai'?'var(--purple-pale)':'var(--card)'};color:${p.source==='ai'?'var(--purple)':'var(--t3)'};border-radius:10px;padding:1px 6px;">${p.source==='ai'?'AI-suggested':'Edited'}</span>`
+    :'';
+  const toggleRowHTML=isEdit?'':`
+    <div style="display:flex;gap:6px;">
+      <div id="sc-hyp-mode-manual" onclick="scSetHypEntryMode('manual')" style="flex:1;text-align:center;padding:7px;border:1.5px solid var(--purple);background:var(--purple-pale);border-radius:5px;font-size:10px;font-weight:600;color:var(--purple);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;">
+        <i class="ti ti-pencil" style="font-size:11px;" aria-hidden="true"></i> Enter manually
+      </div>
+      <div id="sc-hyp-mode-ai" onclick="scSetHypEntryMode('ai')" style="flex:1;text-align:center;padding:7px;border:1.5px solid var(--divider);border-radius:5px;font-size:10px;font-weight:600;color:var(--label);cursor:not-allowed;display:flex;align-items:center;justify-content:center;gap:4px;background:var(--card);">
+        <i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate with AI
+      </div>
+    </div>
+    <div id="sc-hyp-ai-gate-note" style="font-size:8.5px;color:var(--label);margin-top:-4px;">Enter a feature name above to enable AI generation.</div>
+  `;
+  const directionDisplay=p&&p.direction
+    ?(p.direction==='decrease'?'↓ Decrease':'↑ Increase')
+    :'—';
+  return `
+    <div id="sc-hyp-section" style="border:1px solid var(--divider);border-radius:7px;margin-top:4px;">
+      <div onclick="scToggleHypSection()" style="display:flex;align-items:center;padding:9px 10px;background:var(--card);border-radius:7px 7px 0 0;cursor:pointer;gap:6px;">
+        <i class="ti ti-target-arrow" style="font-size:12px;color:var(--purple);" aria-hidden="true"></i>
+        <span style="font-size:11px;font-weight:600;color:var(--t1);">Outcome Hypothesis</span>
+        ${badge}
+        <i class="ti ti-chevron-down" id="sc-hyp-chevron" style="font-size:12px;color:var(--t3);margin-left:auto;transition:transform 0.15s;" aria-hidden="true"></i>
+      </div>
+      <div id="sc-hyp-body" style="padding:10px;display:flex;flex-direction:column;gap:8px;">
+        ${toggleRowHTML}
+        <div style="font-size:9px;font-weight:700;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;">Primary hypothesis</div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 70px;gap:6px;">
+          <div style="min-width:0;">
+            <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Target metric</label>
+            <input id="sc-hyp-metric" type="text" maxlength="60" value="${p?e(p.metric):''}" placeholder="e.g. Cart abandonment rate"
+              style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 7px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Unit</label>
+            <select id="sc-hyp-unit" onchange="scSyncCustomUnitVisibility()" style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 5px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;">
+              ${_scOutcomeUnitOptionsHTML(p?p.unit:'')}
+            </select>
+          </div>
+        </div>
+        <div id="sc-hyp-custom-label-row" style="display:${p&&p.unit==='custom'?'block':'none'};">
+          <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Custom unit label</label>
+          <input id="sc-hyp-custom-label" type="text" maxlength="20" value="${p?e(p.customLabel||''):''}" placeholder="e.g. tickets/week"
+            style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 7px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 70px;gap:6px;align-items:end;">
+          <div style="min-width:0;">
+            <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Baseline</label>
+            <input id="sc-hyp-baseline" type="number" step="any" value="${p&&p.baseline!==null&&p.baseline!==undefined?p.baseline:''}" placeholder="18" oninput="scRecomputeHypDirection()"
+              style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 7px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Target</label>
+            <input id="sc-hyp-target" type="number" step="any" value="${p&&p.target!==null&&p.target!==undefined?p.target:''}" placeholder="12" oninput="scRecomputeHypDirection()"
+              style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 7px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          </div>
+          <div style="min-width:0;">
+            <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Direction</label>
+            <select id="sc-hyp-direction" onchange="scMarkDirectionManual()" style="width:100%;height:26px;border:1px solid var(--divider);border-radius:5px;padding:0 4px;font-size:9px;font-weight:600;color:var(--purple);background:var(--purple-pale);box-sizing:border-box;">
+              <option value="" ${!p||!p.direction?'selected':''}>—</option>
+              <option value="decrease" ${p&&p.direction==='decrease'?'selected':''}>↓ Decrease</option>
+              <option value="increase" ${p&&p.direction==='increase'?'selected':''}>↑ Increase</option>
+            </select>
+          </div>
+        </div>
+        <input type="hidden" id="sc-hyp-direction-source" value="${p?(p.directionSource||'computed'):'computed'}" />
+        <div>
+          <label style="font-size:9px;font-weight:500;color:var(--t2);display:block;margin-bottom:2px;">Rationale <span style="font-size:8.5px;color:var(--label);">${isEdit?'(AI reasoning, editable)':'(optional)'}</span></label>
+          <textarea id="sc-hyp-rationale" maxlength="280" placeholder="Why do you expect this outcome?"
+            style="width:100%;height:38px;border:1px solid var(--divider);border-radius:5px;padding:6px 7px;font-size:10px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;box-sizing:border-box;">${p?e(p.rationale||''):''}</textarea>
+        </div>
+        <div style="border-top:0.5px dashed var(--divider);padding-top:7px;display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:9px;font-weight:700;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;">Secondary Hypothesis <span style="font-weight:400;text-transform:none;">(max 2)</span></div>
+          <div id="sc-hyp-add-secondary-btn" onclick="scAddSecondaryHypRow()" style="font-size:10px;color:var(--purple);cursor:pointer;font-weight:600;">+ Add</div>
+        </div>
+        <div id="sc-hyp-secondary-rows"></div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Render the secondary hypothesis rows from the working array ──
+// Scoped to an explicit root (v9.10.02 feedback round, adversarially
+// found): the original implementation used a global
+// document.getElementById(), which — combined with this overlay's fixed,
+// non-unique id and no prior duplicate-open guard — could theoretically
+// paint into a stale/wrong modal instance if two ever coexisted. Now
+// requires the caller's own overlay element, falling back to
+// document only if no root is passed (defensive, should not be relied on).
+function scRenderSecondaryHypRows(root){
+  const scope=root||document;
+  const container=scope.querySelector?scope.querySelector('#sc-hyp-secondary-rows'):document.getElementById('sc-hyp-secondary-rows');
+  if(!container)return;
+  let h='';
+  _scAddFeatSecondary.forEach((s,i)=>{
+    h+=`
+      <div style="border:1px solid var(--divider);border-radius:5px;padding:7px;display:flex;flex-direction:column;gap:5px;margin-bottom:5px;">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) 70px 18px;gap:5px;">
+          <input type="text" maxlength="60" value="${e(s.metric||'')}" placeholder="e.g. Time to first order" oninput="scUpdateSecondaryHyp(${i},'metric',this.value)"
+            style="min-width:0;height:22px;border:1px solid var(--divider);border-radius:4px;padding:0 6px;font-size:9.5px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          <select onchange="scUpdateSecondaryHyp(${i},'unit',this.value)" style="min-width:0;height:22px;border:1px solid var(--divider);border-radius:4px;font-size:9px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;">
+            ${_scOutcomeUnitOptionsHTML(s.unit)}
+          </select>
+          <div onclick="scRemoveSecondaryHypRow(${i})" style="min-width:0;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--t3);" title="Remove">
+            <i class="ti ti-x" style="font-size:11px;" aria-hidden="true"></i>
+          </div>
+        </div>
+        ${s.unit==='custom'?`<input type="text" maxlength="20" value="${e(s.customLabel||'')}" placeholder="Custom unit label" oninput="scUpdateSecondaryHyp(${i},'customLabel',this.value)"
+          style="height:20px;border:1px solid var(--divider);border-radius:4px;padding:0 6px;font-size:9px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;width:100%;" />`:''}
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 70px;gap:5px;">
+          <input type="number" step="any" value="${s.baseline!==null&&s.baseline!==undefined?s.baseline:''}" placeholder="Baseline" oninput="scUpdateSecondaryHyp(${i},'baseline',this.value)"
+            style="min-width:0;height:22px;border:1px solid var(--divider);border-radius:4px;padding:0 6px;font-size:9.5px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          <input type="number" step="any" value="${s.target!==null&&s.target!==undefined?s.target:''}" placeholder="Target" oninput="scUpdateSecondaryHyp(${i},'target',this.value)"
+            style="min-width:0;height:22px;border:1px solid var(--divider);border-radius:4px;padding:0 6px;font-size:9.5px;font-family:var(--font);color:var(--t1);background:var(--bg);box-sizing:border-box;" />
+          <select onchange="scMarkSecondaryDirectionManual(${i});scUpdateSecondaryHyp(${i},'direction',this.value)" style="min-width:0;height:22px;border:1px solid var(--divider);border-radius:4px;padding:0 4px;font-size:8.5px;font-weight:600;color:var(--purple);background:var(--purple-pale);box-sizing:border-box;">
+            <option value="" ${!s.direction?'selected':''}>—</option>
+            <option value="decrease" ${s.direction==='decrease'?'selected':''}>↓ Decr.</option>
+            <option value="increase" ${s.direction==='increase'?'selected':''}>↑ Incr.</option>
+          </select>
+        </div>
+      </div>
+    `;
+  });
+  container.innerHTML=h;
+}
+
+// ── Find whichever hypothesis-capturing overlay is currently open ──
+// Add and Edit Feature modals share this same section builder but have
+// different overlay ids — this resolves to whichever one actually exists
+// right now, so the secondary-row handlers below stay correctly scoped
+// regardless of which modal invoked them, without needing every inline
+// onclick/oninput handler to pass a reference through.
+function _scActiveHypOverlay(){
+  return document.getElementById('sc-edit-feat-overlay')||document.getElementById('sc-add-feat-overlay')||document;
+}
+
+function scAddSecondaryHypRow(){
+  if(_scAddFeatSecondary.length>=2)return;
+  _scAddFeatSecondary.push({metric:'',unit:'',customLabel:'',baseline:null,target:null,direction:'',directionSource:'computed',actual:null});
+  scRenderSecondaryHypRows(_scActiveHypOverlay());
+  const addBtn=document.getElementById('sc-hyp-add-secondary-btn');
+  if(addBtn)addBtn.style.display=_scAddFeatSecondary.length>=2?'none':'';
+}
+
+function scRemoveSecondaryHypRow(idx){
+  _scAddFeatSecondary.splice(idx,1);
+  scRenderSecondaryHypRows(_scActiveHypOverlay());
+  const addBtn=document.getElementById('sc-hyp-add-secondary-btn');
+  if(addBtn)addBtn.style.display='';
+}
+
+function scUpdateSecondaryHyp(idx,field,value){
+  if(!_scAddFeatSecondary[idx])return;
+  _scAddFeatSecondary[idx][field]=(field==='baseline'||field==='target')?(value===''?null:Number(value)):value;
+  if(field==='baseline'||field==='target'){
+    const s=_scAddFeatSecondary[idx];
+    // v9.10.03 (BUILD-3): never silently overwrite a manual direction
+    // override on baseline/target edit — matches primary's exact
+    // discipline in scRecomputeHypDirection(), now that secondary's
+    // Direction is a real, clickable control instead of a computed-only
+    // display (per explicit consistency decision — secondary and primary
+    // must behave identically, not just look similar).
+    if(s.directionSource==='manual')return;
+    const computed=computeDirection(s.baseline,s.target);
+    if(computed)s.direction=computed;
+    s.directionSource='computed';
+  }
+  if(field==='unit')scRenderSecondaryHypRows(_scActiveHypOverlay()); // re-render to show/hide custom label input
+}
+
+// ── Mark a specific secondary row's direction as manually overridden ──
+// v9.10.03 (BUILD-3): secondary equivalent of scMarkDirectionManual(),
+// indexed since there can be up to 2 secondary rows. Called from the
+// row's own Direction <select> onchange, before scUpdateSecondaryHyp()
+// writes the new value — order matters, since scUpdateSecondaryHyp's own
+// baseline/target guard checks this flag.
+function scMarkSecondaryDirectionManual(idx){
+  if(_scAddFeatSecondary[idx])_scAddFeatSecondary[idx].directionSource='manual';
+}
+
+// ── Direction recompute + manual-override tracking (primary only) ──
+function scRecomputeHypDirection(){
+  const srcEl=document.getElementById('sc-hyp-direction-source');
+  if(srcEl&&srcEl.value==='manual')return; // never silently overwrite a manual override
+  const bEl=document.getElementById('sc-hyp-baseline'),tEl=document.getElementById('sc-hyp-target'),dEl=document.getElementById('sc-hyp-direction');
+  if(!bEl||!tEl||!dEl)return;
+  const computed=computeDirection(bEl.value===''?null:Number(bEl.value),tEl.value===''?null:Number(tEl.value));
+  dEl.value=computed||'';
+}
+function scMarkDirectionManual(){
+  const srcEl=document.getElementById('sc-hyp-direction-source');
+  if(srcEl)srcEl.value='manual';
+}
+
+function scSyncCustomUnitVisibility(){
+  const unitEl=document.getElementById('sc-hyp-unit'),row=document.getElementById('sc-hyp-custom-label-row');
+  if(!unitEl||!row)return;
+  row.style.display=unitEl.value==='custom'?'block':'none';
+}
+
+function scToggleHypSection(){
+  const body=document.getElementById('sc-hyp-body'),chev=document.getElementById('sc-hyp-chevron');
+  if(!body)return;
+  const collapsed=body.style.display==='none';
+  body.style.display=collapsed?'flex':'none';
+  if(chev)chev.style.transform=collapsed?'':'rotate(-90deg)';
+}
+
+// ── Manual vs AI-generate toggle (Add Feature modal only) ──
+let _scHypEntryMode='manual';
+// ── Repaint-only: swaps the two buttons' visual highlight, no side effects ──
+// v9.10.03 (BUILD-1): extracted out of scSetHypEntryMode() specifically so
+// the auto-switch path (scAddFeatSyncAIGate below) can repaint the
+// highlight WITHOUT also triggering AI generation. Previously the
+// auto-switch called scSetHypEntryMode('ai') directly, which unconditionally
+// calls scGenerateHypWithAI() as a side effect of switching modes — meaning
+// the mere act of typing the first character into Feature Name silently
+// launched a real API call before the user ever asked for one. Real button
+// clicks still go through scSetHypEntryMode(), which calls this AND the
+// trigger; only the silent auto-switch now calls this alone.
+function _scPaintHypEntryMode(mode){
+  const manualBtn=document.getElementById('sc-hyp-mode-manual'),aiBtn=document.getElementById('sc-hyp-mode-ai');
+  if(!manualBtn||!aiBtn)return;
+  if(mode==='manual'){
+    manualBtn.style.cssText='flex:1;text-align:center;padding:7px;border:1.5px solid var(--purple);background:var(--purple-pale);border-radius:5px;font-size:10px;font-weight:600;color:var(--purple);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;';
+    aiBtn.style.cssText='flex:1;text-align:center;padding:7px;border:1.5px solid var(--divider);border-radius:5px;font-size:10px;font-weight:600;color:var(--t2);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;background:#fff;';
+  } else {
+    aiBtn.style.cssText='flex:1;text-align:center;padding:7px;border:1.5px solid var(--purple);background:var(--purple-pale);border-radius:5px;font-size:10px;font-weight:600;color:var(--purple);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;';
+    manualBtn.style.cssText='flex:1;text-align:center;padding:7px;border:1.5px solid var(--divider);border-radius:5px;font-size:10px;font-weight:600;color:var(--t2);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;background:#fff;';
+  }
+}
+
+function scSetHypEntryMode(mode){
+  const nameEl=document.getElementById('sc-add-feat-name');
+  if(mode==='ai'&&(!nameEl||!nameEl.value.trim()))return; // gated — no-op if name empty
+  _scHypEntryMode=mode;
+  _scPaintHypEntryMode(mode);
+  if(mode==='ai')scGenerateHypWithAI();
+}
+
+// ── Sync the AI-generate button's enabled/disabled visual state as the name field changes ──
+// v9.10.02 (item 5 fix): the highlight auto-switches from "Enter manually"
+// to "Generate with AI" the FIRST time a name becomes non-empty, guiding
+// the user toward the faster path. Tracked via _scAiGateAutoSwitched so
+// this only fires once per modal-open, not on every keystroke — otherwise
+// a user who deliberately clicks back to "Enter manually" would have
+// their choice silently reverted on their very next keystroke.
+// v9.10.03 (BUILD-1 fix): this now calls _scPaintHypEntryMode() directly —
+// the repaint-only function — instead of scSetHypEntryMode(), which would
+// also silently trigger a real AI generation call on every first keystroke.
+let _scAiGateAutoSwitched=false;
+function scAddFeatSyncAIGate(){
+  const nameEl=document.getElementById('sc-add-feat-name'),aiBtn=document.getElementById('sc-hyp-mode-ai'),note=document.getElementById('sc-hyp-ai-gate-note');
+  if(!nameEl||!aiBtn)return;
+  const hasName=!!nameEl.value.trim();
+  aiBtn.style.cursor=hasName?'pointer':'not-allowed';
+  if(note)note.style.display=hasName?'none':'';
+  if(hasName&&!_scAiGateAutoSwitched&&_scHypEntryMode==='manual'){
+    _scAiGateAutoSwitched=true;
+    _scHypEntryMode='ai';
+    _scPaintHypEntryMode('ai'); // repaint only — does NOT call scGenerateHypWithAI()
+    return;
+  }
+  // Keep the enabled/disabled visual distinct even when not auto-switching
+  // (e.g. name becomes empty again after being filled) — only touch color/
+  // background here, never override an active highlight's border/bg.
+  if(_scHypEntryMode!=='ai'){
+    aiBtn.style.color=hasName?'var(--t2)':'var(--label)';
+    aiBtn.style.background=hasName?'#fff':'var(--card)';
+  }
+}
+
+// ── On-demand AI hypothesis generation for the Add Feature modal ──
+// Reuses buildCapFeaturesPrompt-adjacent context where available but is a
+// lighter, single-feature-scoped call — this is NOT the Capability Canvas
+// generation path (§4.1), it's the manual-add on-demand path (§4.3).
+async function scGenerateHypWithAI(){
+  const nameEl=document.getElementById('sc-add-feat-name'),whyEl=document.getElementById('sc-add-feat-why'),capEl=document.getElementById('sc-add-feat-cap');
+  if(!nameEl||!nameEl.value.trim())return;
+  const featureName=nameEl.value.trim();
+  const why=whyEl?whyEl.value.trim():'';
+  const capName=capEl?capEl.value:'';
+  const nsm=(typeof gData!=='undefined'&&gData&&gData.nsm)?gData.nsm.metric:'';
+  const bodyEl=document.getElementById('sc-hyp-body');
+  const _prevContent=bodyEl?bodyEl.innerHTML:'';
+  // Stale-callback guard (v9.10.02 feedback round, adversarially found):
+  // this is a real await boundary — the modal that started this request
+  // could be closed (or, now that a duplicate-open guard exists elsewhere,
+  // a fresh instance of the SAME modal could be reopened) before this
+  // resolves. Snapshot the overlay element itself here, before the await,
+  // and re-check its presence/identity in the DOM after — never assume
+  // the ids this function reads/writes still belong to the same modal
+  // instance that triggered the request.
+  const _triggeringOverlay=document.getElementById('sc-add-feat-overlay');
+  if(bodyEl)bodyEl.innerHTML=`<div style="display:flex;align-items:center;justify-content:center;padding:24px 0;gap:8px;color:var(--t3);font-size:11px;"><div class="cc-spin" style="width:16px;height:16px;border-width:2px;"></div> Generating hypothesis…</div>`;
+  try{
+    const sys='You are a senior product strategist. Respond ONLY with valid JSON. No markdown, no backticks, no preamble.';
+    const usr=`Feature: "${featureName}"\n${why?'Why it matters: '+why+'\n':''}${capName?'Capability: '+capName+'\n':''}${nsm?'North Star Metric: '+nsm+'\n':''}\n`
+      +`Suggest a single outcome hypothesis this feature should be expected to move.\n`
+      +`Return ONLY this JSON: {"metric":"specific metric name","unit":"one of: ${OUTCOME_HYP_UNITS.join(', ')}","baseline":number,"target":number,"rationale":"one sentence, concrete mechanism, max 30 words"}\n`
+      +`Rules: baseline and target must be plausible, realistic numeric estimates for this metric — never placeholders like 0 or 100 unless genuinely appropriate. unit must be exactly one of the listed values. rationale must end with a short, explicit note that baseline/target are an industry-plausible estimate, not the client's actual data (e.g. "(estimate - replace with your actual baseline once known)") — this still counts toward the 30-word max.`;
+    const txt=await callAPI(sys,usr,800,undefined,undefined,'sc-add-feat-hyp-gen');
+    // Re-check after the only await in this function — if the triggering
+    // overlay is no longer in the document (closed, or replaced by a new
+    // instance via the duplicate-open guard), abandon silently rather
+    // than writing stale results into whatever now occupies these ids.
+    if(!_triggeringOverlay||!document.body.contains(_triggeringOverlay))return;
+    const clean=txt.replace(/```json|```/g,'').trim();
+    let parsed;
+    try{parsed=JSON.parse(clean);}
+    catch(pe){const s=clean.indexOf('{'),l=clean.lastIndexOf('}');if(s>=0&&l>s){parsed=JSON.parse(clean.substring(s,l+1));}else throw pe;}
+    if(bodyEl)bodyEl.innerHTML=_prevContent;
+    scRenderSecondaryHypRows(_triggeringOverlay);
+    const mEl=document.getElementById('sc-hyp-metric'),uEl=document.getElementById('sc-hyp-unit'),bEl=document.getElementById('sc-hyp-baseline'),tEl=document.getElementById('sc-hyp-target'),rEl=document.getElementById('sc-hyp-rationale');
+    if(mEl)mEl.value=parsed.metric||'';
+    if(uEl&&OUTCOME_HYP_UNITS.includes(parsed.unit))uEl.value=parsed.unit;
+    if(bEl)bEl.value=parsed.baseline!==undefined&&parsed.baseline!==null?parsed.baseline:'';
+    if(tEl)tEl.value=parsed.target!==undefined&&parsed.target!==null?parsed.target:'';
+    if(rEl)rEl.value=parsed.rationale||'';
+    scRecomputeHypDirection();
+  }catch(err){
+    if(!_triggeringOverlay||!document.body.contains(_triggeringOverlay))return;
+    if(bodyEl)bodyEl.innerHTML=_prevContent;
+    scRenderSecondaryHypRows(_triggeringOverlay);
+    if(typeof showToast==='function')showToast('Could not generate hypothesis. You can enter it manually.','warn');
+  }
+}
+
+// ── Read the Outcome Hypothesis section's current DOM state into an object ──
+// Used identically by scDoAddFeat() and scDoEditFeat(). Returns null when
+// the metric field is empty (no hypothesis was entered) — never returns a
+// half-populated object with an empty metric name.
+function scReadOutcomeHypothesisFromDOM(existingSource){
+  const mEl=document.getElementById('sc-hyp-metric');
+  if(!mEl)return null;
+  const metric=mEl.value.trim();
+  if(!metric)return null;
+  const uEl=document.getElementById('sc-hyp-unit'),clEl=document.getElementById('sc-hyp-custom-label');
+  const bEl=document.getElementById('sc-hyp-baseline'),tEl=document.getElementById('sc-hyp-target');
+  const dEl=document.getElementById('sc-hyp-direction'),dsEl=document.getElementById('sc-hyp-direction-source');
+  const rEl=document.getElementById('sc-hyp-rationale');
+  const baseline=bEl&&bEl.value!==''?Number(bEl.value):null;
+  const target=tEl&&tEl.value!==''?Number(tEl.value):null;
+  const primary={
+    metric,
+    unit:uEl?uEl.value:'',
+    customLabel:uEl&&uEl.value==='custom'&&clEl?clEl.value.trim():'',
+    baseline,target,
+    direction:dEl?(dEl.value||null):null,
+    directionSource:dsEl?dsEl.value:'computed',
+    rationale:rEl?rEl.value.trim():'',
+    source:existingSource==='ai'?'ai-edited':(existingSource||'manual'),
+    actual:null,signal:null,loggedAt:null
+  };
+  const secondary=_scAddFeatSecondary
+    .filter(s=>s.metric&&s.metric.trim())
+    .slice(0,2)
+    .map(s=>({
+      metric:s.metric.trim(),unit:s.unit||'',customLabel:s.unit==='custom'?(s.customLabel||''):'',
+      baseline:s.baseline!==undefined?s.baseline:null,target:s.target!==undefined?s.target:null,
+      direction:s.direction||null,directionSource:s.directionSource||'computed',actual:null
+    }));
+  return{primary,secondary};
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// END Outcome Verification Loop shared modal section
+// ══════════════════════════════════════════════════════════════════════
 
 function scAddFeatValidate(){
   const nameEl=document.getElementById('sc-add-feat-name');
@@ -2102,15 +2982,17 @@ function scDoAddFeat(){
   if(!name||!cap)return;
   // Resolve metric and stage from capStore
   let metric=cap;
-  let stage='PI Plan';
+  let stage=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
   let metricPath=cap;
+  let _bucketIdForFeature=null;
   if(typeof capStore!=='undefined'){
     for(const[mk,entry]of Object.entries(capStore)){
       const found=(entry.capabilities||[]).find(c=>c.name===cap);
       if(found){
         metric=entry.metricName||cap;
-        stage=entry.stageLabel||'PI Plan';
+        stage=entry.stageLabel||(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage');
         metricPath=scGetMetricPath(metric);
+        _bucketIdForFeature=entry.bucketId||null;
         break;
       }
     }
@@ -2121,7 +3003,14 @@ function scDoAddFeat(){
     showToast('A feature with this name already exists on the canvas.','warn');
     return;
   }
-  scCanvas.push({id:fid,metric,metricPath,stage,cap,name,why,stories:null,origin:'pi'});
+  // Outcome Verification Loop: read whatever hypothesis was entered (manual
+  // or AI-generated), or null if the metric field was left empty.
+  const outcomeHypothesis=scReadOutcomeHypothesisFromDOM('manual');
+  // v9.06.02: originBucketId hardening (going forward only, per ChatGPT
+  // review — no backfill of existing features, since the field never
+  // existed before). Enables a future, more precise identity-based rename
+  // match than stage+name alone, for any feature created from this point on.
+  scCanvas.push({id:fid,metric,metricPath,stage,cap,name,why,stories:null,origin:'pi',originBucketId:_bucketIdForFeature,outcomeHypothesis});
   // Close modal
   const overlay=document.getElementById('sc-add-feat-overlay');
   if(overlay)overlay.remove();
@@ -2136,7 +3025,9 @@ function scDoAddFeat(){
     });
   });
   showToast(`"${name}" added under ${cap}.`,'success');
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+  }
 }
 
 // ── Upload Features from file (C2-C4, v7.84) ──
@@ -2373,21 +3264,25 @@ function scConfirmFeatUpload(){
 
   remaining.forEach(r=>{
     const cap=r.mapTo;
-    let metric=cap,stage='PI Plan',metricPath=cap;
+    let metric=cap,stage=(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage'),metricPath=cap;
+    let _bucketIdForFeature=null;
     if(typeof capStore!=='undefined'){
       for(const[mk,entry]of Object.entries(capStore)){
         const found=(entry.capabilities||[]).find(c=>c.name===cap);
         if(found){
           metric=entry.metricName||cap;
-          stage=entry.stageLabel||'PI Plan';
+          stage=entry.stageLabel||(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage');
           metricPath=scGetMetricPath(metric);
+          _bucketIdForFeature=entry.bucketId||null;
           break;
         }
       }
     }
     const fid=scMakeFeatureId(metric,cap,r.name);
     if(scCanvas.find(x=>x.id===fid)){skippedDupes++;return;}
-    scCanvas.push({id:fid,metric,metricPath,stage,cap,name:r.name,why:r.description||'',stories:null,origin:'pi'});
+    // v9.06.02: originBucketId hardening, same rationale as the manual
+    // single-add site above.
+    scCanvas.push({id:fid,metric,metricPath,stage,cap,name:r.name,why:r.description||'',stories:null,origin:'pi',originBucketId:_bucketIdForFeature});
     affectedCaps.add(cap);
     added++;
   });
@@ -2404,13 +3299,38 @@ function scConfirmFeatUpload(){
   else if(affectedCaps.size>1)msg+=` across ${affectedCaps.size} capabilities`;
   if(skippedDupes>0)msg+=` (${skippedDupes} skipped - already on canvas)`;
   showToast(msg,added>0?'success':'warn');
+  // v8.147 fix: confirmed missing entirely — a bulk upload of possibly
+  // many new features at once. One coarse mark per added feature.
+  if(added>0&&!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    const _addedIds=remaining.filter(r=>!r.removed&&r.mapTo).map(r=>{
+      const cap=r.mapTo;
+      let metric=cap;
+      if(typeof capStore!=='undefined'){
+        for(const[mk,entry]of Object.entries(capStore)){
+          const found=(entry.capabilities||[]).find(c=>c.name===cap);
+          if(found){metric=entry.metricName||cap;break;}
+        }
+      }
+      return scMakeFeatureId(metric,cap,r.name);
+    });
+    sessionStoreSave(_activeSessionId).then(function(ok){
+      if(!ok||typeof _lsMarkManualEdit!=='function')return;
+      _addedIds.forEach(function(id){ _lsMarkManualEdit('sc',id+_LS_SC_TARGET_SEP); });
+    });
+  }
 }
 
 
 // ── Edit Feature modal ──
 function scShowEditFeatModal(fid){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat)return;
+
+  // Duplicate-open guard (v9.10.02 feedback round) — see matching
+  // comment in scShowAddFeatureModal() for the full rationale.
+  const _existingEditOverlay=document.getElementById('sc-edit-feat-overlay');
+  if(_existingEditOverlay)_existingEditOverlay.remove();
 
   // Build cap options
   const capSet=new Set();
@@ -2474,6 +3394,7 @@ function scShowEditFeatModal(fid){
         </div>
         <div style="font-size:9px;color:var(--label);margin-top:2px;">Changing this moves the feature to the selected capability.</div>
       </div>
+      ${scBuildOutcomeHypothesisSectionHTML('edit',feat.outcomeHypothesis)}
       ${warnHtml}
     </div>
     <div class="modal-footer" id="sc-edit-feat-footer">
@@ -2482,6 +3403,15 @@ function scShowEditFeatModal(fid){
     </div>
   </div>`;
   document.body.appendChild(overlay);
+  // Bug 2 fix (v9.10.02 feedback round): scBuildOutcomeHypothesisSectionHTML()
+  // already seeded _scAddFeatSecondary from feat.outcomeHypothesis.secondary
+  // BEFORE this HTML was built — but the returned template only contains an
+  // empty <div id="sc-hyp-secondary-rows"></div> placeholder. Nothing ever
+  // painted the seeded data into it until now; previously the only thing
+  // that did was a later, unrelated user action (clicking "+ Add"), which
+  // is exactly the reported symptom (existing secondary hypotheses appeared
+  // only after clicking Add). This call closes that gap directly.
+  scRenderSecondaryHypRows(overlay);
   const _esc=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}};
   document.addEventListener('keydown',_esc,true);
   trapFocus(overlay);
@@ -2506,7 +3436,18 @@ function scEditFeatValidate(originalName){
 
 function scDoEditFeat(fid, mode){
   const feat=scCanvas.find(x=>x.id===fid);
-  if(!feat)return;
+  if(!feat){
+    // Outcome Verification Loop §6.5 Finding F: the feature this modal was
+    // opened for is no longer found by this id — most likely it was
+    // renamed/re-linked to a different metric (which changes feat.id) by
+    // another action while this modal was open. Silently no-op'ing here
+    // would lose whatever the user just edited with no indication anything
+    // went wrong. Surface it explicitly instead.
+    const overlay=document.getElementById('sc-edit-feat-overlay');
+    if(overlay)overlay.remove();
+    if(typeof showToast==='function')showToast('This feature changed while you were editing it. Reopen it to try again.','warn');
+    return;
+  }
   const nameEl=document.getElementById('sc-edit-feat-name');
   const whyEl=document.getElementById('sc-edit-feat-why');
   const capEl=document.getElementById('sc-edit-feat-cap');
@@ -2530,7 +3471,7 @@ function scDoEditFeat(fid, mode){
         const found=(entry.capabilities||[]).find(c=>c.name===newCap);
         if(found){
           feat.metric=entry.metricName||newCap;
-          feat.stage=entry.stageLabel||'PI Plan';
+          feat.stage=entry.stageLabel||(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage');
           feat.metricPath=typeof scGetMetricPath==='function'?scGetMetricPath(feat.metric):feat.metric;
           break;
         }
@@ -2552,6 +3493,22 @@ function scDoEditFeat(fid, mode){
       });
     });
   }
+
+  // Outcome Verification Loop: read whatever is currently in the Outcome
+  // Hypothesis section's DOM and write it back onto the feature. Preserves
+  // actual/signal/loggedAt from the existing hypothesis if present, since
+  // this modal never edits those fields (they're Outcome Pulse's job) —
+  // scReadOutcomeHypothesisFromDOM() always returns actual/signal as null,
+  // so we merge them back in here rather than losing a previously-logged
+  // result just because the PM opened Edit Feature afterward.
+  const _existingSource=feat.outcomeHypothesis&&feat.outcomeHypothesis.primary?feat.outcomeHypothesis.primary.source:null;
+  const _newHyp=scReadOutcomeHypothesisFromDOM(_existingSource);
+  if(_newHyp&&feat.outcomeHypothesis&&feat.outcomeHypothesis.primary){
+    _newHyp.primary.actual=feat.outcomeHypothesis.primary.actual;
+    _newHyp.primary.signal=feat.outcomeHypothesis.primary.signal;
+    _newHyp.primary.loggedAt=feat.outcomeHypothesis.primary.loggedAt;
+  }
+  feat.outcomeHypothesis=_newHyp;
 
   if(mode==='clear'){
     // Delete prototype entirely when all stories cleared — no point keeping stale data
@@ -2593,12 +3550,14 @@ function scDoEditFeat(fid, mode){
   if(scPanelFeatureId===fid)scOpenPanel(fid);
   if(mode==='clear'){
     if(hasPiPlan){
-      showToast('Stories cleared. This feature was in your PI plan — regenerate PI to update.','warn');
+      showToast('Stories cleared. This feature was in your PI plan. Regenerate PI to update.','warn');
     } else {
-      showToast('Feature updated. Stories cleared — select the card to regenerate.','success');
+      showToast('Feature updated. Stories cleared. Select the card to regenerate.','success');
     }
   } else {
     showToast('Feature updated.','success');
   }
-  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId)sessionStoreSave(_activeSessionId);
+  if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
+    sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',fid+_LS_SC_TARGET_SEP); });
+  }
 }
