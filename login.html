@@ -46,17 +46,13 @@
       </div>
 
       <!-- Form -->
-      <div class="auth-form">
+      <div class="auth-form" id="auth-form-normal">
 
-        <!-- Display name — Sign Up only -->
-        <div class="auth-field" id="field-name" style="display:none;">
-          <label class="auth-label" for="auth-name">Display Name</label>
-          <input class="auth-input" type="text" id="auth-name" placeholder="E.g. Nethaji Karthick" autocomplete="name"/>
-        </div>
-
-        <!-- Email -->
+        <!-- Email — reordered to first: most likely to cause a hard stop
+             (already registered), so it should fail before other fields are
+             filled in, not after. -->
         <div class="auth-field">
-          <label class="auth-label" for="auth-email">Email</label>
+          <label class="auth-label" for="auth-email">Email <span class="auth-required" aria-hidden="true">*</span></label>
           <input class="auth-input" type="email" id="auth-email" placeholder="you@hcltech.com" autocomplete="email"/>
           <div class="auth-field-error" id="email-error" style="display:none;">
             <i class="ti ti-alert-circle" aria-hidden="true"></i>
@@ -64,9 +60,9 @@
           </div>
         </div>
 
-        <!-- Password -->
+        <!-- Password — reordered second, same reasoning as Email. -->
         <div class="auth-field">
-          <label class="auth-label" for="auth-password">Password</label>
+          <label class="auth-label" for="auth-password">Password <span class="auth-required" aria-hidden="true">*</span></label>
           <div class="auth-input-wrap">
             <input class="auth-input has-toggle" type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password"/>
             <button class="auth-pw-toggle" id="pw-toggle" onclick="authTogglePw()" type="button" aria-label="Show password">
@@ -74,12 +70,53 @@
             </button>
           </div>
           <div class="auth-hint" id="pw-hint" style="display:none;">Min. 8 characters</div>
+          <div class="auth-field-error" id="password-error" style="display:none;">
+            <i class="ti ti-alert-circle" aria-hidden="true"></i>
+            <span id="password-error-msg"></span>
+          </div>
         </div>
 
-        <!-- Toast feedback (loading / error / success) — sits above CTA, no layout jump on fields -->
+        <!-- Display name — Sign Up only -->
+        <div class="auth-field" id="field-name" style="display:none;">
+          <label class="auth-label" for="auth-name">Display Name <span class="auth-required" aria-hidden="true">*</span></label>
+          <input class="auth-input" type="text" id="auth-name" placeholder="E.g. Nethaji Karthick" autocomplete="name"/>
+          <div class="auth-field-error" id="name-error" style="display:none;">
+            <i class="ti ti-alert-circle" aria-hidden="true"></i>
+            <span id="name-error-msg"></span>
+          </div>
+        </div>
+
+        <!-- Company Name — Sign Up only (Phase 1) -->
+        <div class="auth-field" id="field-company" style="display:none;">
+          <label class="auth-label" for="auth-company">Company Name <span class="auth-required" aria-hidden="true">*</span></label>
+          <input class="auth-input" type="text" id="auth-company" placeholder="e.g. Woolworths, Contoso" autocomplete="organization"/>
+          <div class="auth-field-error" id="company-error" style="display:none;">
+            <i class="ti ti-alert-circle" aria-hidden="true"></i>
+            <span id="company-error-msg"></span>
+          </div>
+          <div class="auth-field-error boxed" id="company-warning" style="display:none;background:#FAEEDA;border-color:var(--amber);color:#633806;">
+            <i class="ti ti-alert-triangle" aria-hidden="true"></i>
+            <span id="company-warning-msg"></span>
+          </div>
+        </div>
+
+        <!-- Toast feedback (loading / success / ambiguous sign-in errors that
+             don't belong to one specific field) — moved above the CTA row in
+             v8.103. Previously sat below the existing-user-cta-row, meaning
+             the confirmation message rendered underneath the buttons it was
+             supposed to introduce — a real ordering bug found in testing,
+             not a style preference. Order now matches every other state in
+             this form: toast always above whatever CTA is currently showing. -->
         <div class="auth-toast" id="auth-toast">
           <i class="ti" id="auth-toast-icon" aria-hidden="true"></i>
           <span id="auth-toast-msg"></span>
+        </div>
+
+        <!-- Existing-user-creates-second-company CTA row (v8.102) — replaces
+             #auth-cta entirely when shown, not added alongside it. -->
+        <div id="existing-user-cta-row" style="display:none;gap:8px;">
+          <button type="button" class="auth-cta auth-cta-secondary" id="existing-user-signin-btn" style="flex:1;width:auto;">Sign In</button>
+          <button type="button" class="auth-cta" id="existing-user-create-btn" style="flex:1;width:auto;">Create Company</button>
         </div>
 
         <!-- CTA -->
@@ -91,6 +128,46 @@
         </div>
 
       </div><!-- /auth-form -->
+
+      <!-- Set Password screen (Phase 1) — shown instead of the normal form when
+           the user arrives via an invite or password-reset link. Same screen
+           serves both cases, since they're the same underlying Supabase
+           mechanism (a recovery-type session). -->
+      <div class="auth-form" id="set-password-form" style="display:none;">
+        <div class="auth-field">
+          <label class="auth-label" for="set-pw-name">Display Name <span class="auth-required">*</span></label>
+          <input class="auth-input" type="text" id="set-pw-name" placeholder="Your name" disabled/>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Email</label>
+          <div class="auth-input" id="set-pw-email" style="background:var(--card);color:var(--t3);display:flex;align-items:center;justify-content:space-between;">
+            <span id="set-pw-email-value">—</span>
+            <i class="ti ti-lock" style="font-size:12px;color:var(--label);" aria-hidden="true"></i>
+          </div>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label">Company</label>
+          <div class="auth-input" id="set-pw-company" style="background:var(--card);color:var(--t3);display:flex;align-items:center;justify-content:space-between;">
+            <span id="set-pw-company-value">—</span>
+            <i class="ti ti-lock" style="font-size:12px;color:var(--label);" aria-hidden="true"></i>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--divider);margin:4px 0 16px;"></div>
+        <div class="auth-field">
+          <label class="auth-label" for="set-pw-new">New Password <span class="auth-required">*</span></label>
+          <input class="auth-input" type="password" id="set-pw-new" placeholder="••••••••" autocomplete="new-password"/>
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="set-pw-confirm">Confirm Password <span class="auth-required">*</span></label>
+          <input class="auth-input" type="password" id="set-pw-confirm" placeholder="••••••••" autocomplete="new-password"/>
+        </div>
+        <div class="auth-hint">Min. 8 characters</div>
+        <div class="auth-toast" id="set-pw-toast">
+          <i class="ti" id="set-pw-toast-icon" aria-hidden="true"></i>
+          <span id="set-pw-toast-msg"></span>
+        </div>
+        <button class="auth-cta" id="set-pw-cta" onclick="authSubmitSetPassword()">Set Password &amp; Continue</button>
+      </div><!-- /set-password-form -->
     </div><!-- /auth-card -->
   </div><!-- /auth-body -->
 
@@ -113,21 +190,90 @@ var _pwVisible = false;
 
 // ── Initialise on load ──
 document.addEventListener('DOMContentLoaded', function() {
-  // ── Version string — set from APP_VERSION in config.js ──
+  // Captured before authInit() runs — authInit() creates the Supabase
+  // client, whose detectSessionInUrl behavior processes AND strips
+  // window.location.hash. The exact timing of that strip relative to this
+  // script is an internal detail of a third-party library this code
+  // shouldn't depend on — reading the raw URL first removes that dependency
+  // entirely, regardless of SDK version or internal timing.
+  var _rawHash = window.location.hash ? window.location.hash.substring(1) : '';
+  var _rawSearch = window.location.search;
+
   var _vEl=document.getElementById('hdr-version');
   if(_vEl&&typeof APP_VERSION!=='undefined')_vEl.textContent=APP_VERSION;
 
   authInit();
 
-  // If already signed in, redirect straight to app
+  // Phase 1 (fixed v8.112): detect an invite or password-reset link directly
+  // from the URL's own type= param, not from onAuthStateChange('PASSWORD_RECOVERY')
+  // alone. Confirmed via testing that Supabase's client SDK fires SIGNED_IN —
+  // not PASSWORD_RECOVERY — when an invite link is processed, since accepting
+  // an invite and a magic-link sign-in are functionally identical from the
+  // SDK's perspective. PASSWORD_RECOVERY only fires for genuine "Forgot
+  // Password" links. The type= param is present in the link itself either
+  // way, regardless of which event later fires, so checking it directly is
+  // the authoritative signal — the onAuthStateChange listener below is kept
+  // as a secondary path, not the primary trigger.
+  function _pgtGetAuthLinkType() {
+    var hashParams = new URLSearchParams(_rawHash);
+    var searchParams = new URLSearchParams(_rawSearch);
+    return hashParams.get('type') || searchParams.get('type') || null;
+  }
+  var _linkType = _pgtGetAuthLinkType();
+  var _isInviteOrRecovery = (_linkType === 'invite' || _linkType === 'recovery');
+  if (_isInviteOrRecovery) {
+    _showSetPasswordScreen();
+  }
+
+  var _authClient = authInit();
+  if (_authClient) {
+    _authClient.auth.onAuthStateChange(function(event, session) {
+      if (event === 'PASSWORD_RECOVERY') {
+        _showSetPasswordScreen();
+      }
+    });
+  }
+
+  // Skip the auto-redirect while showing the set-password screen — otherwise
+  // this fires the instant the invite/recovery link establishes a session,
+  // sending the person straight to the app before they've set a password.
+  // Known accepted gap: refreshing the page after this point (once Supabase
+  // has already stripped the hash on the first load) loses _isInviteOrRecovery
+  // and would allow the redirect through — same broken end state reached a
+  // different way. Narrow window, not fixed for v1.
   authGetSession().then(function(session) {
-    if (session) window.location.href = 'index.html';
+    if (session && !_isInviteOrRecovery) window.location.href = 'index.html';
   });
 
   // Enter key submits
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') authSubmit();
   });
+
+  // Every field clears its own error reactively as soon as the person
+  // starts correcting it — previously only Company Name had this, the rest
+  // required a resubmit to clear a stale error message.
+  var emailInput = document.getElementById('auth-email');
+  if (emailInput) emailInput.oninput = function() {
+    document.getElementById('email-error').style.display = 'none';
+    emailInput.classList.remove('is-error');
+  };
+  var passwordInput = document.getElementById('auth-password');
+  if (passwordInput) passwordInput.oninput = function() {
+    document.getElementById('password-error').style.display = 'none';
+  };
+  var nameInput = document.getElementById('auth-name');
+  if (nameInput) nameInput.oninput = function() {
+    document.getElementById('name-error').style.display = 'none';
+  };
+  // Editing the company name after a collision warning resets it — a
+  // changed name needs its own fresh check, not to inherit the previous
+  // name's "proceed anyway" confirmation.
+  var companyInput = document.getElementById('auth-company');
+  if (companyInput) companyInput.oninput = function() {
+    document.getElementById('company-error').style.display = 'none';
+    document.getElementById('company-warning').style.display = 'none';
+  };
 });
 
 // ── Mode switch ──
@@ -144,6 +290,15 @@ function authSetMode(mode) {
 
   // Show/hide display name field
   document.getElementById('field-name').style.display = isSignup ? '' : 'none';
+
+  // Show/hide company name field (Phase 1)
+  document.getElementById('field-company').style.display = isSignup ? '' : 'none';
+  document.getElementById('company-error').style.display = 'none';
+  document.getElementById('company-warning').style.display = 'none';
+  // Reset back to the normal single CTA, in case a mode switch happens
+  // mid-flow while the existing-user-second-company row is showing.
+  document.getElementById('existing-user-cta-row').style.display = 'none';
+  document.getElementById('auth-cta').style.display = '';
 
   // Show/hide password hint
   document.getElementById('pw-hint').style.display = isSignup ? '' : 'none';
@@ -166,6 +321,7 @@ function authSetMode(mode) {
 
   // Clear inputs
   document.getElementById('auth-name').value = '';
+  document.getElementById('auth-company').value = '';
   document.getElementById('auth-email').value = '';
   document.getElementById('auth-password').value = '';
 }
@@ -175,12 +331,48 @@ async function authSubmit() {
   var email    = document.getElementById('auth-email').value.trim();
   var password = document.getElementById('auth-password').value;
   var name     = document.getElementById('auth-name').value.trim();
-
-  // Basic client-side validation
-  if (!email) { authShowFieldError('email-error', 'email-error-msg', 'Email is required.'); return; }
-  if (!password) { authShowToast('error', 'ti-alert-circle', 'Password is required.'); return; }
+  var companyName = document.getElementById('auth-company').value.trim();
 
   authClearFieldErrors();
+
+  // Validate everything at once, not one field per submit click — per
+  // adversarial review, showing only the first error meant someone
+  // submitting a fully empty form would need four separate attempts to
+  // discover all four required fields, one at a time. Collected in field
+  // order (matches the reordered form) so the first error focused
+  // corresponds to the first field visually.
+  var firstInvalidField = null;
+  var hasError = false;
+
+  if (!email) {
+    authShowFieldError('email-error', 'email-error-msg', 'Email is required.');
+    hasError = true;
+    firstInvalidField = firstInvalidField || 'auth-email';
+  }
+  if (!password) {
+    authShowFieldError('password-error', 'password-error-msg', 'Password is required.');
+    hasError = true;
+    firstInvalidField = firstInvalidField || 'auth-password';
+  }
+  if (_authMode === 'signup') {
+    if (!name) {
+      authShowFieldError('name-error', 'name-error-msg', 'Display name is required.');
+      hasError = true;
+      firstInvalidField = firstInvalidField || 'auth-name';
+    }
+    if (!companyName) {
+      authShowFieldError('company-error', 'company-error-msg', 'Company name is required.');
+      hasError = true;
+      firstInvalidField = firstInvalidField || 'auth-company';
+    }
+  }
+
+  if (hasError) {
+    var fieldToFocus = document.getElementById(firstInvalidField);
+    if (fieldToFocus) fieldToFocus.focus();
+    return;
+  }
+
   authSetLoading(true);
 
   try {
@@ -191,25 +383,145 @@ async function authSubmit() {
       setTimeout(function() { window.location.href = 'index.html'; }, 800);
 
     } else {
-      if (!name) { authSetLoading(false); authHideToast(); authShowToast('error', 'ti-alert-circle', 'Display name is required.'); return; }
+      // Collision check — same two-click pattern as before: first click
+      // checks and warns if a match exists; a second click, with the
+      // warning already visible for this same name, proceeds anyway.
+      // Fixed here: the check was comparing style.display against 'block',
+      // but the warning is shown with 'flex' — they never matched, so the
+      // "proceed anyway" branch could never actually fire. A pre-existing
+      // bug, not something today's changes introduced, caught while
+      // rewriting this block for other reasons.
+      var warnEl = document.getElementById('company-warning');
+      var warningAlreadyShown = (warnEl.style.display === 'flex');
+      if (!warningAlreadyShown) {
+        authShowToast('loading', 'ti-loader-2', 'Checking company name…');
+        var exists = await authCheckCompanyName(companyName);
+        if (exists) {
+          authHideToast();
+          authSetLoading(false);
+          document.getElementById('company-warning-msg').textContent =
+            'A profile for "' + companyName + '" already exists. Ask an existing admin to invite you instead, or continue to create your own separate one.';
+          warnEl.style.display = 'flex';
+          return;
+        }
+      }
+
       authShowToast('loading', 'ti-loader-2', 'Creating your account…');
-      await authSignUp(email, name, password);
-      authShowToast('success', 'ti-check', 'Account created. Redirecting…');
-      setTimeout(function() { window.location.href = 'index.html'; }, 800);
+      try {
+        await authSignUp(email, name, password);
+        // Company creation is a separate, atomic call (create_company_with_admin
+        // RPC via authCreateCompany) — not folded into authSignUp() itself, so
+        // auth.js's signup function stays focused on auth only.
+        await authCreateCompany(companyName);
+        authShowToast('success', 'ti-check', 'Account created. Redirecting…');
+        setTimeout(function() { window.location.href = 'index.html'; }, 800);
+      } catch(signupErr) {
+        var signupMsg = (typeof signupErr === 'string') ? signupErr : (signupErr.message || '');
+        if (signupMsg.toLowerCase().indexOf('already exists') !== -1) {
+          // v8.101: an existing user typed a new company name. Gated
+          // specifically on this exact error, not any signup failure —
+          // attempting a fallback sign-in after e.g. a weak-password
+          // rejection would be meaningless.
+          await _tryExistingUserSecondCompany(email, password, companyName);
+        } else {
+          throw signupErr; // anything else falls through to normal handling below
+        }
+      }
     }
 
   } catch(err) {
     authSetLoading(false);
     var msg = (typeof err === 'string') ? err : (err.message || 'Something went wrong. Please try again.');
-    // Domain error — show on field, not toast
-    if (msg.toLowerCase().includes('email addresses are permitted') || msg.toLowerCase().includes('@')) {
+    if (msg.toLowerCase().includes('email addresses are permitted')) {
       authHideToast();
       authShowFieldError('email-error', 'email-error-msg', msg);
       document.getElementById('auth-email').classList.add('is-error');
+    } else if (msg.toLowerCase().includes('password must be at least')) {
+      authHideToast();
+      authShowFieldError('password-error', 'password-error-msg', msg);
     } else {
+      // Genuinely ambiguous errors stay in the toast — sign-in credential
+      // failures ("wrong email or password") can't be attributed to one
+      // specific field by design (Supabase deliberately doesn't say which
+      // one was wrong), and network/unexpected failures have no field to
+      // attach to either.
       authShowToast('error', 'ti-alert-circle', msg);
     }
   }
+}
+
+// ── v8.101: existing user creating a second company via the signup form ──
+// Triggered only when authSignUp() fails with "already registered" and a
+// valid, non-empty company name was entered. Verifies the typed password
+// actually belongs to this account before offering to create anything —
+// proves identity rather than trusting the typed email alone. Does not
+// touch or update the existing account's display name; this is purely
+// about attaching a new company to an identity that already exists.
+async function _tryExistingUserSecondCompany(email, password, companyName) {
+  authShowToast('loading', 'ti-loader-2', 'Checking your account…');
+  var user;
+  try {
+    await authSignIn(email, password);
+    user = await authGetUser();
+  } catch(signInErr) {
+    authSetLoading(false);
+    // Surface whatever authSignIn() actually threw ("wrong password",
+    // "email not confirmed", etc.) rather than assuming it's always a
+    // credential mismatch — prefixed with context since arriving here
+    // started from a signup attempt, not the sign-in form, so the bare
+    // message alone could read as confusing without it.
+    var signInMsg = (typeof signInErr === 'string') ? signInErr : (signInErr.message || 'Could not verify this account.');
+    throw 'An account with this email already exists. ' + signInMsg;
+  }
+
+  authHideToast();
+  authSetLoading(false);
+
+  // Explicitly hide the collision warning before this state shows — per
+  // adversarial review, without this the "company already exists" warning
+  // and this confirmation could both be visible stacked on screen at once
+  // if someone clicked through the collision warning right before hitting
+  // "already registered." Real gap in the original design, not cosmetic.
+  document.getElementById('company-warning').style.display = 'none';
+
+  var firstName = (user && user.displayName) ? user.displayName.split(' ')[0] : 'there';
+  authShowToast('info', 'ti-info-circle', 'Welcome back, ' + firstName + ' — you already have an account.');
+
+  // The two-button row REPLACES the single CTA entirely, not adds to it —
+  // per the confirmed wireframe, there is never more than one CTA row
+  // visible at a time in this state.
+  document.getElementById('auth-cta').style.display = 'none';
+  document.getElementById('existing-user-cta-row').style.display = 'flex';
+
+  document.getElementById('existing-user-create-btn').onclick = function() {
+    (async function() {
+      document.getElementById('existing-user-cta-row').style.display = 'none';
+      authSetLoading(true);
+      authShowToast('loading', 'ti-loader-2', 'Creating your company…');
+      try {
+        await authCreateCompany(companyName);
+        authShowToast('success', 'ti-check', 'Company created. Redirecting…');
+        setTimeout(function() { window.location.href = 'index.html'; }, 800);
+      } catch(createErr) {
+        authSetLoading(false);
+        document.getElementById('existing-user-cta-row').style.display = 'flex';
+        var cmsg = (typeof createErr === 'string') ? createErr : (createErr.message || 'Could not create company. Please try again.');
+        authShowToast('error', 'ti-alert-circle', cmsg);
+      }
+    })();
+  };
+
+  document.getElementById('existing-user-signin-btn').onclick = function() {
+    // "Sign In" — per adversarial review, this shouldn't dump the person
+    // back onto a half-filled signup form. Their password is already
+    // verified correct at this point; complete a normal sign-in instead of
+    // throwing that verification away. Covers the likely more-common real
+    // case this flow could accidentally trigger: someone who meant to sign
+    // in, landed on Create Account by mistake, and typed something into
+    // Company Name out of habit.
+    authShowToast('success', 'ti-check', 'Signed in. Redirecting…');
+    setTimeout(function() { window.location.href = 'index.html'; }, 800);
+  };
 }
 
 // ── Forgot password ──
@@ -267,6 +579,109 @@ function authClearFieldErrors() {
   document.getElementById('email-error').style.display = 'none';
   document.getElementById('email-error-msg').textContent = '';
   document.getElementById('auth-email').classList.remove('is-error');
+  document.getElementById('password-error').style.display = 'none';
+  document.getElementById('password-error-msg').textContent = '';
+  document.getElementById('name-error').style.display = 'none';
+  document.getElementById('name-error-msg').textContent = '';
+  document.getElementById('company-error').style.display = 'none';
+  document.getElementById('company-error-msg').textContent = '';
+  // Note: company-warning is NOT cleared here — it carries state across a
+  // submit click by design (the two-click "proceed anyway" pattern) rather
+  // than being a validation failure that should reset before every attempt.
+}
+
+// ── Set Password screen (Phase 1, fields added v8.112) — invite/recovery completion ──
+function _showSetPasswordScreen() {
+  document.querySelector('.auth-toggle').style.display = 'none';
+  document.getElementById('auth-form-normal').style.display = 'none';
+  document.getElementById('set-password-form').style.display = '';
+  document.getElementById('auth-title').textContent = 'Set Your Password';
+  document.getElementById('auth-sub').textContent = 'Create a password to finish joining.';
+
+  // Display Name stays disabled until this resolves — the field is now
+  // editable, so an unconditional overwrite after the person has already
+  // started typing would silently clobber their input. Email/Company are
+  // read-only either way, no such risk for those two.
+  var nameField = document.getElementById('set-pw-name');
+  var emailValueEl = document.getElementById('set-pw-email-value');
+  var companyValueEl = document.getElementById('set-pw-company-value');
+
+  (async function() {
+    try {
+      var client = authInit();
+      var { data } = await client.auth.getUser();
+      var user = data && data.user;
+      if (!user) { nameField.disabled = false; return; }
+
+      emailValueEl.textContent = user.email || '—';
+
+      var existingName = (user.user_metadata && user.user_metadata.display_name) || '';
+      nameField.value = existingName;
+
+      var { data: rows } = await client
+        .from('mt_users_companies')
+        .select('company_id, mt_companies(name)')
+        .eq('user_id', user.id)
+        .limit(1);
+      if (rows && rows.length && rows[0].mt_companies && rows[0].mt_companies.name) {
+        companyValueEl.textContent = rows[0].mt_companies.name;
+      } else {
+        companyValueEl.textContent = '—';
+      }
+    } catch(e) {
+      // Non-critical — fields keep their "—" fallback, name field still enables below.
+    } finally {
+      nameField.disabled = false;
+    }
+  })();
+}
+
+function _setPwToast(type, iconClass, msg) {
+  var toast = document.getElementById('set-pw-toast');
+  var icon  = document.getElementById('set-pw-toast-icon');
+  var text  = document.getElementById('set-pw-toast-msg');
+  toast.className = 'auth-toast visible toast-' + type;
+  icon.className  = 'ti ' + iconClass;
+  text.textContent = msg;
+}
+
+async function authSubmitSetPassword() {
+  var name = document.getElementById('set-pw-name').value.trim();
+  var pw = document.getElementById('set-pw-new').value;
+  var pwConfirm = document.getElementById('set-pw-confirm').value;
+
+  if (!name) { _setPwToast('error', 'ti-alert-circle', 'Enter your name.'); return; }
+  if (!pw || pw.length < 8) { _setPwToast('error', 'ti-alert-circle', 'Password must be at least 8 characters.'); return; }
+  if (pw !== pwConfirm) { _setPwToast('error', 'ti-alert-circle', 'Passwords do not match.'); return; }
+
+  var btn = document.getElementById('set-pw-cta');
+  btn.disabled = true;
+  _setPwToast('loading', 'ti-loader-2', 'Setting your password…');
+
+  try {
+    var client = authInit();
+    if (!client) throw 'Auth client not initialised.';
+
+    // Fetch current metadata first and spread it into the update, rather
+    // than assuming updateUser() either merges or replaces user_metadata —
+    // that's undocumented, version-dependent SDK behavior this code
+    // shouldn't need to know. Spreading existing values first is correct
+    // regardless of which semantics Supabase actually uses.
+    var { data: userData } = await client.auth.getUser();
+    var existingMeta = (userData && userData.user && userData.user.user_metadata) || {};
+
+    const { error } = await client.auth.updateUser({
+      password: pw,
+      data: Object.assign({}, existingMeta, { display_name: name })
+    });
+    if (error) throw error.message || 'Could not set password. Please try again.';
+    _setPwToast('success', 'ti-check', 'Password set. Redirecting…');
+    setTimeout(function() { window.location.href = 'index.html'; }, 800);
+  } catch(err) {
+    btn.disabled = false;
+    var msg = (typeof err === 'string') ? err : (err.message || 'Something went wrong. Please try again.');
+    _setPwToast('error', 'ti-alert-circle', msg);
+  }
 }
 </script>
 

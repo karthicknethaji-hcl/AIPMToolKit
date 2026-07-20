@@ -1,5 +1,7 @@
 # Project Map — AI PM Toolkit
 
+**Purpose:** This file exists so that a request touching one feature area only requires reading the 1–3 files this map points to — not the whole codebase. Treat every entry as a targeting aid: precise enough to avoid opening unrelated files, and no more verbose than that job requires. Narrative history (why a fix was made across several past versions) belongs in `CHANGELOG.md`; keep entries here to current-state facts and only the "why" detail that changes where to look or what to avoid touching.
+
 ## File responsibilities
 
 ### Entry point
@@ -25,7 +27,11 @@
 `netlify/functions/anthropic-proxy.js` — serverless proxy: receives browser requests, forwards to Anthropic server-side with user key in Authorization header. Fixes CORS for org-managed API keys. BYOK: no env variables needed.
 
 ### Render.com proxy backend
-`proxy/server.js` — Express proxy backend deployed on Render.com. POST /api/anthropic endpoint. CORS locked to productdiagnostics.netlify.app. Rate limit 20 req/min per IP. Deployed separately from the Netlify frontend — do NOT modify without testing on Render.
+`proxy/server.js` — Express proxy backend deployed on Render.com. POST /api/anthropic endpoint. CORS locked to productdiagnostics.netlify.app. Rate limit 20 req/min per IP. Deployed separately from the Netlify frontend — do NOT modify without testing on Render. Auth: `requireAuthStrict` (JWT-required, no local-dev bypass) + `requireCompanyAdmin`, mounted on `/api/team/*` — seven admin-only routes (list/invite/set-role/disable/enable/delete/resend/revoke), all service-role-keyed via `supabaseAdmin`, scoped by both `company_id` and target `user_id` on every query. Role-change/disable/delete admin-count safety is enforced via three Postgres RPCs (`team_set_role_safe`, `team_disable_safe`, `team_delete_member_safe` — see `phase4-rpcs.sql`), not in-process logic — closes a concurrency gap a plain application-level count-then-update can't close. `/api/anthropic` uses `requireAuthStrict` plus `requireActiveCompanyMember` (calls the shared `is_active_company_member()` RPC, see `v8113-migrations.sql`) — this is the highest-frequency endpoint in the app. JWT verification includes explicit `issuer`/`audience` checks.
+
+`package.json` (site root) — Netlify Functions dependencies (`jsonwebtoken`, `jwks-rsa`, `@supabase/supabase-js`). Must live here, not nested under `netlify/functions/` — Netlify's build only bundles function dependencies declared at the site root.
+
+`netlify/functions/anthropic-proxy.js` — the ACTUAL hosted production path for `/api/anthropic` (confirmed via `netlify.toml`'s rewrite rule — every hosted deployment, dev and prod, routes here, not to `proxy/server.js`). Does real JWT verification (JWKS, ES256/RS256, issuer + audience) plus the same `is_active_company_member()` RPC check as `server.js`'s equivalent middleware — single canonical source of authorization truth so the two separate runtimes can't drift apart on what "active member" means. Anthropic call timeout is 48s, within Netlify's 60s hard limit.
 `proxy/package.json` — proxy dependencies: express, cors, express-rate-limit. Node >=18.
 `proxy/README.md` — non-technical Render.com deployment guide with troubleshooting table.
 
@@ -44,7 +50,7 @@
 - Market Intelligence: `miData`, `miGenerated`, `miProductMode`, `miCapabilities`, `miFeatureCache`
 - PI Planning: `piMode`, `piFirstBuilt`, `piInputs`, `piPlan`, `piStoryPool`, `piSquads`, `piScVersion`, `piDdPanelOpen`, `piDdPanelMetricKey`
 
-`scripts/utils.js` — `e()` HTML escape, `showToast()`, `showConfirm()`, `trapFocus()`, shared helpers
+`scripts/utils.js` — `e()` HTML escape, `showToast()`, `showConfirm()`, `trapFocus()`, shared helpers. `_uiRowMenuToggle()`/`_uiRowMenuClose()` — content-agnostic dropdown-menu mechanics (open/position/outside-click/Escape/single-open-at-a-time), used by Team Management's row-action menu and the session-card 3-dot menu. `ejs()` — JS-string-escape helper, distinct from `e()`'s HTML-escape: `e()` alone is unsafe when a value is spliced into an inline `onclick` JS string literal — see `home.js`'s `_homeSessMenuAction()` for the preferred fix, which avoids this class of bug entirely by moving off inline `onclick` string-splicing. `showConfirm()` has an optional 8th param `secondAction` ({label, bg, color, borderColor, onClick}) — renders a third button between Cancel and the primary confirm, used by Team Management's shared-session delete modal (see `team-management.js`).
 
 `scripts/prompts.js` — ALL AI prompt builders. Helper: `_spRange(mn,mx)` — returns "exactly N" when min===max, otherwise "N-M". Used in all generation count instructions to handle boundary cases cleanly.
 - `buildTreePrompt()` — KPI tree (AI-generated mode)
@@ -71,19 +77,56 @@
 - **Controls:** `spStep(id,d,mn,mx)` — stepper increment/decrement; `spSeg(k)` — velocity segmented control; `spTogRow(k)` — toggle rows; `spRefreshKeyStatus()` — updates key status pill from `checkKey()`
 - **Internal builders:** `_spTog()`, `_spStepper()`, `_spRow()`, `_spModRow()`, `_spSubLbl()`, `_spNavItem()`, `_spTitle()`, `_spDesc()`, `_spTabLabel()`
 - **Constants:** `_spDefaults3`, `_spDefaults4`, `_spModels` (model dropdown options), `_spTogStates` (toggle state map)
+- **Section 6 (Team Management):** `spBuildHTML()` leaves `#sp-p6` empty; `spRender()`/`spNav(6)` call `tmLoad()` (in `scripts/team-management.js`) to fetch and render live.
+- **Role model (v9.09):** `currentUserRole` (main.js) is `'admin' | 'member' | 'readonly' | null`. Internal string values unchanged from v9.08 for the first two — `'member'` displays as "Power User" (renamed from "Regular User"), no behavior change. `_spIsAdmin()` and `_spIsReadOnly()` are the two permission helpers — `readonly` gets identical Settings access to `'member'` (Power User) by design, so `_spIsReadOnly()` is used OUTSIDE Settings only (Home launch-block, `canEditSession()`), not for any Settings-section gating.
 
-`scripts/home.js` — Home tab (Tab Zero). Session launcher. v7.57+.
+`scripts/team-management.js` — Team Management (Settings Section 6, admin-only).
+- **Load + render:** `tmLoad()`, `tmRender()`, `_tmBuildHTML()`, `_tmRowHTML()`, `_tmStatusBadge()`, `_tmRoleBadge()`
+- **Proxy calls:** `_tmCall(path, body)` — shared POST helper, `X-Auth-Token` + active company id, mirrors `auth.js`'s `authCheckCompanyName()` local/hosted URL pattern via `_tmProxyBase()`
+- **Row actions:** `tmToggleRowMenu()` (uses `_uiRowMenuToggle()` from `utils.js`), `tmSetRole()`, `tmDisable()`, `tmEnable()`, `tmStartDelete()`/`_tmExecuteDelete()`/`_tmShowSharedSessionChoice()`, `tmResend()`/`_tmShowInviteLink()`/`_tmCopyLink()`, `tmRevoke()`. `_tmShowSharedSessionChoice()` calls `showConfirm()`'s `secondAction` param. Only two resolutions offered — Reassign and (for the departed-member case) nothing else, since Retain would leave session ownership pointed at a departed member with zero active membership. `_tmExecuteDelete()` shows differentiated toast copy per resolution, using the real affected-row count the server echoes back (see `server.js`'s `/api/team/delete` execute branch, which `.select()`s the mutating query).
+- **Invite modal:** `tmShowInviteModal()`, `_tmSelectInviteRole()`, `tmSubmitInvite()`
+- No direct Supabase table access from this file at all — every read/write to `mt_users_companies`/`mt_sessions` for Team Management goes through `/api/team/*` on the proxy, since admin actions here routinely touch other users' rows, which RLS deliberately doesn't allow client-side.
+
+`styles/20-team-management.css` — Team Management table, badges, row-action menu. Loaded by `index.html` only (Settings-page context).
+
+`scripts/home.js` — Home tab (Tab Zero). Session launcher.
 - **Init:** `homeInit()`, `homeOnTabEnter()`
 - **Product selector:** `homeOnProductChange()`, `_homeRenderProductSelector()`
 - **Preview card:** `homeRenderPreviewCard()`, `homePPCardToggle()`
 - **Selectors:** `homeSetApproach()`, `homeSetMode()`
-- **Manual input (capability list upload, v7.79):** `homeHandleFileUpload()`, `_homeParseXLSX()`, `_homeParseCSV()`, `_homeFinalizeCapList()`, `_homeRenderParseResult()`, `_homeRemoveCapList()`, `_homeShowParseError()`
+- **Manual input (capability list upload):** `homeHandleFileUpload()`, `_homeParseXLSX()`, `_homeParseCSV()`, `_homeFinalizeCapList()`, `_homeRenderParseResult()`, `_homeRemoveCapList()`, `_homeShowParseError()`
 - **Launch:** `homeLaunch()`, `_homeDoLaunch()`, `homeClearSession()`
 - **Demo:** `homeLoadDemo()`, `_homeDoLoadDemo()`
+- **Session card sharing:** `homeSessionToggleShare()` (session-store.js) — Share/Unshare, mirrors `sessionStoreRename()`'s local-write-then-async-DB-update pattern; v9.08 also re-derives `share_mode` from `appSettings.defaultShareMode` on every false→true transition. `_homeSessMetaLine()` — three-state meta line (private / shared-idle-by-name / shared-generating-now), with a bounded age check on `activeAt` to prevent a future/skewed timestamp from showing "generating now" indefinitely. `_homeSessMenuHtml()`/`homeToggleSessMenu()`/`_homeSessMenuAction()` — 3-dot menu content and delegated click handler; deliberately does NOT use inline `onclick` with spliced string arguments, since `e()` HTML-escapes but doesn't JS-string-escape — reads session id/name/isShared back off `data-*` attributes instead, never splicing untrusted data into a JS string literal at all. `homeStartRenameFromMenu()` — hands off to `homeSessionRenameInline()`. `_homeRenderSessionCard()`/`_homeRenderPinnedBanner()` — session name is line 1, product name+type is line 2, inline shared-team icon when `isShared`.
+- **v9.08 — `canEditSession()`** (session-store.js): single source of truth for "can the current user mutate the active session," used across all 7 canvas files at every mutation entry point (~29 call sites) plus as a central defense-in-depth guard inside `sessionStoreSave()` itself. Reads `_activeSessionOwnerId`/`_activeSessionIsShared`/`_activeSessionShareMode` — the last of these is a new global, captured alongside the other two at both existing capture points (`sessionStoreCreate`, `sessionStoreRestore`), defaults to `'view'` (fail-closed, not `'edit'`), cleared in `homeClearSession()`. Server-side enforcement (the actual security boundary) lives in the `save_shared_session_content` and `acquire_generation_lock` Postgres RPCs, both of which independently check `share_mode` — `canEditSession()` on the client is a UX layer on top of that, not a substitute for it.
+- **v9.09 — `canEditSession()` now checks company role FIRST, before ownership:** closes a gap found in adversarial review — a user demoted to `readonly` who still owned older sessions previously retained full edit rights via the ownership branch, which never checked role at all. Fails closed on any unrecognized/null/undefined role, not just an exact `'readonly'` match. This also means `readonly` now overrides even an `'edit'`-mode session share (confirmed decision — role wins over share mode, a deliberate change from v9.08's original share-mode-only logic). Server-side, `save_shared_session_content` and `acquire_generation_lock` (both SECURITY DEFINER, both bypass RLS) now independently check for active, non-readonly company membership — RLS changes to `mt_sessions` alone don't reach these RPCs. Three `mt_sessions` RLS policies (INSERT/UPDATE/DELETE) also gained the same membership+role check, closing the same demoted-owner gap at the database layer.
+- **v9.08.02 — view-only visual completion pass:** the original v9.08 build gated handlers consistently but left many visual affordances still looking interactive. See the new standing rule in `AI_EDITING_RULES.md` ("View-only / permission-gated UI: hidden vs. disabled") for the governing pattern. Genuinely new gates added in this pass (not just visual fixes) that were missing from the original 29-entry inventory: `kpi-tree.js`'s `editStage()`/`deleteStage()` and the `regen()`/`toggleRefineBar()` tree-refine flow; `capability-canvas.js`'s `ccEditFeatName()`/`ccEditFeatWhy()` (inline feature edit, never gated at all) and `ccToggleFeatPanel()` (the feature-selection checkbox, including the specific already-sent-checkbox-triggers-removal bug reported in testing); `feature-canvas.js`'s `scShowEditFeatModal()`, `scToggleSelect()`, and `scTogglePiSelect()`; `story-canvas-new.js`'s `newScShowRemoveConfirm()`/`newScDoRemoveStory()` (a third, distinct removal path from the card-level delete already gated); `pi-planning.js`'s `piShowRemoveConfirm()` and the separate backlog-panel (`piOpenBacklogPanel`) points/sprint/notes fields; and all of `prototype-canvas.js` (`pcGenerate()`, `pcHandleScreenshotUpload()`, `pcRemoveScreenshot()`, `pcAddGapToContext()`) — a full screen absent from the original inventory. Also fixed: Story Canvas's DoR toggle used `readonly` on a checkbox, which has no effect on that input type — corrected to `disabled`. Also found: Feature Canvas's "Add Feature" button, its refine bar, and its "Send to Story Canvas" button are static HTML in `index.html`, not JS-rendered — these needed a runtime `id`-based sync (added to `scUpdateActionBar()`) rather than a template conditional, since a template fix has no effect on markup a template never generated.
+
+`scripts/live-sync.js` — Live multi-user sync. See `multi-user-rbac-spec.md` §12 for the full design history.
+- **CC (per-item):** `_lsApplyCCEvents()` — exact-name-match capability/feature apply.
+- **mm/pi/mi/la (wholesale):** `_lsApplyWholesaleCanvas(canvas, freshSnapshot)` — replaces the whole tracked structure for that canvas (`gData`/`piPlan`+`piInputs`/`miData`+`miCapabilities`+`miGenerated`/`productLeakAnalysis`+`diagnosticSessions`+`activeDiagnosticId`). Always confirmed before applying (`_lsAskConfirm()`) — no cheap way to detect partial local edits at this scope, unlike CC's single-field check. `_lsCloseKnownPanelForCanvas()` blanket-closes PI's right panel / Diagnostics' evidence drawer on apply. `_lsRerenderCanvas()` calls `renderMM()`/`piRenderBoard()`+`piRenderLeftPanel()`/`miRenderScreen()`/`laRenderAnalysis()`, only when that tab is currently visible.
+- **Confirm gate is per-section** (`_lsBannerRefreshClick()`) — declining one canvas's wholesale confirm never blocks applying an unrelated one in the same batch.
+- **Cursor is per-canvas** (`_lsGetSeenCursor`/`_lsSetSeenCursor(sessionId, canvas, ...)`, `_LS_ALL_CANVASES`) — a declined section's event can't be hidden by a later, unrelated section's applied event advancing a shared cursor past it.
+- **Rename-sync** — added to `_lsWatchRunOneCycle()` directly, not the event-log system. Checks `mt_sessions.name` on the same poll that checks visibility; kickout dominates; skips if a rename input is focused; updates header + local cache together.
+- Emits from: `ccGenerateOne()`/`ccGenerateAll()`/`_ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE()` (cc), `generateConfirmed()` (mm, kpi-tree.js), `piGenerate()` (pi, pi-planning.js), `miGenerate()` (mi, market-intelligence.js), `_dvRunAnalysis()` (la, diagnostic-view.js).
+- **Metrics Definition is explicitly excluded** — `generateDD()`'s result was never persisted to any tracked global (confirmed by reading it directly), only a boolean flag; a real, separate pre-existing gap, not a live-sync scope decision.
+- **Content event emission:** `_lsEmitContentEvent(sessionId, canvas, eventType, metricKey, capName)` — inserts one row into `mt_session_content_events`. Insert-only, never reads session content, never calls `sessionStoreSave()`.
+- **3a, Home poll:** `_lsHomePollStart()`/`Stop()` — company-scoped Realtime + baseline 15s interval, single-flight with a sequence token, metadata-only, never touches the active session or its snapshot. `_lsValidateHomeRow()`/`_lsMergeHomeMetaEntry()` — strict allowlist merge, no blank-defaulting. Started in `home.js`'s `homeInit()`/`homeOnTabEnter()`, stopped in `api.js`'s `switchTab()`.
+- **3b, Resume pre-fetch:** `_lsResumePreFetch(sessionId)` — called from `session-store.js`'s (now async) `sessionStoreRestore()` for cached-shared sessions. Cursor fetched before the snapshot, deliberately.
+- **3c, In-session watch:** `_lsSessionWatchStart(sessionId, seedCursorEventId)`/`Stop()` — single-flight ~10s interval, sequence-token-guarded, checks row-visibility (kickout signal, two consecutive empty results required) and new content events together. Cursor stored in `sessionStorage` (per-tab, not shared across tabs — a `localStorage` cursor was found during design review to risk one tab suppressing another's banner). Started from `sessionStoreRestore()` and `_homeDoLaunch()` (inert at creation), stopped in `homeClearSession()` (sacred-function edit, separately signed off).
+- **3d, Content banner + targeted refresh:** `_lsShowContentBanner()`/`_lsHideContentBanner()` — a dedicated persistent element (`#ls-content-banner`, styled in `01-base.css`), not the shared single-slot `showToast()`. `_lsBannerRefreshClick()` — fetches fresh content, applies only via `_lsApplyTargetedEvents()` (exactly-one-name-match required on both local and fetched sides, normalized the same way this app's own capability-dedup logic already does), `_lsHasOpenEditForCapability()` gates a warn-first confirm.
+- **3e, Unshare kickout:** `_lsTriggerKickout(sessionId)` — best-effort name attribution (RLS has already hidden the row by this point), stops the watch first, then toast + `homeClearSession()` + `switchTab('home')`.
 
 `scripts/left-panel.js` — product input form, segment buttons, `applyFeats()`, `togglePanel()`. `toggleSettings()` and `saveSettings()` delegate to `openSettingsPage()` / `settingsPageSave()` in settings-page.js. `applyFeats()` reads from `appSettings{}` (not DOM checkboxes — fly-out panel is retired). `updateFeatLock()` body retired in v6.75 — shell kept.
 
 `scripts/kpi-tree.js` — KPI tree generation, `renderMM()`, `STAGE_DEFS`, always-4-stage guarantee, `renderDiagnosticActionBar()`, `countAllMetrics()`, `_mmReconcileManualCaps()` (v7.83 - reconciles AI skeleton response with sessionContext.manualList for Capability-Based + Manual mode)
+
+`scripts/pi-bucket.js` — Custom Value Stage bucket management (v9.05). Bridges `capStore['pi||'+capName]` entries (manually-added capabilities tagged to "Custom Process Area"/"Custom Metric" in Capability Canvas) to Discovery Map's `gData.stages[]`, so they appear as a "Custom Value Stage" (internal `id:'pi'`, default `label:'Custom Value Stage'` as of v9.06.01 — user-renamable, see `getPiStageLabel()`) alongside AI-generated stages. `capStore`'s key format (`'pi||'+capName`) is unchanged — this file adds a `bucketId` field to each entry's value, additively; `bucketId` is the sole identity for grouping (metricName is display-only). Multiple independent buckets can coexist under the pi stage.
+- **ID generation:** `makeBucketId()` (crypto.randomUUID with fallback)
+- **Ownership check:** `isPiCapEntry(key,entry)` — identity-based, replaces label-substring matching for pi-stage cascade/cleanup logic
+- **Passive normalizer:** `syncPiStageFromCapStore(gData,capStore)` — derives/heals the pi stage's `l1_metrics[]` from whatever bucketIds currently exist in capStore; never invents empty buckets; self-enforcing deletion (no tombstone needed); backfills legacy pre-v9.05 entries into a deterministic `PI_BUCKET_LEGACY_ID`. Called from `session-store.js` (session load), `live-sync.js` (receiver-side, after CC events apply), and every `capability-canvas.js` call site that writes a `pi||` entry.
+- **Active resolver:** `getOrCreateCurrentDefaultPiBucket(gData,capStore)` — called only on explicit user "add capability" actions; finds-or-creates the current default bucket
+- **Dedicated edit/delete (NOT the general KPI-linked capability-rename path):** `piBucketRename(stageIdx,l1Idx,newName,newDesc)`, `piBucketDelete(bucketId)`
 
 `scripts/metrics-definition.js` — Metrics Definition tab, `generateDD()`, `renderDDTable()`
 
@@ -101,16 +144,16 @@
 - **Feature selection:** `ccToggleFeat()`, `ccSelectAll()`, `ccToggleCapSelect()`, `ccGetFeatSelState()`, `ccUpdateCardChk()`, `ccSelectedCapIds` (Set), `ccClearCapSelection()`, `ccUpdateActionBar()`, `ccAllCapsSelectCap()`
 - **Send to SC:** `ccSendToStoryCanvas()`
 - **Capability CRUD:** `ccShowAddCapModal()`, `ccAddCapValidate()`, `ccDoAddCap()`, `ccShowEditCapModal()`, `ccEditCapValidate()`, `ccDoEditCap()`, `ccRemoveCapability()`, `ccDoRemoveCapability()`
-- **DD panel (metric dictionary, right side):** `ccOpenDDPanel()`, `ccRenderDDPanel()`, `ccNavDDPanel()`, `ccCloseDDPanel()`, `ccDDDownload()`, `ccDDGenerateForMetric()`, `ccDDGenerateAll()`
+- **DD panel (metric dictionary, right side):** `ccOpenDDPanel()`, `ccRenderDDPanel()`, `ccNavDDPanel()`, `ccCloseDDPanel()`, `ccDDDownload()`, `ccDDGenerateForMetric()`, `ccDDGenerateAll()`. **Note on `ccDDDownload()` (flagged v9.08.03):** this function is not purely read-only — it contains `if(!ddGenerated){ await generateDD(); }` before downloading, so it will trigger generation as a side effect if called when the dictionary hasn't been generated yet. Its one current call site (the "Download .xlsx" button in `ccRenderDDPanel()`) only renders when `ddGenerated` is already `true`, so this fallback path is unreachable through today's UI — but it is NOT gated by `canEditSession()` (deliberately, since export must always remain available regardless of edit mode) and was left that way intentionally rather than fixed, to avoid risking a false-positive block on legitimate export. Any future new call site for `ccDDDownload()` must either preserve the `ddGenerated` precondition or add its own explicit permission check — do not assume this function is safe to call unconditionally just because its current button is.
 - **Helpers:** `ccMetricKey()`, `ccStageColor()`, `ccStageBg()`, `ccStageText()`, `ccGetAllL1Metrics()`, `ccCountGenerated()`, `ccUpdateTabBadge()`, `ccGetTotalCaps()`, `ccGetTotalFeats()`, `ccFindMetricInGData()`
 - **Export:** `ccToggleExportDrop()`, `ccExportFull()`, `ccExportFinalised()`, `ccDownloadDOCX()`, `ccBuildDOCX()`
 - **Exit:** `ccExitNavigator()`
 
 `scripts/pi-planning.js` — PI Canvas tab. Receives stories from Story Canvas via `scPushStoriesToPI()`.
 - **Tab lifecycle:** `piOnTabEnter()`
-- **Staleness detection:** `piCheckStaleness()`, `piComputeHash()`, `piShowStaleBanner()`, `piHideStaleBanner()`, `piSyncNewStories()`
+- **Staleness detection:** `piCheckStaleness()`, `piComputeHash()`, `piShowStaleBanner()`, `piHideStaleBanner()` (`piSyncNewStories()` still exists in the file but has zero call sites — confirmed dead code during v9.08's build, not wired into any execution path; do not assume it runs on tab entry)
 - **Left panel:** `piRenderLeftPanel()`, `piRenderSquadRows()`, `piGetSquads()`, `piCalcCapacity()`, `piAddSquad()`, `piRemoveSquad()`, `piUpdateSquad()`, `piToggleLeftPanel()`
-- **Previous PI upload:** `piHandlePrevPIFile()`, `piParsePrevPI()`
+- **Previous PI upload:** confirmed removed/decommissioned during v9.08's build — `piHandlePrevPIFile()`/`piParsePrevPI()` do not exist anywhere in the codebase (zero grep matches); this line previously listed them incorrectly
 - **Generation:** `piGenerate()` (async), `piConfirmRegenerate()`, `piRegenerate()`, `piRenderEmpty()`
 - **Board render:** `piRenderBoard()`, `piRenderStoryCard()`, `piComputeSprints()`
 - **Story data:** `piGetSelectedStories()`, `piGetAllStories()`, `piGetStoriesForSprint()`, `piGetBacklogStories()`, `piFindStory()`
@@ -143,7 +186,7 @@
 
 `scripts/export-docx.js` — `scDownloadStoriesDOCX()`, `scBuildDOCX()` — Story Canvas DOCX download (hierarchical: Stage › Metric › Capability › Feature › Stories)
 
-`scripts/prototype-canvas.js` — Prototype Canvas module (v8.79). Owns the Prototype view inside Story Canvas when newScProtoView===true. Access variant fields via pcGetActiveVariant(featId).
+`scripts/prototype-canvas.js` — Prototype Canvas module (v8.79). Owns the Prototype view inside Story Canvas when newScProtoView===true. Access variant fields via pcGetActiveVariant(featId). **v9.08.02:** this entire file had no `canEditSession()` awareness until this pass — `pcGenerate()` (the single choke-point for all 5 Generate/Regenerate render sites), `pcHandleScreenshotUpload()`, `pcRemoveScreenshot()`, and `pcAddGapToContext()` are now gated, plus the corresponding visual hide/disable at each render site (empty-state upload zone + generate button, stale/partial banner regenerate buttons, wireframe-unavailable regenerate button, refine bar).
 - **Schema:** protoStore[featId] = { featureId, activeVariantId:'v1', screenshotFile, screenshotDataUrl, screenshotInherited, inheritedFromFeatId, additionalContext, variants:{ v1:{ generated, stale, generating, generatedAt, inputSignature, wireframeBlobUrl, wireframeHTML, designBrief, coverageData, externalPrompt } } }
 - **Core helpers:** pcGetActiveVariant(featId), pcGetLiveFeature(featId), pcIsVisibleNavFeature(featId), pcIsNonUIFeature(featId)
 - **Lifecycle:** pcMarkStale(featId) — data-only setter; pcDeleteProto(featId) — revokes blob URLs; pcMigrateProtoFeatureId(oldId,newId) — move semantics with collision guard
@@ -159,7 +202,7 @@
 
 `scripts/export-pi-docx.js` — `buildAndDownloadPIDocx()` — PI Canvas DOCX download (called by `piExportDocx()`)
 
-`scripts/api.js` — `switchTab()`, `revealAndSwitchTab()`, `callAPI()`, `parseJSON()`, `isValidTree()`, `showLoad()`, `hideLoad()`. `switchTab()` manages all 6 tabs (mm, cc, pi, mi, la, sc): tab button active states, content area show/hide, left-panel visibility, tab entry hooks (`ccOnTabEnter`, `piOnTabEnter`, `miRenderEmpty`/`miRenderScreen`, `laRenderAnalysis`, `scRenderCapNav`/`scRenderCanvas`). `callAPI()` routes to `/api/anthropic` proxy on Netlify, falls back to direct Anthropic call locally. Model string reads from `appSettings.model` with fallback to `claude-sonnet-4-6`.
+`scripts/api.js` — `switchTab()`, `revealAndSwitchTab()`, `callAPI()`, `parseJSON()`, `isValidTree()`, `showLoad()`, `hideLoad()`. `switchTab()` manages all 6 tabs (mm, cc, pi, mi, la, sc): tab button active states, content area show/hide, left-panel visibility, tab entry hooks (`ccOnTabEnter`, `piOnTabEnter`, `miRenderEmpty`/`miRenderScreen`, `laRenderAnalysis`, `scRenderCapNav`/`scRenderCanvas`). `callAPI()` routes to `/api/anthropic` proxy on Netlify, falls back to direct Anthropic call locally. Model string reads from `appSettings.model` with fallback to `claude-sonnet-4-6`. **Generation lock:** `withGenerationLock(fn)` — wraps a caller's ENTIRE generate→parse→apply→save workflow, not just `callAPI()` (a narrower scope releases the lock before a caller's own `sessionStoreSave()` runs). Skips locking entirely for private sessions. `_acquireGenerationLock()`/`_releaseGenerationLock()` — thin wrappers around the `acquire_generation_lock`/`release_generation_lock` Postgres RPCs (`current_app_user()`-based, defined on `mt_sessions`). `_startLockHeartbeat()` — single-flight (not raw `setInterval`) refresh loop, ~22s interval, waits for any in-flight tick before allowing release to proceed (closes a ghost-lock race). `_localGenerationLocks` (Set) — same-tab/same-browser duplicate-generation guard, claimed synchronously before the async DB acquire call starts (claiming it only after the acquire resolves reopens the same race). `_GENERATION_LOCK_HANDLE_BRAND`/`_assertGenerationLockHandle()` — a branded lock-handle marker so an inner "requires a real lock handle" function (see `capability-canvas.js`'s `ccGenerateFeaturesForCap`/`_ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE` pair) can't be silently bypassed by a future caller passing a bogus object — vanilla JS has no enforced module privacy, so this turns an accidental unlocked call into a loud, immediate error. Callers use `lock.throwIfLost()` checkpoints immediately before any save, not just after their whole workflow returns (a post-hoc-only check is too late if the save already ran). Explicitly deferred: server-side lock enforcement, live re-fetch of `is_shared` pre-acquire, operation-token-based locking, `acquire_generation_lock()`'s own access-check/update non-atomicity. **v9.08:** `acquire_generation_lock()` now also checks `share_mode` server-side (rejects a view-only collaborator's acquire attempt with `reason: 'no_access'`, distinct from `reason: 'held'`) — `withGenerationLock()`'s rejection branch has a dedicated toast for this case. `release_generation_lock()` now also clears `active_user_name` on release (previously left stale, a ghost-holder display bug found during v9.08's adversarial review).
 
 `scripts/demo-data.js` — DEMO MODE ONLY. `loadDemoData()`, `clearDemoMode()`. Do NOT open for any other task.
 
@@ -167,11 +210,22 @@
 
 `scripts/diagnostic-view.js` — `dvCreate()`, `dvDeepCloneTree()`, `dvMergeEvidenceOnRegen()`, `dvRenderView()`, `dvRenderLeftPanel()`, `dvRenderTreeArea()`, `dvOpenEvidenceDrawer()`, `dvCloseEvidenceDrawer()`, `dvSaveEvidence()`, `dvClearEvidence()`, `dvCalcEvidenceStrength()`, `dvCalcReadiness()`, `dvFlattenMetrics()`, `dvFindMetricById()`, `dvAnalyze()`, `dvShowNoEvidenceWarning()`
 
-`scripts/product-leak-analysis.js` — `laRenderAnalysis()`, `laRenderSummaryCards()`, `laRenderTable()`, `laRefreshTable()`, `laToggleExperiment()`, `laOpenDetailPanel()`, `laOpenSummaryDetail()`, `laCloseDetailPanel()`, `laRenderFilterPopover()`, `laToggleFilterPopover()`, `laRenderColPopover()`, `laToggleColPopover()`, `laSendToStoryCanvas()`, `laShowSentConfirmation()`, `laDownloadDocx()`
+`scripts/product-leak-analysis.js` — `laRenderAnalysis()`, `laRenderSummaryCards()`, `laRenderTable()`, `laRefreshTable()`, `laToggleExperiment()`, `laOpenDetailPanel()`, `laOpenSummaryDetail()`, `laCloseDetailPanel()`, `laRenderFilterPopover()`, `laToggleFilterPopover()`, `laRenderColPopover()`, `laToggleColPopover()`, `laSendToStoryCanvas()`, `laShowSentConfirmation()`, `laDownloadDocx()`, `laFindCanvasCardForExperiment()` (v9.11 — reverse lookup from an experiment to its Feature Canvas card, used by Experiment Library's live status chips)
 
 `scripts/export-diagnostic-docx.js` — `laDownloadDocx()`, `buildDiagnosticDocxHTML()`
 
-`scripts/market-intelligence.js` — `miGenerate()`, `miRenderScreen()`, `miRenderLeftPanel()`, `miRenderMarketSnapshot()`, `miRenderTrends()`, `miRenderCompetitors()`, `miRenderSWOT()`, `miRenderCapabilities()`, `miAlignCapabilities()`, `miGenerateFeatures()`, `miToggleExpansion()`, `miUpdateCheckboxCount()`, `miSendToCanvas()`, `miSendCapDirectly()`, `miUndoSend()`, `miDownloadDocx()`, `miRenderEmpty()`, `miRefreshCapSection()`, `miLoadFeatures()`, `miToggleFeature()`, `miRegenerateFeatures()`, `miShowToast()`
+`scripts/market-intelligence.js` — `miGenerate()`, `miRenderScreen()`, `miRenderLeftPanel()`, `miRenderMarketSnapshot()`, `miRenderTrends()`, `miRenderCompetitors()`, `miRenderSWOT()`, `miRenderCapabilities()`, `miRefreshCapSection()`, `miToggleCapSelect()`, `miSendToCC()`, `miRemoveFromCC()`, `miFlattenMetrics()`, `miResolveCanvasRoute()`, `miToggleExportDrop()`, `miExportCurrentView()`, `miExportFullReport()`, `miRenderEmpty()`, `miShowToast()`. (Corrected v9.08 — this line previously listed several functions with names that don't exist anywhere in the current file: `miAlignCapabilities`, `miGenerateFeatures`, `miSendToCanvas`, `miSendCapDirectly`, `miUndoSend`, `miLoadFeatures`, `miToggleFeature`, `miRegenerateFeatures`. Confirmed via full-file function listing before writing this correction.)
+
+`scripts/outcome-pulse.js` — Outcome Pulse tab (v9.10, Outcome Verification Loop feature; extended v9.11, Outcome Pulse Iteration Loop). Entry: `opRender()` (called from `switchTab('op')`). v9.11 additions: `opGetTrackedMetrics()`, `opSetMetricFilter()`, `opCountPulseExperimentsForMetric()`, `opToggleRowMenu()` (3-dot menu replacing the old "Log Result" text link), `opOpenSuggestExperimentModal()` and its supporting `_opRunSuggestExperiment()`/`_opAcceptSuggestedExperiment()` (Suggest Experiment modal), `opOpenExperimentLibrary()`/`opCloseExperimentLibrary()`/`_opRenderExperimentLibrary()` (Experiment Library read-only panel).
+- **NSM card:** `opBuildNSMCardHTML()`, `opAttachNSMHoverHandlers()`, `opOpenNSMEditOverlay()`/`opCloseNSMEditOverlay()`/`opSaveNSMEdit()` — overlay pinned via `position:absolute;inset:0` relative to `#op-nsm-wrap`, never resizes the card or its neighbor. Baseline/target lock after first save (both non-null); only `actual` stays editable thereafter. Live-sync: uses the **existing** `mm`-canvas wholesale-apply/confirm-gate mechanism — no new event type built (confirmed decision, see below).
+- **Hypothesis Health card:** `opBuildHypHealthCardHTML()` — consumes `computeHypothesisAggregates()` (feature-canvas.js), never computes its own counts.
+- **Outcome Breakdown:** `opRenderBreakdown()`, `opBuildStageGroups()` (derives stage rows from the **live** `gData.stages` array — never hard-coded to Acquisition/Activation/Engagement/Retention, since stage sets vary by industry/framework routing and are user-renameable; includes an "Unmapped" bucket), `opToggleStage()`, `opSetSignalFilter()` (single dropdown, signal-status only — no separate stage filter, since stage is already the row grouping), `opBuildStageLedgerHTML()`, `opBuildSignalBadgeHTML()`.
+- **Unified hypothesis modal:** `opOpenHypothesisModal()` — single entry point via "Log result," reached from every ledger row regardless of state. `opSetModalSignal()`, `opRecomputeModalSuggestion()`, `opSaveHypothesisModal()`. Signal pills (Aligned/Opposed/No change/Not applicable) are user-selectable with no numeric-actual gate — `computeSuggestedSignal()` only ever populates an advisory "Suggests: X" hint, never forces a value or disables a pill.
+- **PDF export:** `opDownloadReport()`, `_opLoadHtml2Canvas()`, `_opLoadJsPDF()` — new mechanism, no prior precedent in this codebase (every other export produces a structured document, not a rendered-screen capture). Reuses the same lazy-CDN-load convention as `prototype-canvas.js`'s `_pcLoadHtml2Canvas()`. Paginates by slicing the captured canvas into page-height chunks — required since Outcome Breakdown can expand to arbitrary height with multiple stage rows open.
+- **Known limitation, by explicit decision, not oversight:** bulk-uploaded features (`scConfirmFeatUpload()` in feature-canvas.js) never carry an `outcomeHypothesis` — deferred to a future release. A PM wanting hypothesis on a bulk-uploaded feature uses a follow-up manual Edit Feature pass.
+- **Known limitation, by explicit decision:** NSM edits ride on the existing `mm`-canvas wholesale-sync mechanism rather than a dedicated event type — simpler, reuses a proven path, at the cost of coarser-grained conflict resolution than a per-field sync would offer.
+
+
 
 `scripts/export-market-intel-docx.js` — `miBuildDocx()`
 
@@ -253,14 +307,14 @@
 | PI layout, board, squads, sprint config | `scripts/pi-planning.js`, `styles/14-pi-planning.css` |
 | PI tab entry | `scripts/pi-planning.js` (piOnTabEnter) |
 | PI generation (sprint assignment) | `scripts/pi-planning.js` (piGenerate), `scripts/prompts.js` (buildPIGeneratePrompt) |
-| PI stale banner, story sync | `scripts/pi-planning.js` (piCheckStaleness, piShowStaleBanner, piSyncNewStories) |
+| PI stale banner | `scripts/pi-planning.js` (piCheckStaleness, piShowStaleBanner) |
 | PI drag-and-drop, capacity | `scripts/pi-planning.js` (piDragStart, piDrop, piCheckCapacity) |
 | PI right story panel | `scripts/pi-planning.js` (piOpenRightPanel, piRenderRightPanel) |
 | PI backlog panel | `scripts/pi-planning.js` (piOpenBacklogPanel, piMoveBacklogToSprint) |
 | PI dependencies | `scripts/pi-planning.js` (piShowAddDepForm, piLinkDep, piRemoveDep) |
 | PI left panel toggle | `scripts/pi-planning.js` (piToggleLeftPanel) |
 | PI export DOCX | `scripts/pi-planning.js` (piExportDocx), `scripts/export-pi-docx.js` (buildAndDownloadPIDocx) |
-| PI prev-PI upload | `scripts/pi-planning.js` (piHandlePrevPIFile, piParsePrevPI) |
+| (Previous PI upload feature fully decommissioned — do not reference) | — |
 | **Diagnostic View** | |
 | Create diagnostic view CTA, bottom action bar | `scripts/kpi-tree.js`, `styles/11-diagnostic-view.css` |
 | Diagnostic view layout, left panel, readiness | `scripts/diagnostic-view.js`, `styles/11-diagnostic-view.css` |
@@ -270,6 +324,7 @@
 | Product leak analysis, summary cards, table | `scripts/product-leak-analysis.js`, `styles/12-product-leak-analysis.css` |
 | Experiment detail overlay, filter/column popover | `scripts/product-leak-analysis.js`, `styles/12-product-leak-analysis.css` |
 | Send to story canvas (from leak analysis) | `scripts/product-leak-analysis.js` |
+| Outcome Pulse experiment → Experiment Canvas card, live status lookup | `scripts/product-leak-analysis.js` (`laFindCanvasCardForExperiment()`) |
 | Diagnostic DOCX export | `scripts/export-diagnostic-docx.js` |
 | Product leak AI prompt | `scripts/prompts.js` (buildProductLeakPrompt) |
 | SC origin badge, left-border accent | `scripts/feature-canvas.js`, `styles/12-product-leak-analysis.css` |
@@ -285,8 +340,20 @@
 | Market Signal origin badge (Story Canvas) | `scripts/feature-canvas.js`, `styles/08-feature-canvas.css` |
 | MI demo data | `scripts/demo-data.js` — do NOT open for any other task |
 | Tab reveal/switch for mi | `scripts/api.js` (switchTab, revealAndSwitchTab) |
+| **Outcome Pulse (Outcome Verification Loop)** | |
+| Outcome Pulse tab layout, NSM card, Hypothesis Health card, Outcome Breakdown, unified modal, PDF export | `scripts/outcome-pulse.js`, `styles/21-outcome-pulse.css` |
+| Suggest Experiment (Outcome Pulse iteration loop), Experiment Library panel, metric filter, experiment-count badge | `scripts/outcome-pulse.js`, `scripts/prompts.js` (`buildOutcomePulseExperimentPrompt()`), `styles/21-outcome-pulse.css` |
+| Outcome Pulse tab entry/render | `scripts/api.js` (switchTab — `opRender()`), `scripts/left-panel.js` (applyFeats — featOutcomePulse gate) |
+| Outcome Pulse Settings toggle | `scripts/settings-page.js` (spP2, settingsPageSave), `scripts/state.js` (appSettings.featOutcomePulse) |
+| outcomeHypothesis shared helpers (clone, compute direction/signal, aggregate, normalize AI response) | `scripts/feature-canvas.js` — top of file, dedicated section above the existing FC state block |
+| outcomeHypothesis capture UI (Edit Feature, Add Feature modals) | `scripts/feature-canvas.js` (scBuildOutcomeHypothesisSectionHTML, scShowEditFeatModal, scShowAddFeatureModal, scDoEditFeat, scDoAddFeat) |
+| outcomeHypothesis carried into scCanvas | `scripts/feature-canvas.js` (scDoAddFeat, scToggleFeature/scToggleFeatureFromDrawer), `scripts/capability-canvas.js` (ccSendToStoryCanvas) |
+| outcomeHypothesis generated by AI | `scripts/prompts.js` (buildCapFeaturesPrompt), `scripts/capability-canvas.js` (both ccGenerateFeaturesForCap call sites — normalizeAIHypothesis) |
+| Story generation hypothesis context injection | `scripts/feature-canvas.js` (scBuildStoryPrompt) |
+| gData.nsm baseline/target/actual/updatedAt | `scripts/kpi-tree.js` (generateConfirmed's gData=parsed reassignment — preserved across regeneration via _prevNsmTracking snapshot) |
+| Outcome Pulse demo data | `scripts/demo-data.js` (_demoAttachOutcomeHypotheses, _demoSetNsmTracking) — do NOT open for any other task |
 
----
+
 
 ## Key cross-canvas data flows
 
@@ -310,6 +377,11 @@ capStore[metricKey] = {
   metricName: string,
   stageLabel: string,
   stageId: string,            // 'acquisition' | 'activation' | 'engagement' | 'retention' | 'pi'
+  bucketId: string,           // v9.05, 'pi' stageId entries only — identity of the Custom
+                               // Process Area/Metric this capability belongs to (see
+                               // pi-bucket.js). metricName is display-only for these entries;
+                               // bucketId is authoritative for grouping/lookup. Multiple
+                               // capStore entries with different names can share one bucketId.
   _piFirst: boolean,          // true for PI-first (path B) entries
   capabilities: [{
     name: string,
@@ -329,7 +401,7 @@ capStore[metricKey] = {
 }
 ```
 
-metricKey format: `stageId+'||'+metricName` for KPI-linked entries; `'pi||'+capName` for PI-first entries.
+metricKey format: `stageId+'||'+metricName` for KPI-linked entries; `'pi||'+capName` for PI-first entries. **Note (v9.05):** for `pi` stageId entries, the metricKey is derived from the CAPABILITY name (via `ccPIKey()`), not the bucket/process-area name — grouping by process area uses `bucketId`, never the key itself.
 
 ---
 
@@ -338,44 +410,3 @@ metricKey format: `stageId+'||'+metricName` for KPI-linked entries; `'pi||'+capN
 - `ccRenderPICapView` is the render path for PI caps — NOT `ccRenderMainContent`. Always check which render path is active before proposing PI cap fixes.
 - `sc-panel-content` requires `display:flex; flex-direction:column; flex:1` to allow child flex containers to fill height correctly (fixed v6.73).
 - `scGenerateStories` must call `scRenderLineage(firstFeat)` to preserve the traceability toggle strip during generation (fixed v6.73).
-
----
-
-## v8.58 additions
-
-### New functions in `scripts/utils.js`
-
-- `getFullProductCtx()` — full product context object for CC/FC/SC/PI/DM/MI prompt builders; supersedes `getProductCtx()` at all AI generation call sites
-- `_assertPromptCtx(ctx, fnName)` — runtime guard on changed prompt builders; throws TypeError if old positional call site remains
-- `buildDocContext(canvasType)` — assembles formatted doc context block for prompt injection; canvas-routed by docType; max 3 docs (session → product → company priority); returns '' when no docs apply
-- `_docGetText(doc)` — best available text: aiSummary → extractedText → live _homeSessionDocs in-memory
-- `_docMergeLive(doc)` — merges snapshot doc with live in-memory entry to pick up retry results
-- `_docFormatBlock(doc, text)` — formats one doc as DOCUMENT CONSTRAINTS or DOCUMENT CONTEXT block with untrusted-content framing before text
-- `extractTextFromFile(file)` — unified text extractor (.txt, .md, .docx via mammoth.js, .pdf via pdf.js sequential); returns Promise<string>
-- `summariseDocument(extractedText, fileName)` — LLM classification + summarisation per file; returns Promise<{docType, aiSummary, keyDecisions, constraints, openQuestions}>
-- `_loadMammoth()` — memoised Promise CDN loader for mammoth.js
-- `_loadPdfJs()` — memoised Promise CDN loader for pdf.js (sets workerSrc on load)
-- `_makeDocId()` — generates `doc_<timestamp>_<random>` ID
-- `_isSafeDocId(id)` — validates doc ID format
-- `_ensureSafeDocId(doc)` — normalises malformed doc IDs during migration
-- `chunkText(text, chunkWords, overlapWords)` — RAG-forward chunking utility (unused until RAG Step 3)
-- `_getLiveHomeSessionDocs()` — safe cross-file accessor for `_homeSessionDocs` (home.js)
-
-### New functions in `scripts/home.js`
-
-- `homeRenderSdocsSection()` — renders Session Documents upload section or cap list upload depending on approach+mode; always-visible `#home-sdocs-box`
-- `homeHandleSdocsUpload(inputEl)` — handles multi-file session doc upload with async extract + summarise; ID-based async callbacks
-- `homeRenderSdocsChips()` — renders doc chips with docType badges, data-doc-id handlers, pre/post-launch states; null-guards `#home-sdocs-chips`
-- `_homeToggleSdocType(badgeEl, docId)` — shows inline docType override select on badge click
-- `_homeSdocTypeChange(selectEl, docId)` — updates docType on select change, re-renders chips
-- `_homeRemoveSdoc(docId)` — removes session doc by ID, re-renders section and updates launch btn
-- `_homeRetrySdocSummaries()` — silent retry for failed summaries; updates frozen sessionContext snapshot on success; called post-launch (2s delay) and on tab re-entry
-- `_homeToggleCtx()` — toggles Additional Context textarea collapsed/expanded; wires counter on expand
-
-### New functions in `scripts/session-store.js`
-
-- `_ssStripSessionDocs(ctx)` — strips `extractedText` from session docs before snapshot; always returns new object to prevent shared-reference mutation
-
-### New functions in `scripts/settings-page.js`
-
-- `_spMigrateOldDocs()` — removes old-format docs (missing summaryStatus) from all profiles on restore and Supabase sync; local-only, no Supabase write; idempotent; sets `_spOldDocMigrationDirty` flag

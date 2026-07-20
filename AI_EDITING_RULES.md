@@ -2,27 +2,33 @@
 
 Read this file before making any change to any file in this project.
 
+**Rewritten 2026-07-15** to remove contradictory/duplicate packaging specs that had accumulated across iterations. This is now the single source of truth — there is exactly one packaging spec, one tree diagram, one naming convention. If any other document or memory contradicts this file, this file wins.
+
 ---
 
 ## Project structure
 
 ```
 index.html            app entry point — layout, tab buttons, script/CSS references
-styles/               CSS files grouped by app area
-scripts/              JavaScript files grouped by feature
-DESIGN_SYSTEM.md      single source of truth for all visual and layout standards
-PROJECT_MAP.md        which file owns which function
-FILE_MANIFEST.txt     current complete list of all project files
-CHANGELOG.md          plain-English change history
-AI_EDITING_RULES.md   this file
+login.html             standalone login/signup page
+styles/                CSS files grouped by app area
+scripts/                JavaScript files grouped by feature
+assets/                 templates and style-guide reference content
+netlify/functions/      Netlify serverless function (production API route)
+proxy/                  Render.com Express proxy (separate deployable)
+DESIGN_SYSTEM.md       single source of truth for all visual and layout standards
+PROJECT_MAP.md         which file owns which function
+FILE_MANIFEST.txt      current complete list of all project files
+CHANGELOG.md           plain-English change history
+AI_EDITING_RULES.md    this file
 ```
 
 ---
 
 ## Before making any change
 
-1. Read `PROJECT_MAP.md` to identify the correct file(s).
-2. Read `DESIGN_SYSTEM.md` before writing any new CSS or building any new screen.
+1. Read `PROJECT_MAP.md` to identify the correct file(s). This is the mechanism that makes rule 4 possible — `PROJECT_MAP.md` exists specifically so a request touching one feature area only requires opening the 1-3 files it points to, not the whole codebase.
+2. Read `DESIGN_SYSTEM.md` before writing any new CSS or building any new screen — this includes checking it for an existing component pattern before designing anything new; `DESIGN_SYSTEM.md` requires reusing an existing pattern whenever one fits and flagging to the user when none does, rather than inventing a new one-off style.
 3. Read `FILE_MANIFEST.txt` to understand the current file inventory — never assume file counts from memory.
 4. Inspect only the relevant files. Do not open unrelated files.
 5. For JS changes: run a syntax check after every edit (`node --check filename.js`).
@@ -49,6 +55,7 @@ When the user reports issues or requests changes:
 - User suggests a label change → Claude agrees then immediately builds it
 - User says "fix all" after a summary → Claude builds without presenting a final list first
 - User reports a bug → Claude diagnoses it and immediately fixes it without presenting a build list
+- User says "confirm and propose a fix" → this is a request for diagnosis, not approval. Confirming a diagnosis is not the same as approving a build.
 - Claude judges a fix as "obvious" or "one line" → builds without approval. Simplicity is never an exception.
 - Any scenario where code is written before the user has seen and approved a build list
 
@@ -145,6 +152,149 @@ was first shown to the user.
 
 ---
 
+## MANDATORY — Live-sync event emission for shared sessions (v8.123+)
+
+This applies to ANY code change that modifies session data after a user action and persists that data to the database.
+
+**The rule:**
+
+For every user action that mutates persisted session content visible to collaborators:
+
+**1. Capture session identity BEFORE async work:**
+```javascript
+var saveSessionId = _activeSessionId;
+var wasSharedSession = (typeof _activeSessionIsShared !== 'undefined' && _activeSessionIsShared);
+```
+Do not read these globals inside `.then()` or later async callbacks — they can change.
+
+**2. Mutate state and render optimistically.**
+
+**3. Persist the mutation via `sessionStoreSave()`:**
+```javascript
+sessionStoreSave(saveSessionId).then(function(ok) {
+  if (!ok) {
+    // REVERT state and show error
+    // Do NOT emit event
+    return;
+  }
+  // Save succeeded — proceed to next step
+}).catch(function(e) {
+  // REVERT state and show error
+  // Do NOT emit event
+});
+```
+
+**4. ONLY if save succeeds, emit exactly one live-sync event:**
+```javascript
+if (wasSharedSession && typeof _lsEmitContentEvent === 'function') {
+  try {
+    _lsEmitContentEvent(saveSessionId, 'canvas', 'event_type', metricKey || null, capName || null);
+  } catch (e) {
+    console.warn('Event emission failed (save already succeeded):', e);
+    // Failure here does not block the transaction
+  }
+}
+```
+
+**When NOT to emit:**
+- If save returns false or rejects — emit nothing
+- If state was reverted due to save failure — emit nothing
+- For local-only UI state that is not persisted
+- For transient/ephemeral data
+
+**Why this ordering:**
+- Events are only emitted for content that is durably persisted
+- Events are never visible before their content is fetchable
+- Teammates always see consistent state (no corrupted broadcasts)
+- Missed emission (if event fails) is acceptable; lost data (if emit blocks save) is not
+
+**Important: Stale-write limitation (v9.03+)**
+
+Live-sync emission is NOT a substitute for conflict detection. The baseline `sessionStoreSave()` uses full snapshot writes with no version checking. For shared sessions with concurrent PI/Story Canvas edits, User A's stale local state can overwrite User B's remote changes. This is a pre-existing gap, not introduced by this rule. It must be addressed in a future phase (version-checked saves or stale-session blocking).
+
+**Event type reference:**
+Current known types: `pi_plan_generated`, `pi_plan_updated`, `capabilities_generated`, `capability_manually_updated`, `features_generated`, `story_manually_updated`, `feature_stories_manually_updated`, `prototype_generated`, `prototype_manually_updated`. See CHANGELOG for current complete list.
+
+**This is a pre-build-list stress test item:**
+Before finalizing any Confirmed Build List that touches session data, explicitly check:
+- ✅ Does this change mutate session data? If yes, proceed. If no, skip this section.
+- ✅ Is session identity captured BEFORE the async boundary?
+- ✅ Does the function snapshot state before mutation and revert on save failure?
+- ✅ Is the event wrapped in `if(wasSharedSession && typeof _lsEmitContentEvent === 'function')` guard?
+- ✅ Is the event emitted ONLY after `sessionStoreSave()` resolves without error?
+- ✅ Is the event type appropriate for this mutation (generation vs manual edit)?
+- ✅ Are helper functions (`_lsMarkManualEdit`, `_lsEmitContentEvent`) wrapped in try-catch independently?
+- If any check fails, add a new build list item to fix it before presenting the list to the user.
+
+---
+
+## MANDATORY — View-only / permission-gated UI: hidden vs. disabled (v9.08.02+)
+
+This applies to ANY UI element whose action is blocked for some users in some
+state (view-only shared sessions, locked fields, read-only modes generally).
+
+**The rule — two categories, one consistent treatment each:**
+
+1. **Standalone action buttons** (Add, Generate, Send to X, Refine, Remove-
+   as-a-button, any button whose entire purpose is to trigger an action with
+   no other content) → **hidden entirely** at render time. Do not disable
+   these — a disabled standalone button invites a "why can't I click this"
+   support question, and removing it entirely is also less code than wiring
+   a disabled state, tooltip, etc.
+
+2. **Toggles, checkboxes, inline-editable fields, dropdowns, and clickable
+   inline links/badges** (anything that's part of a card's normal content,
+   not a separate action button) → **disabled**, using the correct native
+   attribute for the element type, or a `-disabled` CSS class with
+   `pointer-events:none` for custom (non-native) controls. Hiding these
+   instead often looks broken — removing a checkbox from a card but leaving
+   everything else looks like a rendering bug, not an intentional lock.
+
+**Critical implementation detail — `readonly` does NOT work on checkboxes
+or radios.** This attribute only suppresses editing on text-like inputs
+(text, textarea, email, etc.). For `<input type="checkbox">` or
+`<input type="radio">`, the only attribute that actually prevents
+interaction is `disabled`. A `readonly` checkbox will still visually
+toggle on click — this exact bug shipped once (Story Canvas's DoR toggle,
+found and fixed in v9.08.02) and must not be repeated. When gating any
+checkbox/radio/toggle-label pair, use `disabled` on the input itself, not
+`readonly`, and verify the fix by actually clicking it, not just reading
+the template.
+
+**Second implementation detail — removing `onclick` alone is not sufficient
+defense-in-depth for native form controls.** A `<label>`/`<input>` pair, or
+any element with browser-native default behavior, can still change its own
+visual state on interaction even with no JS handler attached. The disabling
+mechanism must be a real HTML attribute (`disabled`, `readonly` where
+applicable) or `pointer-events:none` in CSS — not merely the absence of an
+`onclick`.
+
+**Static HTML elements (defined directly in `index.html`, not generated by
+a JS template function) need their own runtime sync, not a template
+conditional.** Several gaps in the original v9.08 build turned out to be
+buttons hardcoded into `index.html` (Feature Canvas's "Add Feature",
+"Send to Story Canvas", and refine bar were all static markup, not
+JS-rendered) — a template-string `${condition?...:''}` has no effect on
+markup that was never generated by a template in the first place. For any
+static element that needs to be permission-gated, add an `id` to it and
+sync its visibility (`style.display`) from whatever function already runs
+on the relevant render/tab-enter/panel-open cycle — do not assume a
+template fix covers it without confirming the element's actual origin.
+
+**This checklist is now part of the pre-build-list stress test** for any
+change touching permission-gated UI — before finalizing a build list,
+explicitly check each affected element against:
+- ✅ Is this a standalone action button (hide) or a toggle/checkbox/field
+  (disable)?
+- ✅ For checkboxes/radios specifically — is the fix `disabled`, not
+  `readonly`?
+- ✅ Is the element static HTML or a JS template? If static, does it have
+  an `id` and a runtime sync call, not just a template conditional?
+- ✅ Does the underlying handler ALSO have a guard (defense-in-depth), not
+  just the visual layer?
+
+---
+
 ## MANDATORY — Layout/CSS bugs: measure before modifying (parent-chain first)
 
 This section exists because of a real incident (v7.61, Home tab empty-state centering)
@@ -180,9 +330,9 @@ target-element bugs.
 
 ---
 
-**The `/mnt/project/` files are a frozen snapshot. They are NOT the current codebase. Never use them as a build base.**
+## Build base — which directory to start from
 
-Every build must start from the correct base. Follow this decision tree exactly:
+**The `/mnt/project/` files are a frozen snapshot. They are NOT the current codebase. Never use them as a build base if a more recent one exists.**
 
 ### Case 1: Same conversation thread, prior build exists
 ```
@@ -190,54 +340,34 @@ Base = the last build directory from this session (e.g. /home/claude/build-629/)
 Command: cp -r /home/claude/build-629 /home/claude/build-630
 NEVER: cp -r /mnt/project /home/claude/build-630
 ```
-Using `/mnt/project/` as the base when a prior build exists will silently discard all previous fixes. This was the root cause of regressions in v6.29 and v6.30 where v6.28 panel fixes were lost.
+Using `/mnt/project/` as the base when a prior build exists will silently discard all previous fixes.
 
 ### Case 2: New conversation thread, no prior build directory in session
 ```
 Base = /mnt/project/ (only option available)
-BUT: Before building, run this verification:
-  1. Read CHANGELOG.md — note the claimed current version
-  2. Check 4 key signatures in the code against the changelog claims:
-     - grep "hdr-version" index.html → does the version match?
-     - grep "ccGetFeatSelState" capability-canvas.js → must be present
-     - grep "allSelected=feat.stories.every" feature-canvas.js → must be present
-     - grep "piGetSelectedStories" pi-planning.js → must be present
-  3. If mismatches found, flag them to the user before building
-  4. Note: /mnt/project/ is typically several versions behind the deployed app
 ```
+Before building, verify state against `CHANGELOG.md` and `config.js`'s `APP_VERSION` — `/mnt/project/` is frequently several versions behind the deployed app. Flag any mismatch to the user before building.
 
 ### Permanent fix (user action required)
 Update the Claude Project files after each significant build session by uploading the latest JS/CSS files. This makes `/mnt/project/` reflect true current state and eliminates Case 2 regressions.
 
 ---
 
-## Pre-build verification checklist
+## Pre-build verification checklist (code integrity — run before packaging)
 
-Run ALL of these before calling `present_files` on any build:
+Run ALL of these before constructing the packaging tree or calling `present_files`:
 
-1. All JS files pass `node --check`
-2. **CSS integrity check — MANDATORY:** Run the following before every zip:
-   ```python
-   for f in /mnt/project/*.css:
-       opens = content.count('{')
-       closes = content.count('}')
-       if opens != closes: FAIL
-   ```
-   A single truncated CSS file (even one dangling selector with no braces) will break the entire app layout on Netlify. This was the root cause of the v6.08/v6.09 deployment failures. Every CSS file must have balanced braces before packaging.
-3. **Proxy URL cross-check:** `PROXY_URL` in `api.js` must match the routing intent — if using Render, confirm Render is reachable. If using Netlify function, confirm max_tokens across all callAPI() calls fit within the 10s function timeout (they don't for KPI tree at 14000 tokens — use Render).
-4. No `style.display` assignments targeting `#mi-tab`, `#dv-tab`, `#sc-tab` content divs — these use `classList.toggle('on')`
-5. No `classList.add/remove('on')` targeting `#tab-mi`, `#tab-dv`, `#tab-la` tab buttons — these use `style.display`
-6. No hardcoded hex colours in CSS files (use token variables)
-7. No duplicate function declarations in any JS file
-8. Every collapse button CSS class includes `color: var(--t3)` — never rely on colour inheritance
-9. Every collapse button SVG is `width="12" height="12"` with `stroke="currentColor"` — never hardcoded hex, never 14×14
-10. **Version string — MANDATORY:** Before every zip, update `APP_VERSION` in `config.js` to the new version number (e.g. `const APP_VERSION = 'v8.77';`). Both `index.html` and `login.html` read this automatically on page load — never hardcode version strings in HTML. Do NOT update `hdr-version` spans in HTML directly.
-11. **CHANGELOG verification — MANDATORY:** Before every zip, confirm the new version entry exists at the top of CHANGELOG.md:
-    ```python
-    with open('CHANGELOG.md') as f: content = f.read()
-    assert f'## v{new_version}' in content, f"CHANGELOG missing v{new_version} entry — do not zip"
-    ```
-    If the assert fails, fix the CHANGELOG before zipping. A zip with a missing or wrong version entry has been delivered before (v7.35) — this check prevents recurrence.
+1. All JS files pass `node --check`.
+2. **CSS integrity check — MANDATORY:** every CSS file must have balanced `{`/`}` braces. A single truncated CSS file breaks the entire app layout on Netlify.
+3. **Proxy URL cross-check:** `PROXY_URL` in `scripts/api.js` must point to the Render proxy (`https://product-diagnostics-proxy.onrender.com/api/anthropic` prod, or the dev equivalent) for hosted deployments — never the Netlify function for any call with `max_tokens` large enough to risk exceeding Netlify's function timeout window.
+4. No `style.display` assignments targeting `#mi-tab`, `#dv-tab`, `#sc-tab` content divs — these use `classList.toggle('on')`.
+5. No `classList.add/remove('on')` targeting `#tab-mi`, `#tab-dv`, `#tab-la` tab buttons — these use `style.display`.
+6. No hardcoded hex colours in CSS files (use token variables from `styles/00-tokens.css`).
+7. No duplicate function declarations in any JS file.
+8. Every collapse button CSS class includes `color: var(--t3)` — never rely on colour inheritance.
+9. Every collapse button SVG is `width="12" height="12"` with `stroke="currentColor"` — never hardcoded hex, never 14×14.
+10. **Version string — MANDATORY:** update `APP_VERSION` in `scripts/config.js` to the new version number before every build (see Versioning rules below for the correct format). `index.html` and `login.html` read this automatically — never hardcode version strings in HTML, never edit `hdr-version` spans directly.
+11. **CHANGELOG verification — MANDATORY:** confirm the new version entry exists at the top of `CHANGELOG.md` before zipping.
 
 ---
 
@@ -262,7 +392,7 @@ There are TWO different elements per tab with DIFFERENT visibility mechanisms:
 - Do not add unrequested features or scope creep.
 - Do not hardcode colour hex values in component CSS — always use the token variables from `styles/00-tokens.css`.
 - Do not change the 300px left panel width. Do not change the tab row position (it must be in `.app-shell`, above `.app`).
-- The user is non-technical. Infer the correct file from `PROJECT_MAP.md` rather than asking the user to name files.
+- The user is non-technical for casual reference purposes but is a 22+ year retail/CPG PM practitioner — infer the correct file from `PROJECT_MAP.md` rather than asking the user to name files; do not over-explain fundamentals.
 
 ---
 
@@ -272,209 +402,248 @@ When adding a new tab, screen, or major feature:
 
 1. New features get **new files** — a new `scripts/feature-name.js` and `styles/NN-feature-name.css`.
 2. Minimal changes to existing files — add state variables to `state.js`, add prompts to `prompts.js`, add tab switch logic to `api.js`, add script/CSS references to `index.html`.
-3. Follow the naming convention: CSS files are numbered sequentially (`11-`, `12-`, etc.).
+3. Follow the naming convention: CSS files are numbered sequentially (`21-`, `22-`, etc.).
 4. Update `FILE_MANIFEST.txt` with the new files.
-5. Update `PROJECT_MAP.md` with the new file's ownership and routing.
+5. Update `PROJECT_MAP.md` with the new file's ownership and routing — in **both** places it's tracked: the file-by-file "File responsibilities" section AND the task-oriented "Common request routing" table. These are two independent indexes into the same functions, organized differently (by file vs. by user-facing task) — updating only one will let them drift out of sync silently, since neither references the other.
 
 ---
 
 ## Deployment verification rules
 
-**Before every zip delivery, verify these three things:**
+**Before every zip delivery, verify these:**
 
-1. **Proxy URL matches netlify.toml** — Open `scripts/api.js` and find `PROXY_URL` or the hosted fetch URL. Open `netlify.toml` and find the `[[redirects]]` `from` path. They must match. If they don't, the deployed app will fail on every API call while working perfectly locally.
+1. **Proxy URL matches `netlify.toml`** — Open `scripts/api.js` and find `PROXY_URL`. Open `netlify.toml` and find the `[[redirects]]` `from` path. They must be consistent with the intended routing. If they don't align, the deployed app will fail on every API call while working perfectly locally.
 
-2. **Render proxy is the correct hosted proxy — not the Netlify function** — The Netlify free tier function timeout is 10 seconds. KPI tree generation uses max_tokens=14000 and takes 30–60 seconds. The Netlify function times out and returns an HTML error page, causing "Unexpected token '<'" in the app. Always use the Render proxy (`https://product-diagnostics-proxy.onrender.com/api/anthropic`) for hosted deployments. UptimeRobot keeps Render warm with a ping every 5 minutes — never remove this setup or switch to the Netlify function without accounting for the timeout constraint.
+2. **Render proxy is the correct hosted proxy for large-payload calls** — The Netlify function has a shorter timeout than long-running generations (e.g. KPI/Outcome Map tree generation) can reliably need. Always use the Render proxy for hosted deployments carrying these calls.
 
-3. **Local vs hosted routing** — The app behaves differently locally (`file://`, `localhost`) vs deployed. Any change to `api.js` routing logic must be tested mentally against both paths: (a) local file open, (b) Netlify deployment. Never assume local success = Netlify success.
+3. **Render free-tier cold starts:** Both Render proxy services (`product-diagnostics-proxy.onrender.com` prod, `pgt-proxy-dev.onrender.com` dev) run on Render's free tier and spin down after ~15 minutes of inactivity, adding 50+ seconds to the first request after idle. **The correct fix is a Render tier upgrade (Starter or above), which Nethaji manages on his own timeline. Do not suggest UptimeRobot, cron-ping, or any other keep-alive workaround as a substitute or in place of the upgrade — there is no keep-alive service configured on this project, and none should be proposed.**
+
+4. **Local vs hosted routing** — The app behaves differently locally (`file://`, `localhost`) vs deployed. Any change to `api.js` routing logic must be tested mentally against both paths: (a) local file open, (b) Netlify deployment. Never assume local success = Netlify success.
 
 ---
 
 ## Versioning rules
 
-**Always read CHANGELOG.md to determine the current version before naming any zip.**
-Never infer the version from memory or prior conversation — the changelog is the single source of truth.
+**Always read `CHANGELOG.md` and `scripts/config.js`'s `APP_VERSION` to determine the current version before naming any zip.** Never infer the version from memory or prior conversation.
 
-Version format:
-- Major increment (v5 → v6 → v7): new tab, new screen, new major feature, or breaking change
-- Minor revision (v6.00 → v6.01 → v6.02): improvements, bug fixes, prompt changes, UI tweaks
-- Minor revisions always use two decimal places: v6.00, v6.01 ... v6.09, v6.10, v6.11 etc.
-- After a major version bump the minor resets to .00: v6.00, not v6.0
-- Example sequence: v5.13 → v5.14 → v6.00 (major) → v6.01 → v6.02
+**Format — three-part version string: `vMAJOR.FEATURE.PATCH`**
 
-**CRITICAL — every build increments the version, no exceptions:**
-- Hotfixes increment: v6.36 → v6.37. Never re-deliver a build under the same version number.
-- Bug fixes found immediately after delivery still get a new version — v6.36 bugs fixed = v6.37.
-- There is no concept of "patching" or "re-zipping" under the same version. One delivery = one version.
-- This applies even if only one line changed in one file.
+- **Feature release** (new tab, new screen, new major capability, or a meaningful improvement to existing behaviour): increment the middle segment, reset patch to nothing (two-part form). Example: `v9.06` → `v9.07`.
+- **Bug fix on top of an already-shipped feature release** (patching something already delivered, no new capability): add or increment a third segment. Example: `v9.06` ships, then a bug in it is fixed as `v9.06.01`, next bug as `v9.06.02`, and so on.
+- A patch version always nests under its feature version — `v9.06.03` is a fix on `v9.06`, not a standalone release.
+- **Every build increments the version, no exceptions.** There is no concept of "patching" or "re-zipping" under the same version number — even a one-line hotfix gets a new version.
 
 **Before every build:**
-1. Read CHANGELOG.md — find the current version number
-2. Add +0.01 — that is the new version, no exceptions
-3. Update `APP_VERSION` in `config.js` to the new version string — both `index.html` and `login.html` pick it up automatically on page load. Never update `hdr-version` spans in HTML directly.
-4. Add a CHANGELOG entry for the new version before zipping — **use this exact insert pattern:**
-   ```python
-   import re
-   entry = f"## v{new_version} — {title}\n- bullet 1\n- bullet 2\n\n"
-   content = re.sub(r'(## v\d+\.\d+)', entry + r'\1', content, count=1)
-   ```
-   This inserts before the topmost existing version entry regardless of how many entries exist.
-   **Never** target a static anchor like `## Pre-v7 History` — it breaks as soon as one entry exists above it.
-5. Name the zip folder and zip file with the new version number
+1. Read `CHANGELOG.md` and `scripts/config.js` — confirm current version.
+2. Decide feature-vs-patch per the rule above, and compute the new version string.
+3. Update `APP_VERSION` in `scripts/config.js`. Never edit `hdr-version` spans in HTML directly — both `index.html` and `login.html` read `APP_VERSION` automatically.
+4. Add a `CHANGELOG.md` entry for the new version, inserted immediately above the previously-topmost entry (not appended to a static anchor).
+5. Name the zip folder and zip file with the new version number, per the naming convention below.
+
+**CHANGELOG entry length — depends on release type:**
+- **Feature release** (`vX.XX`): maximum 4 bullet points. Cover only the meaningful changes — do not pad to reach 4, and do not exceed it.
+- **Bug-fix patch** (`vX.XX.XX`): exactly 1 bullet point. A patch fixes one thing; state what was wrong and what changed, in a single bullet. If a patch appears to need more than one bullet, it is actually multiple patches or should have been scoped as a feature release — flag this to the user rather than writing a multi-bullet patch entry.
 
 ---
 
-## MANDATORY CHECKPOINT — before any present_files call on a build
+## MANDATORY — Build packaging and naming convention
 
-Before constructing $TARGET or running any cp/zip commands, re-read the
-"Deliverables — zip packaging" section below in full — even if this file was
-already read at session start. Do not reuse $TARGET structure or copy
-commands from memory of a previous build in this session. The packaging
-section's mkdir/cp commands are the only authoritative source for folder
-layout (scripts/, styles/, netlify/functions/, proxy/, assets/templates/) —
-/mnt/project/ is flat and does not reflect the deployed structure.
+**This is the only packaging specification in this document. Follow it exactly for every build — there is no alternate tree, no alternate naming scheme.**
 
----
+### ZIP NAMING CONVENTION
+- Feature release: `AIPM-Toolkit-vX.XX.zip` (e.g. `AIPM-Toolkit-v9.07.zip`)
+- Bug-fix patch on a feature release: `AIPM-Toolkit-vX.XX.XX.zip` (e.g. `AIPM-Toolkit-v9.06.03.zip`)
+- Version in the zip name MUST match `APP_VERSION` in `scripts/config.js` exactly.
+- Never use any other naming scheme (no `Product-Diagnostics-Toolkit-*`, `PGT-*`, `Product-Metrics-Teardown-App-*`, or similar — these are stale names from earlier project phases and must not be used).
 
-## Deliverables — zip packaging
-
-**Every completed build must be delivered as a zip file.**
-
-- Read CHANGELOG.md first to confirm the correct version number
-- Build correct folder structure (do NOT just copy /mnt/project flat):
-  ```
-  TARGET=/home/claude/Product-Metrics-Teardown-App-vX.XX
-  rm -rf $TARGET
-  mkdir -p $TARGET/scripts $TARGET/styles $TARGET/netlify/functions $TARGET/assets/templates
-
-  # Root files ONLY — index.html, login.html, favicon.ico, md files, toml, manifest
-  cp /mnt/project/index.html $TARGET/
-  cp /mnt/project/favicon.ico $TARGET/
-  cp /mnt/project/login.html $TARGET/
-  cp /mnt/project/netlify.toml $TARGET/
-  cp /mnt/project/FILE_MANIFEST.txt $TARGET/
-  cp /mnt/project/AI_EDITING_RULES.md $TARGET/
-  cp /mnt/project/CHANGELOG.md $TARGET/
-  cp /mnt/project/DESIGN_SYSTEM.md $TARGET/
-  cp /mnt/project/PROJECT_MAP.md $TARGET/
-
-  # JS files → scripts/ subfolder
-  for f in /mnt/project/*.js; do cp "$f" $TARGET/scripts/; done
-
-  # CSS files → styles/ subfolder
-  for f in /mnt/project/*.css; do cp "$f" $TARGET/styles/; done
-
-  # Netlify function
-  cp /mnt/project/anthropic-proxy.js $TARGET/netlify/functions/
-
-  # Render.com proxy backend
-  mkdir -p $TARGET/proxy
-  cp /mnt/project/server.js $TARGET/proxy/
-  cp /mnt/project/package.json $TARGET/proxy/
-  cp /mnt/project/README.md $TARGET/proxy/
-
-  # XLSX templates → assets/templates/ subfolder (NEVER copy to root)
-  cp /mnt/project/capabilityfeaturestemplate.xlsx $TARGET/assets/templates/capability-features-template.xlsx
-  cp /mnt/project/capabilitylisttemplate.xlsx $TARGET/assets/templates/capability-list-template.xlsx
-  cp /mnt/project/prevpitemplate.xlsx $TARGET/assets/templates/prev-pi-template.xlsx
-
-  # Prototype style guide → assets/ ROOT (NOT assets/templates/)
-  # prototype-canvas.js fetches this via fetch('assets/prototype-style-default.md') —
-  # it must sit directly under assets/, sibling to templates/, not inside it.
-  # If this file is missing, the app silently falls back to the embedded
-  # PROTOTYPE_STYLE_DEFAULT_FALLBACK constant — no crash, but your customised
-  # style guide content is never used. This was missing from the v8.83 build.
-  cp /mnt/project/prototype-style-default.md $TARGET/assets/
-  ```
-  NOTE: proxy/ files are flat in /mnt/project/ (server.js, package.json, README.md).
-  They must be explicitly copied into the proxy/ subfolder in the zip.
-  These files are for the Render.com backend — they are NOT served by Netlify.
-  Include in every zip for completeness; deploy separately via Render.com GitHub repo.
-  WARNING: Never use cp /mnt/project/* or wildcard copies to root — this pulls JS/CSS flat.
-  Always copy each file type explicitly to its correct subfolder.
-  WARNING: xlsx template files in /mnt/project/ have camelCase names — they MUST be renamed
-  to hyphenated names when copied into assets/templates/ (see copy commands above).
-  WARNING: prototype-style-default.md must NOT be renamed and must NOT go into
-  assets/templates/ — it is fetched at runtime by exact relative path
-  'assets/prototype-style-default.md'. Confirmed missing from the v8.83 build because
-  this packaging script never had a copy step for it despite FILE_MANIFEST.txt listing it.
-  WARNING: Always name the build directory TARGET=Product-Metrics-Teardown-App-vX.XX from
-  the start — never use a short name like /home/claude/v636 and rename later. The directory
-  name becomes the folder name inside the zip.
-- Apply all changes to files inside $TARGET after the structure is built
-- **MANDATORY pre-zip file verification** — before zipping, cross-check every `script src` and `link href` in `index.html` resolves to an actual file in the output folder. Run:
-  ```
-  grep "script src" $TARGET/index.html | sed "s/.*src=\"\.\/scripts\///;s/\".*//" | while read f; do
-    [ -f "$TARGET/scripts/$f" ] && echo "OK: $f" || echo "MISSING: $f"
-  done
-  grep "link rel.*stylesheet.*styles/" $TARGET/index.html | sed 's/.*href="\.\/styles\///;s/".*//' | while read f; do
-    [ -f "$TARGET/styles/$f" ] && echo "OK: $f" || echo "MISSING: $f"
-  done
-  ```
-  Any MISSING file must be copied before zipping. A missing script causes a blank screen on load.
-- **MANDATORY — exclude `env.js` from every zip:** `scripts/env.js` contains live credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PROXY_URL`). It must NEVER be included in any zip. Drop it manually into `scripts/` after unzipping on the target machine. Add `-x "*/scripts/env.js"` to every zip command without exception.
-- **MANDATORY — preserve `favicon.ico`:** `favicon.ico` is a binary asset at the project root. It is referenced in both `index.html` and `login.html`. It must be present in every build directory. When copying a previous build as the base for a new build (`cp -r`), it is carried over automatically. Never delete it. Never omit it from the zip (it is not excluded by any rule). If it is ever missing, copy it from a previous build directory.
-- Zip it: `zip -r /mnt/user-data/outputs/Product-Metrics-Teardown-App-vX.XX.zip Product-Metrics-Teardown-App-vX.XX/ -x "*.DS_Store" -x "*/node_modules/*" -x "*/scripts/env.js"`
-  MANDATORY: always exclude `node_modules` from the zip. The `proxy/package.json` lists all dependencies — users run `npm install` once inside `proxy/` after unzipping. Including `node_modules` adds hundreds of files with zero value and makes the zip unnecessarily large.
-- Present the zip with `present_files`
-
-The zip must contain everything needed to run locally and deploy to Netlify:
+### DIRECTORY STRUCTURE (authoritative — the only tree)
 ```
-index.html
-netlify.toml
-netlify/
-  functions/
-    anthropic-proxy.js
-proxy/
-  server.js
-  package.json
-  README.md
-scripts/
-  (all JS files)
-styles/
-  (all CSS files)
-assets/
-  templates/
-    capability-features-template.xlsx
-    capability-list-template.xlsx
-    prev-pi-template.xlsx
-*.md files
-FILE_MANIFEST.txt
+AIPM-Toolkit-vX.XX(.XX)/
+├── index.html
+├── login.html
+├── netlify.toml
+├── favicon.ico                       (binary .ico, decoded from favicon-base64.txt — never include the .txt itself)
+├── AI_EDITING_RULES.md
+├── CHANGELOG.md
+├── DESIGN_SYSTEM.md
+├── FILE_MANIFEST.txt
+├── PROJECT_MAP.md
+├── package.json                      (Netlify Functions dependencies — root only, NOT copied from/to proxy/)
+│
+├── scripts/                          (ALL frontend .js files, and ONLY frontend .js files)
+│   ├── config.js
+│   ├── state.js
+│   ├── utils.js
+│   ├── auth.js
+│   ├── api.js
+│   ├── main.js
+│   ├── home.js
+│   ├── prompts.js
+│   ├── kpi-tree.js
+│   ├── capability-canvas.js
+│   ├── capability-drawer.js
+│   ├── feature-canvas.js
+│   ├── story-canvas-new.js
+│   ├── pi-planning.js
+│   ├── pi-bucket.js
+│   ├── metrics-definition.js
+│   ├── diagnostic-view.js
+│   ├── product-leak-analysis.js
+│   ├── market-intelligence.js
+│   ├── prototype-canvas.js
+│   ├── team-management.js
+│   ├── settings.js
+│   ├── settings-page.js
+│   ├── left-panel.js
+│   ├── session-store.js
+│   ├── live-sync.js
+│   ├── demo-data.js
+│   ├── export-docx.js
+│   ├── export-xlsx.js
+│   ├── export-pi-docx.js
+│   ├── export-diagnostic-docx.js
+│   ├── export-market-intel-docx.js
+│   └── local-server.js               (zero-dependency local static file server — distinct from proxy/server.js; NOT a duplicate, NOT the same file)
+│
+├── styles/                           (ALL .css files, 21 total, and ONLY .css files)
+│   ├── 00-tokens.css
+│   ├── 01-base.css
+│   ├── 02-layout.css
+│   ├── 03-header-settings.css
+│   ├── 04-left-panel.css
+│   ├── 05-kpi-tree.css
+│   ├── 06-metrics-definition.css
+│   ├── 07-capability-drawer.css
+│   ├── 08-feature-canvas.css
+│   ├── 09-modals-export.css
+│   ├── 10-capability-canvas.css
+│   ├── 11-diagnostic-view.css
+│   ├── 12-product-leak-analysis.css
+│   ├── 13-market-intelligence.css
+│   ├── 14-pi-planning.css
+│   ├── 15-settings.css
+│   ├── 16-story-canvas-new.css
+│   ├── 17-home.css
+│   ├── 18-auth.css
+│   ├── 19-prototype-canvas.css
+│   └── 20-team-management.css
+│
+├── assets/
+│   ├── prototype-style-default.md    (fetched at runtime via 'assets/prototype-style-default.md' — must sit here, NOT inside templates/, NOT renamed)
+│   └── templates/
+│       ├── capabilitylisttemplate.xlsx        (camelCase — matches actual source filename, do not rename)
+│       └── capabilityfeaturestemplate.xlsx    (camelCase — matches actual source filename, do not rename)
+│
+├── netlify/functions/
+│   └── anthropic-proxy.js            (production API route — lives ONLY here, never duplicated into scripts/)
+│
+└── proxy/                            (separate Render.com deployable — never merge into frontend root)
+    ├── server.js                     (Express proxy backend — lives ONLY here, never duplicated into scripts/; requires npm install, cannot run standalone like local-server.js)
+    ├── package.json                  (proxy-specific dependency list — see exact content below, never copy root package.json here)
+    └── README.md
 ```
 
-CRITICAL — zip packaging rules:
-- JS files go in `scripts/` subfolder — NEVER at root level
-- CSS files go in `styles/` subfolder — NEVER at root level
-- The project files in /mnt/project/ are flat (Claude Projects limitation) — you MUST create the correct subfolder structure manually when building the zip
-- Build pattern: mkdir scripts/ styles/ netlify/functions/ → copy JS to scripts/ → copy CSS to styles/ → copy netlify files → zip
-- index.html references `./scripts/` and `./styles/` — a flat zip will break the app
+### CRITICAL: `proxy/package.json` content (must match exactly)
+```json
+{
+  "name": "aipm-toolkit-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express proxy server for AI PM Toolkit. Routes API calls through Anthropic proxy with rate limiting, JWT auth, and Supabase integration.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^7.1.5",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+```
+Dependencies are extracted from `server.js`'s actual `require()` statements. Node engine constraint ensures Render.com compatibility.
 
-No build step. No dependencies. Open `index.html` directly in a browser to run locally (uses direct Anthropic API call as fallback).
-For Netlify: drag the unzipped folder into Netlify Drop. Netlify serves `index.html` as the root and auto-detects `netlify.toml`.
+### FILES THAT MUST BE EXCLUDED FROM EVERY ZIP
+- ❌ `scripts/env.js` — contains live Supabase credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PROXY_URL`). Never included. The user creates this file once locally and drops it into `scripts/` after unzipping — its absence from the zip is expected and correct, not a bug to fix.
+- ❌ `node_modules/` — build artifact; `proxy/package.json` lists all deps, `npm install` run once after unzip.
+- ❌ `.git/`
+- ❌ `favicon-base64.txt` — source-only; only the decoded `favicon.ico` binary goes in the zip.
+
+*(Note: `prevpitemplate.xlsx` was a decommissioned feature and no longer exists in the project at all — there is nothing to exclude regarding it. Do not reference it in future rules or checklists.)*
+
+### PRE-BUILD CHECKLIST — run before every zip, in order
+
+**Version & Documentation:**
+- [ ] `APP_VERSION` in `scripts/config.js` matches the new version string, feature or patch form as appropriate
+- [ ] `CHANGELOG.md` has a new entry at the top for this exact version
+- [ ] Entry follows the length rule: max 4 bullets for a feature release (`vX.XX`), exactly 1 bullet for a patch (`vX.XX.XX`)
+- [ ] All 5 governance files present at root: `AI_EDITING_RULES.md`, `CHANGELOG.md`, `DESIGN_SYSTEM.md`, `FILE_MANIFEST.txt`, `PROJECT_MAP.md`
+
+**Root level:**
+- [ ] `index.html`, `login.html`, `netlify.toml`, `favicon.ico` (real `.ico`, not `.txt`), `package.json` present
+- [ ] NO `.js` or `.css` files at root
+
+**`scripts/`:**
+- [ ] Every `.js` file in `FILE_MANIFEST.txt`'s `scripts/` list is present, including `local-server.js`
+- [ ] `local-server.js` present and distinct from `proxy/server.js` — not merged, not omitted
+- [ ] NO `env.js` present
+- [ ] NO `server.js` present (that file belongs only in `proxy/`)
+- [ ] NO `anthropic-proxy.js` present (that file belongs only in `netlify/functions/`)
+
+**`styles/`:**
+- [ ] 21 `.css` files present, matching `FILE_MANIFEST.txt`
+
+**`assets/`:**
+- [ ] `assets/prototype-style-default.md` present (NOT inside `templates/`)
+- [ ] `assets/templates/capabilitylisttemplate.xlsx` present (camelCase, unmodified name)
+- [ ] `assets/templates/capabilityfeaturestemplate.xlsx` present (camelCase, unmodified name)
+
+**`netlify/functions/`:**
+- [ ] `anthropic-proxy.js` present, and present ONLY here (not also in `scripts/`)
+
+**`proxy/`:**
+- [ ] `server.js`, `package.json` (proxy-specific content above), `README.md` all present
+- [ ] `proxy/server.js` present ONLY here (not also in `scripts/`)
+
+**Exclusions — confirm none of these exist anywhere in the tree:**
+- [ ] NO `env.js`
+- [ ] NO `node_modules/`
+- [ ] NO `.git/`
+- [ ] NO `favicon-base64.txt`
+
+**ZIP file:**
+- [ ] Filename matches `AIPM-Toolkit-vX.XX.zip` or `AIPM-Toolkit-vX.XX.XX.zip` exactly
+- [ ] File placed in `/mnt/user-data/outputs/`
+
+**If ANY check fails: do not zip. Fix the issue, re-run the full checklist, only zip when everything passes.**
+
+### Pre-zip file-reference verification
+Before zipping, cross-check every `script src` and `link href` in `index.html` resolves to an actual file in the build folder — a missing script causes a blank screen on load with no visible error. Confirm every referenced `scripts/*.js` and `styles/*.css` path exists in the tree just built.
 
 ---
 
 ## Local testing
 
-Open `index.html` in a browser. The `styles/` and `scripts/` folders must remain beside `index.html`.
-The app requires an Anthropic API key (entered in Settings) to generate AI content.
-Demo Mode (if present) works without an API key.
+Open `index.html` in a browser. The `styles/`, `scripts/`, and `assets/` folders must remain beside `index.html`. The app requires an Anthropic API key (entered in Settings) to generate AI content. Demo Mode (if present) works without an API key. `local-server.js` can optionally serve the folder over `http://localhost:3000` with zero npm install — distinct from and unrelated to `proxy/server.js`.
 
 ---
 
 ## Netlify deployment
 
-Drag the unzipped project folder into Netlify Drop (netlify.com/drop).
-No build configuration needed. The app is a static site with no server-side dependencies.
-The Anthropic API key is entered by the user in the browser — it is not baked into the deployment.
+Drag the unzipped project folder into Netlify Drop (netlify.com/drop). No build configuration needed. The app is a static site with no server-side dependencies. The Anthropic API key is entered by the user in the browser — it is not baked into the deployment.
 
 ---
 
 ## MANDATORY — External tool consultation (ChatGPT / second opinions)
 
-This section exists because of repeated incidents (v8.39–v8.42) where ChatGPT was consulted
-but given incomplete context, leading to fixes that broke related behaviour. The same issues
-recurred across 4+ versions.
+This section exists because of repeated incidents where ChatGPT was consulted but given incomplete context, leading to fixes that broke related behaviour.
 
 ### Before writing a ChatGPT prompt
 
@@ -484,7 +653,7 @@ recurred across 4+ versions.
    - Every `switchTab()` branch that touches the affected state
    - Every render path that could overwrite the fix
 
-2. **Describe the cause, not the symptom.** "text-transform:uppercase in .hdr-product.has-name CSS rule" not "text goes CAPS". "el.style.display='none' not restored on tab switch back" not "session name disappears". ChatGPT fixes what it's told — if told a symptom, it guesses the cause.
+2. **Describe the cause, not the symptom.** "text-transform:uppercase in .hdr-product.has-name CSS rule" not "text goes CAPS". ChatGPT fixes what it's told — if told a symptom, it guesses the cause.
 
 3. **Include in the prompt:**
    - The exact failing line of code (not a paraphrase)
@@ -497,12 +666,9 @@ recurred across 4+ versions.
 
 ### Before building from ChatGPT output
 
-1. **Run the adversarial check against the proposed code** — not just the diagnosis. The adversarial instance should be given ChatGPT's proposed code and asked to find failure modes.
-
-2. **Verify every CSS rule that touches the affected element** — ChatGPT rarely looks at CSS unless given it explicitly. After every JS fix that touches a DOM element, manually check all CSS selectors that could affect that element's colour, visibility, transform, or position.
-
-3. **Trace every call site of every function being changed** — grep the codebase. ChatGPT only knows what's in the prompt. A function with 8 call sites fixed at 1 call site is still broken at 7.
-
+1. **Run the adversarial check against the proposed code** — not just the diagnosis.
+2. **Verify every CSS rule that touches the affected element** — ChatGPT rarely looks at CSS unless given it explicitly.
+3. **Trace every call site of every function being changed** — grep the codebase. A function with 8 call sites fixed at 1 call site is still broken at 7.
 4. **Never build from ChatGPT output that hasn't been adversarially reviewed** for state management, cross-file impact, timing, or third-party library behaviour.
 
 ### The failure pattern to avoid
@@ -521,6 +687,57 @@ Problem reported → Claude reads ALL relevant code → identifies exact failing
 
 ---
 
+## KNOWN PATTERN — Cross-canvas state sync (`piFindStory()` returns copy)
+
+**Critical detail for PI Canvas developers:**
+
+`piFindStory()` (in `pi-planning.js`) returns a SHALLOW COPY of the story object:
+```javascript
+return{...st,featureId:f.id};  // ← SPREAD OPERATOR creates shallow copy
+```
+
+**Why:** The copy includes `featureId` which PI Canvas needs but Story Canvas doesn't store in its story objects.
+
+**The Problem:**
+If you mutate a story from `piFindStory()` (e.g., `story._inPIPlan=false`), the mutation only affects the copy, NOT the original story in `scCanvas`. Story Canvas will never see the change.
+
+**The Solution (v9.04 pattern):**
+When you need to mutate a story and have Story Canvas reflect the change:
+
+1. **Find the ORIGINAL in `scCanvas`** — don't use `piFindStory()`:
+```javascript
+var story=null;
+for(var i=0;i<scCanvas.length;i++){
+  var f=scCanvas[i];
+  if(f.stories){
+    for(var j=0;j<f.stories.length;j++){
+      if(f.stories[j].id===storyId){
+        story=f.stories[j];  // ← ORIGINAL, not copy
+        break;
+      }
+    }
+    if(story)break;
+  }
+}
+// Fallback for stories in piStoryPool (created in PI)
+if(!story&&typeof piStoryPool!=='undefined'&&piStoryPool[storyId]){
+  story=piStoryPool[storyId];
+}
+```
+
+2. **Mutate the original** — now changes persist
+
+3. **After save succeeds, refresh Story Canvas:**
+```javascript
+if(typeof newScRender==='function'){
+  newScRender();
+}
+```
+
+**See v9.04 implementation:** `piRemoveStoryFromBacklog()` in `pi-planning.js`.
+
+---
+
 ## Do not do this
 
 - Do not collapse everything back into one large HTML file.
@@ -530,3 +747,14 @@ Problem reported → Claude reads ALL relevant code → identifies exact failing
 - Do not move the tab row inside `.right` — it must stay in `.app-shell`.
 - Do not ask the user to identify source files by name. Use `PROJECT_MAP.md`.
 - Do not hallucinate file counts. Read `FILE_MANIFEST.txt` for the current inventory.
+- Do not deviate from the `AIPM-Toolkit-vX.XX` / `AIPM-Toolkit-vX.XX.XX` naming convention.
+- Do not include root-level `.js` or `.css` files in the zip.
+- Do not create duplicate files in multiple folders — one canonical location per file. In particular: `anthropic-proxy.js` lives only in `netlify/functions/`; `server.js` lives only in `proxy/`; neither is ever also placed in `scripts/`.
+- Do not copy root `package.json` to `proxy/` — use the proxy-specific `package.json` content specified above.
+- Do not include instruction files (`.md`, `.txt`) anywhere except root.
+- Do not forget the `favicon.ico` conversion from `favicon-base64.txt`.
+- Do not rename the xlsx template files — keep camelCase, matching the actual source files.
+- Do not reference `prevpitemplate.xlsx` anywhere — it is fully decommissioned, not merely excluded.
+- Do not suggest, configure, or reference UptimeRobot or any other keep-alive/ping workaround for Render cold starts, under any framing (cost-saving, temporary, testing). The Render tier upgrade is the only sanctioned fix, and Nethaji owns its timing.
+- Do not treat "confirm the diagnosis" or "propose a fix" as build approval. Only an explicit go-ahead after a build list is shown authorizes touching files.
+- Do not read only one packaging/tree section of this document and assume it's complete — this document now contains exactly one packaging spec; if a future edit ever reintroduces a second one, that is itself a documentation bug to flag and fix, not to reconcile silently.

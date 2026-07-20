@@ -25,9 +25,20 @@
 <link rel="stylesheet" href="./styles/10-capability-canvas.css">
 <link rel="stylesheet" href="./styles/14-pi-planning.css">
 <link rel="stylesheet" href="./styles/15-settings.css">
+<link rel="stylesheet" href="./styles/20-team-management.css">
 <link rel="stylesheet" href="./styles/17-home.css">
+<link rel="stylesheet" href="./styles/21-outcome-pulse.css">
 </head>
 <body>
+<!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
+     Company resolution (main.js) renders the company picker / zero-company
+     screen / create-company modal into this container and keeps it visible
+     until resolution completes. This is what makes the hard-gate approach
+     work without needing to individually hide every other piece of the app
+     shell — nothing else is reachable while this covers the viewport.
+     Hidden by default; main.js controls display. -->
+<div id="pgt-boot-gate" style="display:none;position:fixed;inset:0;z-index:9999;background:#fff;"></div>
+
 
 <div class="hdr">
   <div class="hdr-l">
@@ -61,6 +72,17 @@
         <button class="hdr-avatar-profile" onclick="hdrOpenProfile()">
           <i class="ti ti-user-circle" aria-hidden="true"></i> My Profile
         </button>
+        <!-- Phase 1: hidden by default, shown by _pgtRenderCompanyMenuItems() only when
+             the user has 2+ active company memberships — no dead-end UI at 1. -->
+        <button class="hdr-avatar-profile" id="hdr-switch-company-btn" onclick="hdrOpenSwitchCompany()" style="display:none;">
+          <i class="ti ti-building" aria-hidden="true"></i> Switch Company
+        </button>
+        <!-- "Create a New Company" removed in v8.101, per an explicit product
+             decision — the capability wasn't gone, it moved: an existing user
+             wanting a second company now does it through the signup form
+             itself (login.html), gated behind re-entering their password,
+             rather than a casual one-click option sitting next to Sign Out.
+             See spec §3.7. -->
         <div class="hdr-avatar-divider"></div>
         <button class="hdr-avatar-signout" onclick="hdrSignOut()">
           <i class="ti ti-logout" aria-hidden="true"></i> Sign Out
@@ -83,10 +105,11 @@
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
-    <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Product Diagnostics</button>
+    <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Experiment Canvas</button>
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> PI Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <button class="tab-btn" id="tab-op" onclick="switchTab('op')" style="display:none;"><i class="ti ti-activity"></i> Outcome Pulse</button>
     <div class="home-tab-lock" id="home-tab-lock"><i class="ti ti-lock" style="font-size:9px;" aria-hidden="true"></i><span>Tabs unlock after you launch a session</span></div>
   </div></div>
 
@@ -98,7 +121,10 @@
       <div class="home-ph" id="home-ph">
         <div class="home-ph-text">
           <div class="home-ph-eyebrow">Session Setup</div>
-          <div class="home-ph-sub">Select a product and configure how to start</div>
+          <div class="home-ph-sub" id="home-ph-sub">Select a product and configure how to start</div>
+          <div class="home-ph-readonly-note home-hidden" id="home-ph-readonly-note" style="font-size:11px;color:#BA7517;font-weight:400;display:flex;align-items:center;gap:5px;margin-top:2px;">
+            <i class="ti ti-eye" style="font-size:12px;" aria-hidden="true"></i>View only access - Setup disabled
+          </div>
         </div>
         <button class="collapse-btn" onclick="homeTogglePanel()" title="Toggle panel">
           <svg id="icon-home-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
@@ -106,6 +132,17 @@
         </button>
       </div>
       <div class="home-form-scroll">
+        <div id="home-zero-company-state" class="home-zero-company-state home-hidden">
+          <div style="width:40px;height:40px;border-radius:10px;background:#F4F6FA;display:flex;align-items:center;justify-content:center;margin-bottom:14px;">
+            <i class="ti ti-building-off" style="font-size:18px;color:#A5AFBE;" aria-hidden="true"></i>
+          </div>
+          <div style="font-size:12px;font-weight:600;color:#000;margin-bottom:6px;font-family:'DM Sans',sans-serif;">You're not part of any company yet</div>
+          <div style="font-size:10px;color:#A5AFBE;line-height:1.6;margin-bottom:18px;max-width:220px;font-family:'DM Sans',sans-serif;">Create a company to set up products and start a session.</div>
+          <button onclick="if(typeof homeOpenCreateCompanyModal==='function')homeOpenCreateCompanyModal();" style="display:inline-flex;align-items:center;gap:5px;padding:8px 14px;border-radius:6px;background:#fff;border:1px solid #5F1EBE;color:#5F1EBE;font-size:11px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;">
+            <i class="ti ti-plus" style="font-size:12px;" aria-hidden="true"></i> Create a New Company
+          </button>
+        </div>
+        <div id="home-form-fields" class="home-form-fields">
         <div class="home-fl">
           <label>Product <span class="home-req">*</span></label>
           <select class="home-f-select" id="home-product-sel" onchange="homeOnProductChange()"></select>
@@ -115,16 +152,16 @@
         <div class="home-fl">
           <label>Approach <span class="home-req">*</span></label>
           <div class="home-seg">
-            <button class="home-seg-btn home-seg-btn-active" id="home-approach-outcome" onclick="homeSetApproach('outcome-based')">Outcome-Based</button>
-            <button class="home-seg-btn" id="home-approach-capability" onclick="homeSetApproach('capability-based')">Capability-Based</button>
+            <button class="home-seg-btn home-seg-btn-active" id="home-approach-outcome" onclick="homeSetApproach('outcome-based')">Outcome Metrics</button>
+            <button class="home-seg-btn" id="home-approach-capability" onclick="homeSetApproach('capability-based')">Process Area</button>
           </div>
-          <span class="home-hint">Drive based on metrics or capabilities</span>
+          <span class="home-hint">Drive based on KPIs or process areas</span>
         </div>
         <div class="home-fl">
           <label>Generation Mode <span class="home-req">*</span></label>
           <div class="home-seg">
             <button class="home-seg-btn home-seg-btn-active" id="home-mode-ai" onclick="homeSetMode('ai-generated')">AI Generated</button>
-            <button class="home-seg-btn" id="home-mode-manual" onclick="homeSetMode('manual')" title="Available for Capability-Based only">Manual</button>
+            <button class="home-seg-btn" id="home-mode-manual" onclick="homeSetMode('manual')" title="Available for Process Area only">Manual</button>
           </div>
         </div>
         <div class="home-cond-box" id="home-sdocs-box">
@@ -158,6 +195,7 @@
         </div>
         <!-- Error/status message — margin-top:auto pins it above the gen-wrap divider -->
         <div class="home-launch-error" id="home-launch-error" style="display:none;"></div>
+        </div>
       </div>
       <div class="home-gen-wrap">
         <button class="home-gen-btn" id="home-gen-btn" onclick="homeLaunch()">
@@ -168,13 +206,20 @@
     </div>
     <div class="home-main" id="home-main-body">
       <div class="home-empty-wrap" id="home-empty-wrap">
-          <div class="home-empty-icon"><i class="ti ti-rocket" style="font-size:22px;color:var(--purple);" aria-hidden="true"></i></div>
-          <div class="home-empty-title">Where do you want to start?</div>
-          <div class="home-empty-desc">Select a product and configure your session on the left. Tabs unlock progressively as your session advances.</div>
-          <div class="home-steps">
-            <div class="home-e-step"><div class="home-e-num">1</div>Select product</div>
-            <div class="home-e-step"><div class="home-e-num">2</div>Choose approach</div>
-            <div class="home-e-step"><div class="home-e-num">3</div>Launch session</div>
+          <div id="home-empty-top-launch">
+            <div class="home-empty-icon"><i class="ti ti-rocket" style="font-size:22px;color:var(--purple);" aria-hidden="true"></i></div>
+            <div class="home-empty-title">Where do you want to start?</div>
+            <div class="home-empty-desc">Select a product and configure your session on the left. Tabs unlock progressively as your session advances.</div>
+            <div class="home-steps">
+              <div class="home-e-step"><div class="home-e-num">1</div>Select product</div>
+              <div class="home-e-step"><div class="home-e-num">2</div>Choose approach</div>
+              <div class="home-e-step"><div class="home-e-num">3</div>Launch session</div>
+            </div>
+          </div>
+          <div id="home-empty-top-readonly" class="home-hidden">
+            <div class="home-empty-icon"><i class="ti ti-eye" style="font-size:22px;color:var(--purple);" aria-hidden="true"></i></div>
+            <div class="home-empty-title">Nothing shared with you yet</div>
+            <div class="home-empty-desc">You have view only access. Once a teammate shares a session with you, it'll show up here — you'll be able to view and export it, but not edit it.</div>
           </div>
           <div class="home-or-line"><span>or explore first</span></div>
           <div class="home-demo-card">
@@ -361,7 +406,7 @@
                     </button>
                   </div>
                   <!-- Add Feature — primary, rightmost (dropdown: single / upload, v7.84) -->
-                  <div class="cc-addcap-wrap" style="position:relative;">
+                  <div class="cc-addcap-wrap" id="sc-add-feat-wrap" style="position:relative;">
                     <button class="cc-tb-btn-add" onclick="scToggleAddFeatDrop(event)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
                     <div class="cc-addcap-drop" id="sc-addfeat-drop">
                       <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>
@@ -457,6 +502,11 @@
         <!-- populated by story-canvas-new.js -->
       </div>
     </div>
+    <!-- Outcome Pulse Tab -->
+    <div class="op-tab" id="op-tab">
+      <div id="op-main" style="display:flex;flex-direction:column;flex:1;overflow:hidden;height:100%;"></div>
+      <div class="op-lib-panel" id="op-lib-panel"></div>
+    </div>
   </div>
 </div>
 </div><!-- end app-shell -->
@@ -541,9 +591,11 @@
 <script src="./scripts/state.js"></script>
 <script src="./scripts/config.js"></script>
 <script src="./scripts/utils.js"></script>
+<script src="./scripts/pi-bucket.js"></script>
 <script src="./scripts/prompts.js"></script>
 <script src="./scripts/settings.js"></script>
 <script src="./scripts/settings-page.js"></script>
+<script src="./scripts/team-management.js"></script>
 <script src="./scripts/left-panel.js"></script>
 <script src="./scripts/kpi-tree.js"></script>
 <script src="./scripts/metrics-definition.js"></script>
@@ -561,7 +613,9 @@
   <script src="./scripts/capability-canvas.js"></script>
   <script src="./scripts/pi-planning.js"></script>
   <script src="./scripts/export-pi-docx.js"></script>
+  <script src="./scripts/outcome-pulse.js"></script>
 <script src="./scripts/session-store.js"></script>
+<script src="./scripts/live-sync.js"></script>
 <script src="./scripts/home.js"></script>
 <script src="./scripts/api.js"></script>
 <script src="./scripts/demo-data.js"></script>

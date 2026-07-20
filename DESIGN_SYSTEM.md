@@ -3,6 +3,15 @@
 This document is the single source of truth for all visual, layout, and component standards.
 Read this before writing any new CSS, building any new screen, or adding any UI component.
 
+## MANDATORY — No new component inventions
+
+**Any UI element being added to the product — a button, panel, modal, badge, tooltip, upload zone, card, chip, action bar, or any other component — must first be checked against this document for an existing pattern.** If a matching or near-matching component already exists here (even in a different tab/screen than the one being built), reuse it: its markup structure, its CSS classes, its exact spacing/sizing/colour values. Do not design a new visual treatment for something this file already specifies.
+
+- If no existing pattern fits, that is itself a signal to flag to the user before building — not a silent green light to invent a new one-off style.
+- A "close enough" existing pattern should be reused as-is, not subtly reinvented with slightly different padding, radius, or colour choices.
+- This applies even under time pressure or for something that looks trivial (e.g. "just a small badge") — trivial-looking components are exactly where silent one-off inventions accumulate into visual inconsistency across screens.
+- When in doubt whether something counts as "already specified here," ask before building rather than assuming a new pattern is warranted.
+
 ---
 
 ## 1. Typography
@@ -81,14 +90,27 @@ All colours are defined as CSS custom properties in `styles/00-tokens.css`.
 | `var(--t3)` | `#6b6b68` | Tertiary / muted text |
 | `var(--t4)` | `#9a9a96` | Hint / disabled text |
 
-### Stage colours (fixed — never change)
+### Stage colours
 
-| Stage | Variable | Hex |
+Stage colours reuse the brand palette above — there are no separate hex values for stages. This table exists only to map each stage name to its variable at a glance; the authoritative hex values live in the Brand colours table and in `styles/00-tokens.css`, never here.
+
+| Stage | Variable | Hex (from `styles/00-tokens.css`) |
 |---|---|---|
-| Acquisition | `var(--blue)` | `#185FA5` |
-| Activation | `var(--purple)` | `#534AB7` |
-| Engagement | `var(--green)` | `#0F6E56` |
-| Retention | `var(--amber)` | `#BA7517` |
+| Acquisition | `var(--blue)` | `#0F5FDC` |
+| Activation | `var(--purple)` | `#5F1EBE` |
+| Engagement | `var(--green)` | `#007873` |
+| Retention | `var(--amber)` | `#C8870A` |
+
+**These variable-to-stage mappings are fixed — never change which variable represents which stage.** If the hex value ever needs to change, change it once in `styles/00-tokens.css` and both tables update automatically — never hardcode a stage colour anywhere else.
+
+### Additional tokens (defined in `styles/00-tokens.css`, not yet given dedicated use-case rows above)
+
+| Variable | Hex | Use |
+|---|---|---|
+| `var(--blue-bright)` | `#3C91FF` | (confirm intended use before applying — not yet documented with a specific rule) |
+| `var(--orange)` | `#E05A00` | (confirm intended use before applying — not yet documented with a specific rule) |
+| `var(--amber-pale)` | `#FAEEDA` | Amber surface background (matches Warn-modal icon background in §8) |
+| `var(--green-pale)` | `#E1F5EE` | Green surface background |
 
 ---
 
@@ -439,7 +461,7 @@ Any "refine via free-text AI prompt" action — regardless of screen — uses: a
 
 Never pair the textarea with separate text-labeled "Refine"/"Cancel" buttons — the toggle button is the only collapse mechanism.
 
-### "Add X" dropdown + upload/map pattern (v7.83)
+### "Add X" dropdown + upload/map pattern
 
 When an "Add [item]" action needs both a single-item path and a bulk-upload path, replace the plain button with a small dropdown (`.cc-addcap-drop`/`.cc-addcap-opt` — two rows, icon + label, no descriptions): "Single [item]" opens the existing single-item modal unchanged; "Upload from file" opens a two-step flow:
 
@@ -448,7 +470,7 @@ When an "Add [item]" action needs both a single-item path and a bulk-upload path
 
 Cancel at either step needs no confirmation (low-cost action, file re-upload is fast).
 
-**Mandatory-mapping variant (v7.84):** when every row MUST map to a destination (no default fallback - e.g. FC's "Add Feature" upload, where every feature needs a capability), unmatched rows get `.cc-cap-review-row-error` + `.cc-cap-review-mapsto-error` (red, empty "— Select —" dropdown) plus a `.cc-cap-review-remove` (×) action. The summary pill becomes `.cc-parse-error` while any row is unresolved, and Confirm stays disabled until every remaining row is either mapped or removed. Confirm's count always reflects only resolved rows.
+**Mandatory-mapping variant:** when every row MUST map to a destination (no default fallback - e.g. FC's "Add Feature" upload, where every feature needs a capability), unmatched rows get `.cc-cap-review-row-error` + `.cc-cap-review-mapsto-error` (red, empty "— Select —" dropdown) plus a `.cc-cap-review-remove` (×) action. The summary pill becomes `.cc-parse-error` while any row is unresolved, and Confirm stays disabled until every remaining row is either mapped or removed. Confirm's count always reflects only resolved rows.
 
 ---
 
@@ -553,12 +575,16 @@ trapFocus(overlay);
 | PI Canvas | `styles/14-pi-planning.css` |
 | Admin Settings page | `styles/15-settings.css` |
 | Story Canvas | `styles/16-story-canvas-new.css` |
+| Home tab | `styles/17-home.css` |
+| Auth / login page | `styles/18-auth.css` |
+| Prototype Canvas | `styles/19-prototype-canvas.css` |
+| Team Management | `styles/20-team-management.css` |
 
 ---
 
-## 10. New Component Standards (v7.50+)
+## 10. New Component Standards
 
-These components were introduced in v7.50 as part of the Settings and Home tab rearchitecture.
+These components were introduced as part of the Settings and Home tab rearchitecture.
 All use existing design tokens. No new colour hex values are introduced.
 
 ### File Upload Zone
@@ -833,15 +859,6 @@ Used only in Settings Section 5 (Product Profiles). Not used elsewhere.
 - Back arrow in edit header: closes edit, hides divider, list returns to full width
 - Edit panel never opens as a modal — always inline within the settings right card
 - On screens narrower than 900px total settings width: edit panel overlays list (full width) instead of splitting — not in scope for current build (desktop only)
-
----
-
-### CSS Location Reference Update
-
-| Component | File |
-|---|---|
-| Home tab | `styles/17-home.css` (new — Step 4) |
-| Settings upload zone, profile cards, split panel | `styles/15-settings.css` |
 
 ---
 

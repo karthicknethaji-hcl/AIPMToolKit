@@ -1,71 +1,95 @@
+# File Manifest — AI PM Toolkit
+# Current, complete file inventory. Grouped by folder, alphabetized within each group,
+# matching the directory structure in AI_EDITING_RULES.md exactly.
+# Historical "added in vX.XX" notes live in CHANGELOG.md, not here — this file states
+# only what should currently exist and where, plus build-time handling notes where relevant.
+
+## Root
 AI_EDITING_RULES.md
 CHANGELOG.md
+DESIGN_SYSTEM.md
 FILE_MANIFEST.txt
 PROJECT_MAP.md
-favicon.ico
+README.md                    ← copied into proxy/README.md at build time, not served from root
+favicon-base64.txt            ← source only; decoded into favicon.ico at build time; never included in zip
+favicon.ico                   ← derived from favicon-base64.txt; not stored in project knowledge, created at build time
 index.html
-scripts/api.js
-scripts/capability-drawer.js
-scripts/config.js
-scripts/export-docx.js
-scripts/export-xlsx.js
-scripts/kpi-tree.js
-scripts/left-panel.js
-scripts/main.js
-scripts/metrics-definition.js
-scripts/prompts.js
-scripts/settings.js
-scripts/state.js
-scripts/feature-canvas.js
-scripts/utils.js
-styles/00-tokens.css
-styles/01-base.css
-styles/02-layout.css
-styles/03-header-settings.css
-styles/04-left-panel.css
-styles/05-kpi-tree.css
-styles/06-metrics-definition.css
-styles/07-capability-drawer.css
-styles/08-feature-canvas.css
-styles/09-modals-export.css
-scripts/diagnostic-view.js
-scripts/product-leak-analysis.js
-scripts/export-diagnostic-docx.js
-styles/11-diagnostic-view.css
-styles/12-product-leak-analysis.css
-scripts/market-intelligence.js
-scripts/export-market-intel-docx.js
-styles/13-market-intelligence.css
-DESIGN_SYSTEM.md
-netlify/functions/anthropic-proxy.js
-netlify.toml
-proxy/server.js
-proxy/package.json
-proxy/README.md
-scripts/capability-canvas.js
-scripts/pi-planning.js
-scripts/demo-data.js  ← added to manifest v8.98 (file existed but was missing from this list)
-scripts/export-pi-docx.js
-styles/10-capability-canvas.css
-styles/14-pi-planning.css
-assets/templates/capability-list-template.xlsx
-assets/templates/capability-features-template.xlsx
-assets/templates/prev-pi-template.xlsx
-scripts/settings-page.js
-styles/15-settings.css
-scripts/session-store.js
-scripts/home.js
-styles/17-home.css
 login.html
-scripts/auth.js
-styles/18-auth.css
-scripts/env.js  ← NOT included in zips; create once locally, drop into scripts/ before deploy
-scripts/story-canvas-new.js
-styles/16-story-canvas-new.css
-scripts/prototype-canvas.js
-styles/19-prototype-canvas.css
-assets/prototype-style-default.md
+netlify.toml
+package.json                  ← Netlify Functions dependencies; must live at site root, not nested under netlify/functions/
 
-## v7.01 changes
-- scripts/story-canvas.js renamed to scripts/feature-canvas.js
-- styles/08-story-canvas.css renamed to styles/08-feature-canvas.css
+## scripts/
+api.js
+auth.js
+capability-canvas.js
+capability-drawer.js
+config.js
+demo-data.js
+diagnostic-view.js
+env.js                        ← NOT included in zips; user creates once locally, drops into scripts/ before deploy
+export-diagnostic-docx.js
+export-docx.js
+export-market-intel-docx.js
+export-pi-docx.js
+export-xlsx.js
+feature-canvas.js
+home.js
+kpi-tree.js
+left-panel.js
+live-sync.js
+local-server.js               ← zero-dependency local static server, distinct from proxy/server.js — do not confuse or merge
+main.js
+market-intelligence.js
+metrics-definition.js
+outcome-pulse.js
+pi-bucket.js
+pi-planning.js
+product-leak-analysis.js
+prompts.js
+prototype-canvas.js
+session-store.js
+settings-page.js
+settings.js
+state.js
+story-canvas-new.js
+team-management.js
+utils.js
+
+## styles/
+00-tokens.css
+01-base.css
+02-layout.css
+03-header-settings.css
+04-left-panel.css
+05-kpi-tree.css
+06-metrics-definition.css
+07-capability-drawer.css
+08-feature-canvas.css
+09-modals-export.css
+10-capability-canvas.css
+11-diagnostic-view.css
+12-product-leak-analysis.css
+13-market-intelligence.css
+14-pi-planning.css
+15-settings.css
+16-story-canvas-new.css
+17-home.css
+18-auth.css
+19-prototype-canvas.css
+20-team-management.css
+21-outcome-pulse.css
+
+## assets/
+prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/
+
+## assets/templates/
+capabilityfeaturestemplate.xlsx    ← camelCase, matches actual source filename — do not rename
+capabilitylisttemplate.xlsx        ← camelCase, matches actual source filename — do not rename
+
+## netlify/functions/
+anthropic-proxy.js            ← lives only here; never duplicated into scripts/
+
+## proxy/
+README.md
+package.json                  ← proxy-specific dependency list, distinct content from root package.json — see AI_EDITING_RULES.md for exact contents
+server.js                     ← lives only here; never duplicated into scripts/; requires npm install, cannot run standalone
