@@ -81,10 +81,10 @@
 .l1-ai-badge{font-size:7.5px;font-weight:700;color:var(--purple-deep);background:var(--purple-pale);border-radius:4px;padding:1px 5px;display:inline-flex;align-items:center;gap:3px;flex-shrink:0;text-transform:uppercase;letter-spacing:0.3px;}
 .l1-cap-actions{display:flex;align-items:center;gap:2px;flex-shrink:0;}
 .l1-cap-edit{background:none;border:none;cursor:pointer;padding:2px;color:var(--label);opacity:0;transition:opacity 0.12s;flex-shrink:0;border-radius:3px;display:flex;align-items:center;justify-content:center;width:16px;height:16px;}
-.l1.l1-flat:hover .l1-cap-edit{opacity:1;}
+.l1.l1-flat:hover .l1-cap-edit,.l1:hover .l1-cap-edit{opacity:1;}
 .l1-cap-edit:hover{color:var(--purple);background:var(--purple-pale);}
 .l1-cap-remove{width:16px;height:16px;border-radius:3px;border:none;background:none;color:var(--label);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.12s;flex-shrink:0;padding:0;line-height:1;opacity:0;}
-.l1.l1-flat:hover .l1-cap-remove{opacity:1;}
+.l1.l1-flat:hover .l1-cap-remove,.l1:hover .l1-cap-remove{opacity:1;}
 .l1-cap-remove:hover{background:#FCEBEB;color:#C0392B;}
 .exp{width:18px;height:18px;flex-shrink:0;border-radius:4px;background:var(--card);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:300;color:var(--t3);transition:transform 0.2s;margin-top:1px;line-height:1;}
 .l1.open .exp{transform:rotate(45deg);}

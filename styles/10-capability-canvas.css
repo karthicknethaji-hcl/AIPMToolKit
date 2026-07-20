@@ -478,7 +478,7 @@
 /* ── In SC feature tag ── */
 .cc-feat-panel-item-insc{border-color:#0F6E56!important;background:#E1F5EE!important;}
 .cc-feat-check-done{background:#0F6E56!important;border-color:#0F6E56!important;}
-.cc-feat-insc-tag{font-size:8px;font-weight:700;color:#085041;background:#E1F5EE;border-radius:4px;padding:1px 6px;display:inline-flex;width:fit-content;align-items:center;gap:3px;border:0.5px solid #9FE1CB;white-space:nowrap;margin-left:auto;}
+.cc-feat-insc-tag{font-size:9px;font-weight:700;color:#085041;background:#E1F5EE;border-radius:10px;padding:2px 8px;display:inline-flex;width:fit-content;align-items:center;gap:3px;border:0.5px solid #9FE1CB;white-space:nowrap;margin-left:0;}
 
 /* SC-matching nav styles */
 .cc-nav-all{display:flex;align-items:center;gap:7px;padding:8px 12px;cursor:pointer;border-left:2px solid transparent;border-bottom:1px solid var(--divider);}
@@ -610,6 +610,8 @@
 .cc-card-chk:hover{border-color:var(--purple);}
 .cc-card-chk-sel{background:var(--purple)!important;border-color:var(--purple)!important;}
 .cc-card-chk-on{background:var(--green);border-color:var(--green);}
+.cc-card-chk-disabled{cursor:not-allowed!important;opacity:0.5;pointer-events:none;}
+.cc-card-chk-disabled:hover{border-color:var(--divider)!important;}
 /* Active card state communicated by card border+background — checkbox fill removed to avoid false-selected appearance */
 .cc-cap-card.cc-cap-card-active .cc-card-chk i{color:#fff;}
 .cc-card-chk-on i{color:#fff;}
@@ -680,6 +682,14 @@
 .cc-legend{margin:8px 22px 10px!important;}
 .cc-all-caps-toolbar .cc-legend{margin:10px 22px 6px!important;}
 
+/* v9.06.01: Custom Value Stage bucket sub-headers — margin-top separates
+   consecutive buckets (previously relied on ad-hoc inline styles with no
+   top margin, causing the 2nd+ bucket's header to crowd against the
+   previous bucket's card grid). :first-child exception prevents an
+   unwanted gap between the main group header and the FIRST bucket. */
+.cc-all-bucket-hdr{margin:10px 22px 6px;padding:4px 0;font-size:10px;font-weight:600;color:var(--t2);display:flex;align-items:center;gap:6px;}
+.cc-all-bucket-hdr:first-child{margin-top:0;}
+
 /* ── Right panel — KPI tree drawer pattern (v6.27) ── */
 .cc-feat-item{background:var(--card);border:0.5px solid var(--divider);border-left:3px solid var(--blue);border-radius:0 5px 5px 0;padding:9px 11px;display:flex;gap:8px;align-items:flex-start;cursor:pointer;margin-bottom:6px;}
 .cc-feat-item:last-child{margin-bottom:0;}
@@ -690,6 +700,7 @@
 .cc-feat-item-chk:hover{border-color:var(--purple);}
 .cc-feat-item-chk.sel{background:var(--purple);border-color:var(--purple);}
 .cc-feat-item-chk.done{background:var(--green);border-color:var(--green);}
+.cc-feat-item-chk-disabled{cursor:not-allowed!important;opacity:0.5;pointer-events:none;}
 .cc-feat-name{font-size:11px;font-weight:600;color:var(--t1);line-height:1.35;margin-bottom:2px;flex:1;min-width:0;}
 .cc-feat-name-row{display:flex;align-items:flex-start;gap:5px;margin-bottom:2px;}
 .cc-feat-edit-btn{background:none;border:none;padding:1px 3px;cursor:pointer;color:var(--label);opacity:0;transition:opacity 0.12s;flex-shrink:0;margin-top:1px;border-radius:3px;}

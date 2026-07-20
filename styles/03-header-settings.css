@@ -36,6 +36,14 @@ input[type="password"]::-webkit-credentials-auto-fill-button{display:none !impor
 .sp-core{font-size:8px;background:rgba(0,110,85,0.1);color:var(--green);border:1px solid rgba(0,110,85,0.2);border-radius:3px;padding:1px 5px;font-weight:600;}
 .sp-toggle{position:relative;width:32px;height:18px;flex-shrink:0;}
 .sp-toggle input{opacity:0;width:0;height:0;position:absolute;}
+/* v9.08.03: tightens the visual gap between two _spRow()s meant to read
+   as one group (e.g. a stepper + its related toggle) — reduces each row's
+   own top/bottom padding by the same measured amount used at every other
+   working section boundary on this page, rather than guessing a new
+   value a third time. Scoped to this wrapper class only; does not modify
+   _spRow() itself, so unrelated locked-pair rows elsewhere are unaffected. */
+.sp-group-tight>div:first-child{padding-bottom:4px!important;}
+.sp-group-tight>div:last-child{padding-top:4px!important;}
 .sp-track{position:absolute;inset:0;background:var(--divider);border-radius:20px;transition:background 0.2s;cursor:pointer;}
 .sp-toggle input:checked+.sp-track{background:var(--purple);}
 .sp-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:transform 0.2s;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,0.15);}

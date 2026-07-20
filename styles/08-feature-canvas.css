@@ -49,6 +49,7 @@
 .sc-card-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;}
 .sc-card-check{width:16px;height:16px;border-radius:3px;border:1.5px solid var(--divider);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:all 0.12s;}
 .sc-card-check:hover{border-color:var(--purple);}
+.sc-card-check-disabled{cursor:not-allowed!important;opacity:0.5;pointer-events:none;}
 .sc-card.sc-card-sel .sc-card-check{background:var(--purple);border-color:var(--purple);}
 .sc-card-remove{width:16px;height:16px;border-radius:3px;border:1px solid var(--divider);background:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--t4);padding:0;transition:all 0.12s;flex-shrink:0;}
 .sc-card-remove:hover{border-color:var(--red);color:var(--red);background:#fde8e8;}
@@ -322,7 +323,21 @@
 .sc-story-pi-check.checked{background:var(--purple);border-color:var(--purple);}
 .sc-story-pi-check.checked.insc{background:var(--green);border-color:var(--green);}
 .sc-story-pi-check:hover{border-color:var(--purple);}
+.sc-story-pi-check-disabled{cursor:not-allowed!important;opacity:0.5;pointer-events:none;}
 .sc-feat-insc-tag{font-size:8px;font-weight:700;color:#085041;background:#E1F5EE;border-radius:4px;padding:1px 6px;display:inline-flex;width:fit-content;align-items:center;gap:3px;border:0.5px solid #9FE1CB;white-space:nowrap;}
+
+/* ── Outcome Verification Loop: feature card hypothesis chip (B3) ── */
+/* Sizing/shape reuses .sc-ev-chip's existing pill convention rather than inventing new values, per DESIGN_SYSTEM.md's reuse rule. */
+/* v9.10.02 feedback round (Bug 1 fix, adversarially confirmed): outer
+   element carries the pill's visual styling + the pgt-tooltip anchor,
+   with overflow:visible so its own ::after tooltip pseudo-element is
+   never clipped. Truncation moved to a separate inner element, matching
+   the identical .home-sdoc-name / .home-sdoc-name-inner split already
+   proven elsewhere in this codebase. */
+.sc-hyp-chip{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:600;padding:2px 8px;border-radius:10px;flex-shrink:0;max-width:140px;overflow:visible;position:relative;min-width:0;color:var(--purple);background:var(--purple-pale);border:0.5px solid var(--purple-light);margin-left:auto;}
+.sc-hyp-chip-inner{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;}
+.sc-hyp-chip-empty{color:var(--purple);background:var(--purple-pale);border:0.5px dashed var(--purple-light);transition:background 0.12s;}
+.sc-hyp-chip-empty:hover{background:var(--purple-light);color:#fff;}
 
 /* ── PI push nudge strip (Item 25) ── */
 

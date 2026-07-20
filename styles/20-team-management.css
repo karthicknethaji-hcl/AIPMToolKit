@@ -1,0 +1,86 @@
+/* Team Management — Settings Section 6 (Phase 4, v8.109) */
+
+.tm-row {
+  display: grid;
+  grid-template-columns: 1.6fr 2fr 1.1fr 1.1fr 40px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 0.5px solid var(--divider);
+  font-family: var(--font);
+  position: relative;
+}
+.tm-row:last-child { border-bottom: none; }
+
+.tm-row-head {
+  background: var(--card);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--label);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tm-row-disabled { opacity: 0.55; }
+
+.tm-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  display: inline-block;
+}
+.tm-badge-admin    { background: var(--purple-pale); color: #3C3489; }
+.tm-badge-member   { background: var(--blue-pale);   color: #0C447C; }
+.tm-badge-readonly { background: #FAEEDA;            color: #854F0B; }
+.tm-badge-active   { background: #EAF3DE;            color: #27500A; }
+.tm-badge-disabled { background: var(--card);        color: #444441; }
+.tm-badge-pending  { background: #FAEEDA;            color: #633806; }
+
+.tm-dots {
+  width: 24px; height: 24px;
+  border: 1px solid var(--divider);
+  background: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--t3);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+  transition: background 0.12s;
+}
+.tm-dots:hover, .tm-dots[aria-expanded="true"] {
+  background: var(--purple-pale);
+  border-color: var(--purple);
+  color: var(--purple);
+}
+
+.tm-menu-item {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--t2);
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer;
+  font-family: var(--font);
+}
+.tm-menu-item:hover, .tm-menu-item:focus {
+  background: var(--card);
+  outline: none;
+}
+.tm-menu-item-danger:hover, .tm-menu-item-danger:focus {
+  background: #FCEBEB;
+  color: var(--red);
+}
+
+.tm-filter-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px;
+  font-size: 10px; color: var(--t2);
+  cursor: pointer;
+  font-family: var(--font);
+}
+.tm-filter-row:hover, .tm-filter-row:focus {
+  background: var(--card);
+  outline: none;
+}
+.tm-filter-row input[type="checkbox"] {
+  accent-color: var(--purple);
+}

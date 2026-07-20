@@ -221,11 +221,24 @@
   background: var(--purple-pale); color: var(--purple); font-weight: 700;
 }
 
-/* ── Section 5 scroll wrapper override — no padding for split panel ── */
-#sp-p5 {
-  padding: 0 !important;
-  overflow: hidden !important;
-}
+/* #sp-p5 padding/overflow override REMOVED in v8.108 — it was a stale rule
+   left over from an old section-numbering scheme, where Product Profiles'
+   split list+edit panel used to occupy the #sp-p5 DOM slot (matching its
+   content function's name, spP5() — a naming fossil from that era, still
+   present today). Product Profiles was later moved to #sp-p2 with its own
+   dedicated zero-padding setup, but this rule was never deleted — it just
+   sat dormant until whatever currently occupies #sp-p5 (PI Planning
+   Defaults, unchanged for a long time) silently inherited a padding
+   override never meant for it. Confirmed via direct comparison against
+   Output Depth: identical inline padding declared on both wrappers,
+   confirmed identical in the live-generated HTML output, but this
+   `!important` rule was forcibly zeroing it out for #sp-p5 specifically —
+   the one thing capable of overriding an inline style. Found only by
+   searching the stylesheets directly for any rule targeting these IDs,
+   after four other checks (source text, live function output, DevTools
+   Styles tab, DevTools Computed tab on the parent container) all correctly
+   showed no difference in what was *declared*, without catching what was
+   silently *overriding* it. */
 
 /* ── v8.55: Product Profiles section container — force full width ── */
 #sp-p2 {

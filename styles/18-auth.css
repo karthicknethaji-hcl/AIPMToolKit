@@ -104,6 +104,10 @@
   color: var(--t1);
   margin-bottom: 5px;
 }
+.auth-required {
+  color: var(--red);
+  font-weight: 700;
+}
 .auth-input-wrap {
   position: relative;
 }
@@ -174,6 +178,27 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none !im
 }
 .auth-field-error i { font-size: 11px; flex-shrink: 0; }
 
+/* ── Boxed variant — for warning/confirmation states that carry more than a
+     single line of plain text (e.g. the collision warning, the existing-user
+     confirm prompt with its two buttons). The plain variant above stays
+     lightweight text-only for simple required-field messages; this one adds
+     an actual visible container so multi-line content and buttons read as
+     one deliberate unit rather than text bleeding against a flat color. ── */
+.auth-field-error.boxed {
+  border: 1px solid;
+  border-radius: 6px;
+  padding: 8px 10px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.auth-cta.auth-cta-secondary {
+  background: none;
+  border: 1px solid var(--purple);
+  color: var(--purple);
+}
+.auth-cta.auth-cta-secondary:hover:not(:disabled) { background: var(--purple-pale); }
+
 /* ── Toast (above CTA) ── */
 .auth-toast {
   margin-bottom: 12px;
@@ -189,6 +214,11 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none !im
 .auth-toast.visible { display: flex; }
 .auth-toast i { font-size: 14px; flex-shrink: 0; }
 .auth-toast.toast-loading {
+  background: var(--purple-pale);
+  border: 1px solid var(--purple-light);
+  color: var(--purple-deep);
+}
+.auth-toast.toast-info {
   background: var(--purple-pale);
   border: 1px solid var(--purple-light);
   color: var(--purple-deep);

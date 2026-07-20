@@ -1,0 +1,45 @@
+/* ── Outcome Pulse tab (op) — Outcome Verification Loop ── */
+/* Most component styling is inline in outcome-pulse.js's template strings,
+   consistent with this file's own established convention (see e.g.
+   feature-canvas.js's modal builders) — this stylesheet covers only the
+   tab-level show/hide contract and the mandatory scrollbar standard. */
+
+.op-tab{display:none;flex-direction:row;height:100%;overflow:hidden;}
+.op-tab.on{display:flex;}
+
+#op-main{overflow-y:auto;}
+#op-main::-webkit-scrollbar{width:3px;}
+#op-main::-webkit-scrollbar-thumb{background:var(--divider);border-radius:2px;}
+
+/* ── Experiment Library panel (v9.11, Outcome Pulse Iteration Loop) ──
+   Fixed-width sibling of #op-main inside .op-tab, matching Capability
+   Canvas's own proven .cc-feat-panel pattern exactly (fixed 440px, no
+   animated width transition — CC's actual shipped code, not the Design
+   System doc's idealized animated variant, since CC is the concrete,
+   working precedent this panel is asked to match). Hidden by default;
+   shown by adding .op-lib-panel-open. Reuses .cc-feat-panel-hdr/-scroll
+   class names directly rather than duplicating identical rules. */
+.op-lib-panel{display:none;width:440px;min-width:440px;flex-shrink:0;border-left:1px solid var(--divider);flex-direction:column;overflow:hidden;background:#fff;}
+.op-lib-panel.op-lib-panel-open{display:flex;}
+.op-lib-card{border:1px solid var(--divider);border-radius:7px;padding:10px;margin-bottom:8px;}
+.op-lib-card-title{font-size:11px;font-weight:700;color:var(--t1);}
+.op-lib-card-desc{font-size:10px;color:var(--t3);margin:4px 0 6px;line-height:1.4;}
+.op-lib-status-chip{font-size:8px;font-weight:700;padding:2px 8px;border-radius:20px;display:inline-block;}
+.op-lib-status-canvas{background:var(--card);color:var(--t3);border:1px solid var(--divider);}
+.op-lib-status-fc{background:var(--card-purple);color:var(--purple-deep);}
+
+/* ── Outcome Breakdown signal filter (v9.10.02, item 13) — matches the
+   Home page's session filter exactly (#home-tab .home-sess-ctrl), just
+   scoped here instead since this lives outside #home-tab. Property
+   values copied verbatim rather than reusing the Home-scoped classes,
+   which would not apply outside their #home-tab prefix. ── */
+.op-filter-ctrl{
+  display:flex;align-items:center;gap:5px;
+  border:1px solid var(--divider);border-radius:5px;
+  padding:3px 8px;background:#fff;height:26px;font-size:10px;color:var(--t2);
+}
+.op-filter-ctrl i{font-size:10px;color:var(--label);}
+.op-filter-select{
+  font-family:var(--font)!important;font-size:10px!important;
+  color:var(--t1);border:none;outline:none;background:transparent;cursor:pointer;
+}

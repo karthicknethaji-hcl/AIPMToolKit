@@ -92,10 +92,26 @@
 
 /* Direct children of home-form-scroll: prevent default flex-shrink
    from collapsing content sections (ChatGPT hardening — v8.62) */
-#home-tab .home-form-scroll > .home-fl,
-#home-tab .home-form-scroll > #home-pp-wrap,
-#home-tab .home-form-scroll > .home-tog-row{
+#home-tab .home-form-scroll .home-fl,
+#home-tab .home-form-scroll #home-pp-wrap,
+#home-tab .home-form-scroll .home-tog-row{
   flex:0 0 auto;
+}
+
+/* v8.115 hardening — base display is always flex via CSS, never toggled
+   inline via JS. Visibility is controlled ENTIRELY by adding/removing
+   .home-hidden. This exists specifically because inline style.display
+   mutation already caused one real, shipped bug ('block' instead of
+   'flex' silently defeating the whole gap/margin-top:auto layout) — moving
+   the base display value out of JS's reach entirely closes that whole
+   class of regression, not just this one instance of it. */
+.home-hidden{display:none !important;}
+#home-tab .home-zero-company-state{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:24px;text-align:center;flex:1;min-height:0;
+}
+#home-tab .home-form-fields{
+  display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;
 }
 
 #home-tab .home-fl{
@@ -983,6 +999,21 @@
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   display:flex;align-items:center;gap:5px;
 }
+/* Phase 5 (v8.116/v8.117 fix): .home-sess-name is the session card's line-1
+   headline (session name), introduced in v8.116 when the layout moved from
+   product-name-first to session-name-first — but no CSS rule was ever
+   written for it at the time, confirmed via grep against the real
+   stylesheet (zero matches). It was rendering on browser-default/
+   inherited styling by accident, not deliberate styling, which is why it
+   visually diverged from .home-sess-product's former deliberate headline
+   treatment. Adopting that same treatment here since .home-sess-name now
+   occupies the identical visual role .home-sess-product used to. */
+#home-tab .home-sess-name{
+  font-size:12px;font-weight:700;color:var(--t1);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  display:flex;align-items:center;gap:5px;
+  cursor:text;
+}
 #home-tab .home-sess-type-badge{
   font-size:8px;font-weight:700;background:var(--blue-pale);
   color:var(--blue);border-radius:20px;padding:1px 6px;flex-shrink:0;
@@ -1065,6 +1096,19 @@
   border-radius:4px;padding:2px 6px;
   outline:none;width:100%;max-width:130px;
   box-sizing:border-box;
+}
+/* Phase 5 (v8.117 fix): override for the new .home-sess-name (line-1
+   headline) context — the base rule above still exists unmodified for
+   the old .home-sess-name-chip context (see the chip-specific override
+   further below, same pattern). Without this, the rename input inherited
+   the chip's 9px font-size and 130px max-width, sized for a small corner
+   chip, not the full-width headline it now actually renders inside —
+   this was the second symptom of the same root-cause gap as the missing
+   .home-sess-name base rule above. */
+#home-tab .home-sess-name input.home-sess-name-input{
+  font-size:12px;font-weight:700;
+  max-width:none;
+  width:100%;
 }
 
 /* ── v7.88 fixes ── */
