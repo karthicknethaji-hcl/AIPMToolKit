@@ -281,13 +281,13 @@
         <label>Custom Value Chain</label>
         <textarea id="f-custom-vc" class="f-textarea" placeholder="Paste your client's process framework stages here, one per line, with optional 1-line descriptions. e.g.&#10;Discover — customer awareness and research&#10;Plan — meal and order planning&#10;Purchase — checkout and payment&#10;Fulfill — picking, packing, delivery&#10;Return — post-purchase service" maxlength="2000" rows="5"></textarea>
         <span class="ctx-counter" id="f-vc-counter">0/2000</span>
-        <span class="vc-hint">When populated, the KPI tree will use these exact stages instead of deriving its own value chain.</span>
+        <span class="vc-hint">When populated, the Discovery Map will use these exact stages instead of deriving its own value chain.</span>
       </div>
       <div class="fl mi-gated" id="mi-kpi-toggle-row" style="padding:0;">
         <div class="mi-kpi-toggle-row">
           <div>
             <div class="mi-toggle-label"><i class="ti ti-world-search" style="font-size:11px;"></i> Include Market Intelligence</div>
-            <div class="mi-toggle-sub">Make your KPI tree market-aware from the start</div>
+            <div class="mi-toggle-sub">Make your Discovery Map market-aware from the start</div>
           </div>
           <label class="sp-toggle" style="flex-shrink:0;">
             <input type="checkbox" id="tog-mi-kpi" /><div class="sp-track"></div><div class="sp-thumb"></div>
@@ -390,7 +390,7 @@
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-not-generated" onchange="fcSetStoriesFilter('not-generated')"> Without stories</label>
                       <div style="height:0.5px;background:var(--divider);margin:4px 0;"></div>
                       <div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div>
-                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-kpi" onchange="fcSetOriginFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label>
+                      <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-kpi" onchange="fcSetOriginFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-doc" onchange="fcSetOriginFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-custom" onchange="fcSetOriginFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-mi" onchange="fcSetOriginFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label>
@@ -423,7 +423,7 @@
                 <div class="sc-legend-item"><div class="sc-legend-bar lb-sel"></div> Selected for gen</div>
                 <div class="sc-legend-sep"></div>
                 <span class="sc-legend-lbl" style="margin-left:4px;">Origin</span>
-                <div class="sc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
+                <div class="sc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</div>
                 <div class="sc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
                 <div class="sc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
                 <div class="sc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
