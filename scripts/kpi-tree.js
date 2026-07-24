@@ -213,7 +213,7 @@ async function generateConfirmed(extra){
       alertDiv.innerHTML=`<div class="mi-alert-modal">
         <div class="mi-alert-icon"><i class="ti ti-alert-triangle"></i></div>
         <div class="mi-alert-title">Market Intelligence is enabled.</div>
-        <div class="mi-alert-body">This will take 3–5 minutes — we'll research the market, analyse competitors, and use those findings to build your KPI tree. Worth the wait.</div>
+        <div class="mi-alert-body">This will take 3–5 minutes — we'll research the market, analyse competitors, and use those findings to build your Discovery Map. Worth the wait.</div>
         <div class="mi-alert-note">Research is AI-generated from training data. Verify statistics independently before client use.</div>
         <div class="mi-alert-btns">
           <button class="mi-alert-secondary" id="mi-alert-skip">Generate without Market Intelligence</button>
@@ -262,7 +262,7 @@ async function generateConfirmed(extra){
           // full rationale on this pattern.
           throw miErr;
         }
-        showToast('Market Intelligence could not be generated. Continuing with KPI tree. You can run it manually from the MI tab.','warn');
+        showToast('Market Intelligence could not be generated. Continuing with Discovery Map. You can run it manually from the MI tab.','warn');
       }
       // Advance to Stage 2: KPI Tree Analysis
       if(window._loaderAdvanceStage) window._loaderAdvanceStage();
@@ -1643,7 +1643,7 @@ function confirmDeleteCapability(stIdx,li,expectedBucketId,expectedName){
 
 // ── Evidence drawer entry point from KPI tree ──
 function kpiOpenEvidenceDrawer(metricName, displayName, stageName, level){
-  if(!gData){showToast('Generate a KPI tree first.','info');return;}
+  if(!gData){showToast('Generate a Discovery Map first.','info');return;}
   // Create diagnostic session on first use if it doesn't exist
   if(diagnosticSessions.length===0){
     const session={

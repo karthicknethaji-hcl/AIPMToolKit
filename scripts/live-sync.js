@@ -151,6 +151,146 @@ async function _lsPeekIfLocked(sessionId){
   }
 }
 
+// ============================================================
+// SESSION OCCUPANCY LOCK (v9.12) — "Single User Editing" mode
+// ============================================================
+// Distinct from the generation lock above (active_user_id/active_at/
+// active_user_name, acquire_generation_lock/release_generation_lock) —
+// that mechanism only protects the moment a generation call is running
+// (refreshed by a 22s heartbeat for that call's duration), not the whole
+// time a shared session is open for manual editing (adding a feature by
+// hand, editing story text, etc. — none of which ever calls the
+// generation lock at all). This section adds a second, fully independent
+// lease (occupant_user_id/occupant_at/occupant_user_name, claimed via
+// claim_session_occupancy/released via release_session_occupancy/kept
+// alive via heartbeat_session_occupancy) that covers the ENTIRE time a
+// session is open for edit under appSettings.collabEditMode==='single'.
+// Deliberately separate columns/RPCs from the generation lock — confirmed
+// via reading server.js that active_user_id/active_at are already treated
+// elsewhere in this app as generation-lock-specific (the admin
+// "delete team member" flow clears them explicitly as such); conflating
+// "someone is generating right now" with "someone has this session open"
+// would break that existing assumption.
+//
+// Design invariants:
+//   - Only ever relevant when _activeSessionIsShared, _activeSessionShareMode
+//     is 'edit', and appSettings.collabEditMode is 'single' — Multi mode and
+//     private sessions never touch any of this, zero added cost.
+//   - The claim RPC is atomic (claim-or-report-holder in one UPDATE), not a
+//     separate peek-then-write — closes the check-then-act race a naive
+//     two-step client-side approach would have.
+//   - The heartbeat requires the existing lease to still be unexpired
+//     before refreshing it — a heartbeat delayed by a sleeping laptop or a
+//     frozen background tab must NOT be able to resurrect an already-
+//     expired lease out from under a legitimate new claimant.
+//   - Fully independent timer/in-flight/seq state from the generation
+//     heartbeat (_startLockHeartbeat, api.js) — these two locks are
+//     conceptually unrelated even though structurally similar, and must
+//     never share a controller.
+//   - A stale sessionStoreRestore() continuation (user navigated away
+//     while a claim was still in flight) must release any claim it
+//     successfully-but-too-late acquired, never just abandon it — an
+//     abandoned successful claim would leave the session occupied by a
+//     tab that's no longer even looking at it.
+//   - Known, deliberately accepted limitation: the same authenticated user
+//     in two different browser tabs can both hold occupancy simultaneously
+//     (the claim RPC's own-user-reentrant branch permits this) — mirrors
+//     an already-accepted equivalent gap in the generation lock itself
+//     (documented in api.js as "does NOT solve true cross-device same-user
+//     concurrency"). Not solved here by deliberate scope decision.
+
+async function _lsClaimSessionOccupancy(sessionId){
+  try {
+    var client = _lsGetClient();
+    if (!client) return { claimed: false, occupantUserName: null };
+    var res = await client.rpc('claim_session_occupancy', { p_session_id: sessionId });
+    if (res.error || !res.data) return { claimed: false, occupantUserName: null };
+    return {
+      claimed: res.data.claimed === true,
+      occupantUserName: res.data.occupant_user_name || null,
+      reason: res.data.reason || null
+    };
+  } catch(e) {
+    console.warn('[live-sync] claim_session_occupancy failed:', e);
+    return { claimed: false, occupantUserName: null };
+  }
+}
+
+async function _lsReleaseSessionOccupancy(sessionId){
+  try {
+    var client = _lsGetClient();
+    if (!client || !sessionId) return;
+    var res = await client.rpc('release_session_occupancy', { p_session_id: sessionId });
+    if (res.error) console.warn('[live-sync] release_session_occupancy failed:', res.error.message);
+  } catch(e) {
+    console.warn('[live-sync] release_session_occupancy exception:', e);
+  }
+}
+
+// Single-flight heartbeat, structurally mirroring _startLockHeartbeat
+// (api.js) but with entirely separate state — no shared timer, in-flight
+// promise, or stopped flag between the two locks. onOccupancyLost is
+// called on a clean `false` return from the RPC (the lease genuinely
+// expired or was reassigned server-side, not a network error) — the
+// caller uses this to demote the session to view-only and toast.
+function _lsOccupancyHeartbeatStart(sessionId, onOccupancyLost){
+  var stopped = false, timer = null, inFlight = null;
+  async function beat(){
+    if (stopped) return;
+    inFlight = (async () => {
+      try {
+        var client = _lsGetClient();
+        if (!client) { stopped = true; onOccupancyLost(); return; }
+        var res = await client.rpc('heartbeat_session_occupancy', { p_session_id: sessionId });
+        if (res.error) {
+          // A single failed tick (network blip, transient RLS/auth hiccup) does
+          // NOT mean occupancy is lost — only a clean `false` data value does.
+          console.warn('[live-sync] occupancy heartbeat tick failed, state unknown, continuing:', res.error.message);
+        } else if (res.data === false) {
+          stopped = true;
+          onOccupancyLost();
+          return;
+        }
+      } catch(e) {
+        console.warn('[live-sync] occupancy heartbeat exception, continuing:', e);
+      } finally {
+        inFlight = null;
+      }
+      if (!stopped) timer = setTimeout(beat, 22000);
+    })();
+  }
+  timer = setTimeout(beat, 22000);
+  return {
+    async stopAndWait(){
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (inFlight) { try { await inFlight; } catch(e) {} }
+    }
+  };
+}
+
+// Module-level handle for the currently-running occupancy heartbeat, if
+// any — mirrors how the in-session watch (_lsSessionWatchStart/Stop below)
+// tracks its own lifecycle at module scope, so homeClearSession() and a
+// fresh sessionStoreRestore() call can both reliably stop whatever was
+// previously running without needing that handle threaded through.
+var _lsOccupancyHeartbeatHandle = null;
+var _lsOccupancySessionId = null;
+
+function _lsOccupancyHeartbeatStartTracked(sessionId, onOccupancyLost){
+  _lsOccupancyHeartbeatStop(); // idempotent — tears down any previous one first
+  _lsOccupancySessionId = sessionId;
+  _lsOccupancyHeartbeatHandle = _lsOccupancyHeartbeatStart(sessionId, onOccupancyLost);
+}
+
+async function _lsOccupancyHeartbeatStop(){
+  if (_lsOccupancyHeartbeatHandle) {
+    try { await _lsOccupancyHeartbeatHandle.stopAndWait(); } catch(e) {}
+    _lsOccupancyHeartbeatHandle = null;
+  }
+  _lsOccupancySessionId = null;
+}
+
 // ── 3a: Home poll ──
 var _lsHomePollSeq = 0;
 var _lsHomePollTimer = null;
@@ -248,6 +388,9 @@ function _lsMergeHomeMetaEntry(row){
       id: row.id,
       name: row.name || 'Session',
       productName: row.product_name || '',
+      // v9.13.01: real product FK, requires product_id in the explicit
+      // .select() column list above (this query does not use select('*')).
+      productId: row.product_id || null,
       companyName: row.company_name || '',
       productType: row.product_type || '',
       approach: row.approach || '',
@@ -284,7 +427,7 @@ async function _lsHomeRunOnePollCycle(seq){
   if (!client) return;
   try {
     var res = await client.from('mt_sessions')
-      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,company_name,product_type,approach,last_tab,last_stage,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
+      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,product_id,company_name,product_type,approach,last_tab,last_stage,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
       .eq('company_id', companyId);
     if (seq !== _lsHomePollSeq) return; // superseded while this fetch was in flight
     if (res.error) { console.warn('[live-sync] home poll query failed:', res.error.message); return; }
@@ -361,6 +504,9 @@ async function _lsResumePreFetch(sessionId){
       id: row.id,
       name: row.name || 'Session',
       productName: row.product_name || '',
+      // v9.13.01: real product FK. This query already uses select('*') above,
+      // so row.product_id is available with no query change needed here.
+      productId: row.product_id || null,
       companyName: row.company_name || '',
       productType: row.product_type || '',
       approach: row.approach || '',

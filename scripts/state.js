@@ -46,7 +46,7 @@ const appSettings={
   // sessions/companies. Confirmed OK to default OFF per no explicit
   // instruction otherwise — this is a genuinely new tab, not a fix to
   // existing behavior.
-  featOutcomePulse:false,
+  featOutcomePulse:true,
   // Section 3 — Output Depth (wired into prompts in v6.76)
   maxCaps:4,
   includeSubCaps:false,
@@ -64,7 +64,15 @@ const appSettings={
   // output-depth setting despite living in this section for now. Governs
   // the default share_mode a session gets when first shared. 'view'
   // default matches the DB column default exactly.
-  defaultShareMode:'view'  // 'view' | 'edit'
+  defaultShareMode:'view', // 'view' | 'edit'
+  // v9.12 — only meaningful when defaultShareMode==='edit'. Distinguishes
+  // the two flavors of "edit" that share_mode alone can't tell apart:
+  // 'single' = one occupant at a time (new — see live-sync.js occupancy
+  // RPCs), 'multi' = today's pre-existing unrestricted concurrent editing,
+  // fully unchanged. Any read of this field elsewhere must fall back to
+  // 'single' if missing (old cached appSettings blob predating this field),
+  // matching the same fail-safe fallback pattern already used for shareMode.
+  collabEditMode:'single' // 'single' | 'multi'
 };
 
 // Convenience aliases — kept for backward compat with all existing applyFeats() call sites

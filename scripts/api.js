@@ -283,7 +283,15 @@ const CALLER_MODEL_DEFAULTS = {
   // single-item task closer in profile to cc-dd-single/mi-suggest than
   // to the bulk multi-feature generation callers, so registered here at
   // the Haiku tier rather than Sonnet.
-  'sc-add-feat-hyp-gen': 'claude-haiku-4-5'
+  'sc-add-feat-hyp-gen': 'claude-haiku-4-5',
+  // v9.12.05 fix: was hardcoded to a specific Haiku model string directly
+  // at the call site (outcome-pulse.js), completely bypassing this table
+  // and the Optimized/user-choice precedence chain in resolveModel() below
+  // — confirmed a real gap, not a deliberate choice. Optimized now
+  // correctly resolves to Sonnet 4.6 for this caller; an explicit user
+  // model choice in Settings is also now correctly respected here, same as
+  // every other caller in this table.
+  'outcome-pulse-suggest': 'claude-sonnet-4-6'
 };
 const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing from the table above — should never happen, but never silently fail to a non-existent model
 
@@ -308,11 +316,46 @@ function resolveThresholdModel(itemCount){
   return itemCount>=4 ? 'claude-haiku-4-5' : null;
 }
 
-function resolveModel(modelOverride, caller){
-  if(modelOverride) return modelOverride;
+// ── v9.13: AI usage-tracking model-selection provenance ──
+// Same precedence as resolveModel() below, but also returns WHY a model was
+// chosen, not just which one — needed so mt_ai_usage_events can distinguish
+// "Optimized picked this" from "user explicitly chose this" from "batch-size
+// logic forced this," which a bare model string can't do on its own.
+// resolveModel() becomes a thin wrapper so none of its ~15+ existing call
+// sites need to change.
+//
+// overrideSource: passed by the CALLER when modelOverride is non-null, so
+// this function doesn't have to guess why an override was supplied. If a
+// caller passes a modelOverride without a source, this correctly falls back
+// to 'explicit_override_unclassified' — an honest "don't know," not a
+// silent mislabel as 'batch_threshold_override'. Only feature-canvas.js's
+// confirmed resolveThresholdModel() call site currently supplies a source;
+// any other modelOverride-passing call site not yet audited will show up
+// as 'explicit_override_unclassified' in the data, a visible gap rather
+// than a wrong answer.
+function resolveModelDecision(modelOverride, caller, overrideSource){
   const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
-  if(settingsVal && settingsVal!=='optimized') return settingsVal;
-  return CALLER_MODEL_DEFAULTS[caller] || _MODEL_FALLBACK;
+  const settingsMode=(settingsVal && settingsVal!=='optimized')?'fixed_model':'optimized';
+
+  if(modelOverride){
+    return {
+      model: modelOverride,
+      settingsMode,
+      settingsModel: settingsMode==='fixed_model'?settingsVal:null,
+      selectionRule: overrideSource || 'explicit_override_unclassified'
+    };
+  }
+  if(settingsMode==='fixed_model'){
+    return { model: settingsVal, settingsMode, settingsModel: settingsVal, selectionRule: 'user_selected_model' };
+  }
+  if(CALLER_MODEL_DEFAULTS[caller]){
+    return { model: CALLER_MODEL_DEFAULTS[caller], settingsMode, settingsModel: null, selectionRule: 'optimized_caller_default' };
+  }
+  return { model: _MODEL_FALLBACK, settingsMode, settingsModel: null, selectionRule: 'optimized_fallback_default' };
+}
+
+function resolveModel(modelOverride, caller){
+  return resolveModelDecision(modelOverride, caller, null).model;
 }
 
 // ── Shared tab-pending indicator ──
@@ -652,7 +695,7 @@ function hideDDLoad(){
   document.getElementById('dd-ls').classList.remove('on');
 }
 
-async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
+async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource){
   const key=getKey();
 
   // ── Proxy URL ─────────────────────────────────────────────────────────────────
@@ -690,13 +733,35 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller){
   if(key && key.trim()) headers['Authorization'] = 'Bearer ' + key.trim();
   if(authToken) headers['X-Auth-Token'] = authToken;
 
+  // v9.13: single decision call — used for both the actual model string sent
+  // to Anthropic AND the provenance fields recorded for usage tracking, so
+  // the two can never drift apart (e.g. sending model X but recording a
+  // different selectionRule than what actually produced X).
+  const _decision = resolveModelDecision(modelOverride, caller, modelOverrideSource);
+
+  // Stable per-call id, generated once client-side. Lets the future usage
+  // dashboard correlate a single logical call even if retried, without
+  // relying on server-generated ids alone. crypto.randomUUID() is available
+  // in all evergreen browsers this app targets; the fallback only matters
+  // for an environment lacking it entirely.
+  const _clientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
+
   const body = JSON.stringify({
-    model:resolveModel(modelOverride, caller),
+    model:_decision.model,
     max_tokens:maxTok,
     system:sys,
     messages:[{role:'user',content:usr}],
     _caller:caller||'',
-    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
+    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+    // v9.13: AI usage-tracking fields — read here, stripped by server.js
+    // before forwarding to Anthropic (never part of anthropicBody there).
+    product_id:(typeof activeProfileId!=='undefined')?activeProfileId:null,
+    session_id:(typeof _activeSessionId!=='undefined')?_activeSessionId:null,
+    client_call_id:_clientCallId,
+    settings_mode:_decision.settingsMode,
+    settings_model:_decision.settingsModel,
+    selection_rule:_decision.selectionRule,
+    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null
   });
 
   let r;

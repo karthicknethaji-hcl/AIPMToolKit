@@ -292,7 +292,7 @@ function miRenderScreen(){
   const monthYear=now.toLocaleString('default',{month:'long',year:'numeric'});
 
   const titleLabel=isCategory?'Category Intelligence':'Market Intelligence';
-  const subtitle=`${vertical}${ptype?' · '+ptype:''} · ${monthYear} · ${isCategory?'Category-Perspective View':'Market-Perspective View'}${gData?' · Aligned against KPI Tree':''}`;
+  const subtitle=`${vertical}${ptype?' · '+ptype:''} · ${monthYear} · ${isCategory?'Category-Perspective View':'Market-Perspective View'}${gData?' · Aligned against Discovery Map':''}`;
 
   tab.innerHTML=`
 <div class="mi-layout">
@@ -342,7 +342,7 @@ function miRenderLeftPanel(){
     :`<span class="mi-status-pill mi-status-none">Not generated</span>`;
   const statusDetail=hasTree
     ?'Capability alignment computed automatically.'
-    :'Capabilities show without alignment colours. Generate a KPI tree to enable alignment.';
+    :'Capabilities show without alignment colours. Generate a Discovery Map to enable alignment.';
 
   panel.innerHTML=`
 <div class="ph" style="border-bottom:1px solid var(--divider);">
@@ -371,7 +371,7 @@ function miRenderLeftPanel(){
   <div style="border-top:1px solid var(--divider);padding-top:8px;margin-top:2px;">
     <div style="background:#fff;border:1px solid var(--divider);border-radius:7px;padding:8px 10px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
-        <span style="font-size:9px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:var(--label);">KPI Tree</span>
+        <span style="font-size:9px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;color:var(--label);">Discovery Map</span>
         ${statusPill}
       </div>
       <div style="font-size:9px;color:var(--t2);line-height:1.4;">${statusDetail}</div>
@@ -588,7 +588,7 @@ function miRenderCapabilities(isCategory){
     let badge='';
     if(group==='aligned'){
       icon='<i class="ti ti-check" aria-hidden="true"></i>';
-      badge='<span class="mi-cap-badge mi-badge-in-tree">In KPI Tree</span>';
+      badge='<span class="mi-cap-badge mi-badge-in-tree">In Discovery Map</span>';
     } else if(group==='partial'){
       icon='<i class="ti ti-minus" aria-hidden="true"></i>';
       badge='<span class="mi-cap-badge mi-badge-partial-tree">Partial in Tree</span>';
@@ -625,9 +625,9 @@ function miRenderCapabilities(isCategory){
     </div>`;
   };
 
-  const noTreeNotice=!hasTree?`<div class="mi-no-tree-notice"><i class="ti ti-info-circle" aria-hidden="true"></i> Generate a KPI tree to see capability alignment and metric routing. Alignment colours will appear automatically — no need to regenerate.</div>`:'';
+  const noTreeNotice=!hasTree?`<div class="mi-no-tree-notice"><i class="ti ti-info-circle" aria-hidden="true"></i> Generate a Discovery Map to see capability alignment and metric routing. Alignment colours will appear automatically — no need to regenerate.</div>`:'';
   const legend=hasTree?`<div class="mi-cap-legend">
-    <span class="mi-legend-item mi-legend-aligned"><span class="mi-legend-dot"></span> In KPI Tree</span>
+    <span class="mi-legend-item mi-legend-aligned"><span class="mi-legend-dot"></span> In Discovery Map</span>
     <span class="mi-legend-item mi-legend-partial"><span class="mi-legend-dot"></span> Partial</span>
     <span class="mi-legend-item mi-legend-gap"><span class="mi-legend-dot"></span> Market gap</span>
   </div>`:'';
@@ -639,9 +639,9 @@ function miRenderCapabilities(isCategory){
     </div>
     <div class="mi-section-body">
       ${legend}
-      ${groupSection('Aligned with KPI Tree','ti ti-check',aligned,'aligned')}
-      ${groupSection('Partial in KPI Tree','ti ti-minus',partial,'partial')}
-      ${groupSection('Market Gaps — Not in KPI Tree','ti ti-circle-dashed',gaps,'gap')}
+      ${groupSection('Aligned with Discovery Map','ti ti-check',aligned,'aligned')}
+      ${groupSection('Partial in Discovery Map','ti ti-minus',partial,'partial')}
+      ${groupSection('Market Gaps — Not in Discovery Map','ti ti-circle-dashed',gaps,'gap')}
       ${noTreeNotice}
     </div>
   </div>`;

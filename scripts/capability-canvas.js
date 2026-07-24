@@ -232,15 +232,15 @@ function ccShowDualEntry(){
     <div class="cc-dual-entry">
       <div class="cc-entry-card">
         <div class="cc-entry-eyebrow">Discovery-led path</div>
-        <div class="cc-entry-label">Generate from KPI Tree</div>
+        <div class="cc-entry-label">Generate from Discovery Map</div>
         <div class="cc-entry-desc">AI derives capabilities directly from your product's growth metrics and value chain stages.</div>
-        <button class="cc-btn-primary" onclick="switchTab('mm')"><i class="ti ti-hierarchy-2" style="font-size:12px;" aria-hidden="true"></i> Go to KPI Tree</button>
+        <button class="cc-btn-primary" onclick="switchTab('mm')"><i class="ti ti-hierarchy-2" style="font-size:12px;" aria-hidden="true"></i> Go to Discovery Map</button>
       </div>
       <div class="cc-entry-divider">or</div>
       <div class="cc-entry-card">
         <div class="cc-entry-eyebrow">PI-first path</div>
         <div class="cc-entry-label">I already have a capability plan</div>
-        <div class="cc-entry-desc">Paste or upload your capabilities. AI generates features for each — skip the KPI tree entirely.</div>
+        <div class="cc-entry-desc">Paste or upload your capabilities. AI generates features for each — skip the Discovery Map entirely.</div>
         <button class="cc-btn-ghost" onclick="ccActivatePIFirst()"><i class="ti ti-clipboard-list" style="font-size:12px;" aria-hidden="true"></i> Use my own plan</button>
       </div>
     </div>
@@ -264,7 +264,7 @@ function ccActivatePIFirst(){
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
       <div style="font-size:13px;font-weight:500;color:var(--t1);">Switch to your own plan?</div>
     </div>
-      <div class="modal-body" style="margin-bottom:12px;">You have <strong>${totalCaps} capabilities</strong> from your KPI tree. How would you like to proceed?</div>
+      <div class="modal-body" style="margin-bottom:12px;">You have <strong>${totalCaps} capabilities</strong> from your Discovery Map. How would you like to proceed?</div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
         <label style="display:flex;align-items:flex-start;gap:10px;border:1px solid var(--divider);border-radius:7px;padding:10px 12px;cursor:pointer;" onclick="this.closest('.modal').querySelectorAll('.cc-choice-card').forEach(c=>c.classList.remove('selected'));this.classList.add('selected');this.closest('.modal').querySelector('.modal-confirm-btn').disabled=false;this.dataset.choice='keep';" class="cc-choice-card">
           <div style="width:16px;height:16px;border-radius:50%;border:1.5px solid var(--divider);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;" class="cc-choice-radio"></div>
@@ -857,7 +857,7 @@ function ccOpenMetricNav(){
     <div class="cc-nav-metric cc-nav-metric-clickable${miActive?' cc-nav-metric-active':''}" onclick="ccMNSelectMI('mi||capabilities')" title="View Market Intelligence capabilities">MI Capabilities${miCapCount>0?`<span class="cc-nav-count">${miCapCount}</span>`:''}</div>`;
   }
   if(!leftNavContent){
-    leftNavContent=`<div class="ccmn-empty-msg"><i class="ti ti-hierarchy-2" style="font-size:20px;color:var(--label);margin-bottom:6px;" aria-hidden="true"></i><div>Generate your KPI tree first to see metrics here.</div></div>`;
+    leftNavContent=`<div class="ccmn-empty-msg"><i class="ti ti-hierarchy-2" style="font-size:20px;color:var(--label);margin-bottom:6px;" aria-hidden="true"></i><div>Generate your Discovery Map first to see metrics here.</div></div>`;
   }
   // Persist collapse state before re-rendering
   const _wasCollapsed=document.getElementById('cc-nav')&&document.getElementById('cc-nav').classList.contains('collapsed');
@@ -1315,7 +1315,7 @@ function ccRenderAllCaps(){
           ${(ccCapFilter.size>0)?`<span id="cc-filter-badge" style="display:inline-flex;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;"><i class="ti ti-filter" style="font-size:9px;"></i> ${ccCapFilter.size} filter${ccCapFilter.size!==1?'s':''} <span onclick="ccSetCapFilter(null)" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span></span>`:''}
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
-          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
+          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
           <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
           ${ccAddCapBtnHTML('cc-tb-btn-add')}
         </div>
@@ -1327,7 +1327,7 @@ function ccRenderAllCaps(){
         <div class="cc-legend-item"><div class="cc-legend-bar lb-sel"></div> Selected</div>
         <span class="cc-legend-sep"></span>
         <span class="cc-legend-lbl" style="margin-left:4px;">Origin</span>
-        <div class="cc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
+        <div class="cc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</div>
         <div class="cc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
         <div class="cc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
         <div class="cc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
@@ -1529,7 +1529,7 @@ function ccRenderMainContent(){
           ${(ccCapFilter.size>0)?`<span id="cc-filter-badge" style="display:inline-flex;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;"><i class="ti ti-filter" style="font-size:9px;"></i> ${ccCapFilter.size} filter${ccCapFilter.size!==1?'s':''} <span onclick="ccSetCapFilter(null)" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span></span>`:''}
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
-          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
+          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
           <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
           ${ccAddCapBtnHTML('cc-tb-btn-add')}
         </div>
@@ -1541,7 +1541,7 @@ function ccRenderMainContent(){
         <div class="cc-legend-item"><div class="cc-legend-bar lb-sel"></div> Selected</div>
         <span class="cc-legend-sep"></span>
         <span class="cc-legend-lbl" style="margin-left:4px;">Origin</span>
-        <div class="cc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> KPI tree</div>
+        <div class="cc-legend-item"><i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</div>
         <div class="cc-legend-item"><i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session doc</div>
         <div class="cc-legend-item"><i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</div>
         <div class="cc-legend-item"><i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intel</div>
@@ -2225,7 +2225,7 @@ function ccShowPIFirstForm(isEditing){
           <div class="cc-pif-hdr-top">
             ${isEditing
               ?`<button class="cc-pif-back" onclick="piFirstBuilt=true;ccOpenNavigator()"><i class="ti ti-x" style="font-size:10px;" aria-hidden="true"></i> Cancel</button>`
-              :`<button class="cc-pif-back" onclick="ccExitPIFirst()"><i class="ti ti-chevron-left" style="font-size:10px;" aria-hidden="true"></i> Back to KPI Tree</button>`
+              :`<button class="cc-pif-back" onclick="ccExitPIFirst()"><i class="ti ti-chevron-left" style="font-size:10px;" aria-hidden="true"></i> Back to Discovery Map</button>`
             }
           </div>
           <div class="ph-title" style="margin-top:6px;">${isEditing?'EDIT CUSTOM PLAN':'YOUR CAPABILITY PLAN'}</div>
@@ -2458,7 +2458,7 @@ function ccRenderParseResult(parsed,overlaps){
   let html=`<div class="cc-parse-ok"><i class="ti ti-check" style="font-size:11px;" aria-hidden="true"></i> ${parsed.length} capabilities detected${featCount>0?' · '+featCount+' features':' · AI will generate features for each'}</div>`;
   if(overlaps&&overlaps.length>0){
     html+=`<div class="cc-parse-overlap"><i class="ti ti-alert-triangle" style="font-size:11px;flex-shrink:0;" aria-hidden="true"></i>
-      <div><strong>${overlaps.length} possible overlap${overlaps.length>1?'s':''} with KPI tree</strong><br>
+      <div><strong>${overlaps.length} possible overlap${overlaps.length>1?'s':''} with Discovery Map</strong><br>
       ${overlaps.map(o=>`"${e(o.name)}" ≈ KPI entry. 
         <button class="cc-overlap-btn" onclick="ccResolveOverlap('${e(o.name)}','merge')">Merge with KPI</button>
         <button class="cc-overlap-btn cc-overlap-btn-ghost" onclick="ccResolveOverlap('${e(o.name)}','separate')">Keep separate</button>`).join('<br>')}
@@ -2822,7 +2822,7 @@ async function ccDDGenerateForMetricSafe(metricKey,metricName,stageLabel){
   const strip=panel?panel.querySelector('#dd-gen-strip'):null;
   if(strip)strip.innerHTML='<div class="cc-parse-loading"><div class="cc-spin-sm"></div> Generating for '+e(metricName)+'…</div>';
   try{
-    if(!gData)throw new Error('No KPI tree data.');
+    if(!gData)throw new Error('No Discovery Map data.');
     const key=getKey();
     const txt=await callAPI((typeof SYS_DD!=='undefined'?SYS_DD:''),buildDDPrompt([{stage:stageLabel,level:'L1',name:metricName}]),1500,null,'claude-haiku-4-5','cc-dd-single');
     const clean=txt.replace(/```json|```/g,'').trim();
@@ -2864,7 +2864,7 @@ async function ccDDGenerateAll(){
   const strip=document.getElementById('dd-gen-strip');
   if(strip)strip.innerHTML='<div class="cc-parse-loading"><div class="cc-spin-sm"></div> Generating dictionary for all metrics…</div>';
   try{
-    if(!gData)throw new Error('No KPI tree data. Generate your KPI tree first.');
+    if(!gData)throw new Error('No Discovery Map data. Generate your Discovery Map first.');
     const key=getKey();
     const productName=getProductCtx().name;
     // Build metric list from gData (all L1+L2+L3)

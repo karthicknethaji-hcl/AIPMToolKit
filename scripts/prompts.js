@@ -3,6 +3,22 @@
 // Used in all AI prompts to avoid awkward "2-2" ranges when admin sets max to the locked minimum.
 function _spRange(mn,mx){return mn===mx?'exactly '+mn:(mn+'-'+mx);}
 
+// ── v9.13: AI usage-tracking prompt versions ──
+// Manually maintained, one entry per caller — bump the version string
+// whenever that caller's prompt changes materially (new fields, restructured
+// instructions, different schema). Lets future usage-dashboard analysis
+// distinguish "this caller got more expensive because usage went up" from
+// "this caller got more expensive because the prompt changed" — the two
+// look identical in raw token data without this tag. Absence (a caller not
+// listed here) is valid — "not yet tracked," not an error; callAPI() and
+// the ai-recommendations call site both already handle a missing entry by
+// sending null, so nothing breaks when a new caller is added here later.
+const PROMPT_VERSIONS = {
+  // Intentionally starts empty. Populate incrementally as prompts are
+  // deliberately versioned going forward — do not backfill guessed
+  // versions for existing prompts retroactively.
+};
+
 function buildTreePrompt(fd,extra){
   // Read depth from gData (refinement) or appSettings (fresh generation).
   // Refinement must use the depth the tree was originally generated at to avoid

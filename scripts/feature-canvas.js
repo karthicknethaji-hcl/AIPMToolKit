@@ -209,7 +209,7 @@ function fcRenderCapNav(){
   }
 
   if(!scCanvas.length){
-    tree.innerHTML='<div class="sc-cap-nav-empty">No features on canvas yet.<br>Select features from the KPI Tree.</div>';
+    tree.innerHTML='<div class="sc-cap-nav-empty">No features on canvas yet.<br>Select features from the Discovery Map.</div>';
     return;
   }
 
@@ -845,7 +845,7 @@ function scBuildOutcomeHypChipHTML(f){
       // Origin icon + name
       const isDoc=f.origin==='doc';
       const _scOriginIcon=isDiag?'ti-microscope':isMI?'ti-world-search':isDoc?'ti-file-text':f.origin==='pi'?'ti-clipboard-list':'ti-hierarchy-2';
-      const _scOriginTitle=isDiag?'From Experiment Canvas':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From KPI Tree Capability';
+      const _scOriginTitle=isDiag?'From Experiment Canvas':isMI?'From Market Intelligence':isDoc?'From Session Document':f.origin==='pi'?'From Custom plan':'From Discovery Map Capability';
       const _scOriginClass=isDiag?'sc-origin-icon-diag':isMI?'sc-origin-icon-market':isDoc?'sc-origin-icon-doc':f.origin==='pi'?'sc-origin-icon-pi':'sc-origin-icon-kpi';
       h+=`<div class="sc-card-name-row"><span class="sc-origin-icon ${_scOriginClass}" title="${_scOriginTitle}" style="width:14px;height:14px;flex-shrink:0;border-radius:3px;"><i class="ti ${_scOriginIcon}" style="font-size:9px;" aria-hidden="true"></i></span><div class="sc-card-name">${e(f.name)}</div></div>`;
       h+=`<div class="sc-card-why">${e(f.why)}</div>`;
@@ -1277,7 +1277,7 @@ function scRenderLineage(feat,targetElId){
       <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px;">
         ${dot('#185FA5',false,false)}
         <span class="sc-panel-lineage-key" style="color:#185FA5;width:auto;">${_metricLbl}</span>
-        <span style="font-size:9px;color:var(--t3);">${_isCap?'— pick one from your Discovery Map':'— pick one from your KPI tree'}</span>
+        <span style="font-size:9px;color:var(--t3);">— pick one from your Discovery Map</span>
       </div>
       <div class="sc-panel-lineage-picker">
         <select id="sc-lineage-metric-sel" onchange="document.getElementById('sc-lineage-confirm').disabled=!this.value;">
@@ -1361,7 +1361,7 @@ function scShowLinkMetricModal(fid){
   // G3 — no KPI tree guard
   if(typeof gData==='undefined'||!gData||!gData.stages||!gData.stages.length){
     const _isCap=typeof gData!=='undefined'&&gData&&gData.approach==='capability-based';
-    showToast(_isCap?'Generate your Discovery Map first to link a capability.':'Generate your KPI tree first to link a metric.','warn');
+    showToast(_isCap?'Generate your Discovery Map first to link a capability.':'Generate your Discovery Map first to link a metric.','warn');
     return;
   }
   scPanelLinkingMetric=true;
@@ -2155,13 +2155,19 @@ async function scGenerateStories(featureIds){
   const _projectedTok=features.length*_maxStories*900;
   const _dynTok=Math.min(32000,Math.max(12000,_projectedTok+2000));
   const _batchModel=_projectedTok>7000?null:(typeof resolveThresholdModel==='function')?resolveThresholdModel(features.length):null;
+  // v9.13: tags WHY a non-null _batchModel was supplied, so usage-tracking
+  // records this as 'batch_threshold_override' rather than the honest-but-
+  // uninformative 'explicit_override_unclassified' fallback every other
+  // (unaudited) modelOverride call site currently gets.
+  const _batchSource=_batchModel?'batch_threshold_override':null;
   const txt=await callAPI(
     'You are a senior product manager and scrum master. Write grooming-ready user stories with Gherkin acceptance criteria. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
     prompt,
     _dynTok,
     _signal,
     _batchModel,
-    'fc-gen-stories'
+    'fc-gen-stories',
+    _batchSource
   );
     const clean=txt.replace(/```json|```/g,'').trim();
     let parsed;

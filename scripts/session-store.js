@@ -189,6 +189,13 @@ async function _ssUpsertToDB(sessionId, entry) {
       id:              sessionId,
       user_id:         uid,
       company_id:      activeCompanyId,
+      // v9.13.01: real product FK — NOT NULL on mt_sessions as of this
+      // migration. meta.productId is always populated at creation time
+      // (see sessionStoreCreate); falling back to null here only matters
+      // for any pre-migration in-memory entry that somehow never picked up
+      // the backfilled value, which should not occur in practice but is
+      // safer than assuming.
+      product_id:      meta.productId    || null,
       last_edited_by:  uid,
       last_edited_by_name: _editorName,
       is_shared:       !!meta.isShared,
@@ -282,6 +289,9 @@ async function sessionStoreSyncFromDB() {
         id:          row.id,
         name:        row.name        || 'Session',
         productName: row.product_name || '',
+        // v9.13.01: real product FK, read straight off the row — .select('*')
+        // above already returns this column with no query change needed.
+        productId:   row.product_id   || null,
         companyName: row.company_name || '',
         productType: row.product_type || '',
         approach:    row.approach     || '',
@@ -378,6 +388,16 @@ function sessionStoreCreate(sc) {
     lastTab: 'mm',
     lastStage: 'Discovery Map',
     productName,
+    // v9.13.01: real product FK, captured alongside the existing denormalized
+    // productName. A session is always launched against a selected product
+    // profile (enforced by the launch button's own gating in home.js), so
+    // this should always be present — mt_sessions.product_id is NOT NULL as
+    // of this migration. Exists specifically so server-side AI usage-tracking
+    // (mt_ai_usage_events) can derive product_id from session_id reliably,
+    // instead of trusting the client's Home-tab-scoped activeProfileId at
+    // generation time, which is not guaranteed to still be accurate deep
+    // inside an already-running session.
+    productId: (sc && sc.productProfile && sc.productProfile.id) || null,
     companyName: (sc && sc.companyProfile && sc.companyProfile.companyName) || '',
     productType: (sc && sc.productProfile && sc.productProfile.productType) || '',
     approach: (sc && sc.approach) || 'outcome-based',
@@ -460,14 +480,33 @@ function sessionStoreCreate(sc) {
 // still catches and logs every error internally (never throwing past this
 // function) behaves identically from their point of view. Only the new
 // call sites in capability-canvas.js explicitly await this.
-async function sessionStoreSave(sessionId) {
+async function sessionStoreSave(sessionId, expectedBlock) {
   if (!sessionId) return false;
   // v9.08: central defense-in-depth guard. Private (non-shared) sessions
   // are unaffected — canEditSession() returns true for those via the
   // _activeSessionIsShared===false branch. This exists to catch any
   // per-screen gate that might be missed, not to replace them.
+  // v9.12.05 fix: added optional expectedBlock param, defaulting to falsy
+  // for every one of this function's ~93 other call sites — those are
+  // UNCHANGED, still console.error, since a blocked save from any of THOSE
+  // callers genuinely means a per-screen permission gate was missed
+  // somewhere (the exact class of bug this guard exists to catch, per the
+  // comment above — and per real, prior fixes of exactly that kind, see
+  // AI_EDITING_RULES.md's "View-only / permission-gated UI" section).
+  // Only homeClearSession()'s own save-on-exit attempt passes true here —
+  // that call is EXPECTED to be blocked whenever the exiting session was
+  // view-only (including a session correctly demoted by the Session
+  // Occupancy Lock), so logging it as a red console.error was misleading:
+  // nothing was actually wrong, just a normal, correct exit. Downgrading
+  // the log unconditionally for ALL callers was considered and rejected
+  // via adversarial review — that would have silenced the genuine-bug
+  // signal for every other caller too, not just the one benign case.
   if (!canEditSession()) {
-    console.error('[sessionStoreSave blocked] view-only session attempted save', sessionId);
+    if (expectedBlock) {
+      console.log('[sessionStoreSave blocked] view-only session, save skipped as expected on exit', sessionId);
+    } else {
+      console.error('[sessionStoreSave blocked] view-only session attempted save', sessionId);
+    }
     return false;
   }
   let _dbWriteOk = false;
@@ -538,6 +577,14 @@ function sessionStoreLoad(sessionId) {
 // Prevents switchTab() from overwriting lastTab during session restore.
 // Set true at start of restore, false after completion.
 var _ssRestoring = false;
+// v9.12.02 — tracks WHICH session is currently restoring, alongside
+// _ssRestoring's boolean. Enables sessionStoreRestore()'s re-entrancy guard
+// to distinguish "a duplicate call for the SAME session" (suppressed) from
+// "a legitimate switch to a DIFFERENT session" (still allowed to supersede,
+// unchanged from prior behavior) — see sessionStoreRestore() for the actual
+// guard logic. Cleared alongside _ssRestoring, only by whichever call still
+// owns the current _ssRestoreSeq.
+var _ssRestoringSessionId = null;
 var _ssLastTabTimer = null;
 // ── _activeSessionName ──
 // In-memory source of truth for current session name.
@@ -850,6 +897,24 @@ function _ssDecompressProtoStoreWireframes(protoStoreObj) {
 }
 
 async function sessionStoreRestore(sessionId) {
+  // v9.12.02 fix: re-entrancy guard for the SAME session only. Root cause
+  // of the "occupancy toast never shown" bug — a duplicate invocation for
+  // the same sessionId (confirmed via diagnostic logging to originate from
+  // a rapid double-trigger on the session card) started a second restore
+  // while the first was still awaiting its occupancy claim; the second
+  // call's ++_ssRestoreSeq silently invalidated the first's in-flight
+  // continuation before its toast/demotion logic ever ran. Deliberately
+  // scoped to the SAME session only — a different session must still be
+  // allowed to supersede an in-flight restore, matching the existing
+  // seq-token design's explicit intent (see the _restoreSeq checks below,
+  // unchanged). A blanket "any restore in progress, bail" guard was
+  // considered and rejected via adversarial review: it would silently
+  // break a legitimate rapid X→Y session switch, which today correctly
+  // lets Y win.
+  if (_ssRestoring && _ssRestoringSessionId === sessionId) {
+    console.warn('[sessionStoreRestore] duplicate call ignored for session already restoring:', sessionId);
+    return;
+  }
   const _restoreSeq = ++_ssRestoreSeq;
   const localEntry = sessionStoreLoad(sessionId);
   if (!localEntry || !localEntry.snapshot) {
@@ -858,185 +923,296 @@ async function sessionStoreRestore(sessionId) {
   }
 
   _ssRestoring = true;  // prevent switchTab from overwriting lastTab during restore
+  _ssRestoringSessionId = sessionId;
 
-  // v8.150 fix (Issue 2, corrected): the v8.149 attempt computed this
-  // condition here and passed it as an explicit skipSave flag — confirmed
-  // via live testing that this missed the actual failure mode (navigating
-  // to Home first, a different call site, already did the damage before
-  // this ever ran). The detection now lives inside homeClearSession()
-  // itself, automatically, so this call site is back to a plain call.
-  if (typeof homeClearSession === 'function') homeClearSession();
+  // v9.12.02 fix: wrapping the whole body in try/finally so _ssRestoring/
+  // _ssRestoringSessionId are ALWAYS cleared on exit — but only by whichever
+  // call actually still owns the current seq (checked in the finally block
+  // below), never unconditionally. Found via adversarial review: the
+  // previous code cleared _ssRestoring=false in every individual early-
+  // return branch unconditionally, which is wrong the moment a stale call
+  // wakes up AFTER a newer call has already taken over — the stale call's
+  // cleanup would incorrectly clear the flag out from under the newer,
+  // still-active restore. A single ownership-checked cleanup point closes
+  // this for every exit path (early return, exception, or normal
+  // completion) at once, rather than requiring every branch to get it
+  // right individually.
+  try {
+    // v8.150 fix (Issue 2, corrected): the v8.149 attempt computed this
+    // condition here and passed it as an explicit skipSave flag — confirmed
+    // via live testing that this missed the actual failure mode (navigating
+    // to Home first, a different call site, already did the damage before
+    // this ever ran). The detection now lives inside homeClearSession()
+    // itself, automatically, so this call site is back to a plain call.
+    if (typeof homeClearSession === 'function') homeClearSession();
 
-  // Phase 3b (v8.126): for a cached-shared session, fetch that row fresh
-  // from the DB before applying anything — today's local-cache-only resume
-  // (the code below this point, unchanged) doesn't reflect a teammate's
-  // content generated while this browser wasn't watching. Private sessions
-  // take the exact pre-v8.126 path unchanged (no await ever happens, zero
-  // added latency or risk).
-  let entry = localEntry;
-  let _lsCursorSeed = null;
-  let _lsPreFetchFailed = false;
-  if (localEntry.meta && localEntry.meta.isShared && typeof _lsResumePreFetch === 'function') {
-    try {
-      const _fresh = await _lsResumePreFetch(sessionId);
-      // Re-check after the only await in this function — a second resume
-      // started while this one was in flight wins; this one bows out.
-      if (_restoreSeq !== _ssRestoreSeq) { _ssRestoring = false; return; }
-      if (_fresh && _fresh.ok) {
-        entry = { meta: _fresh.meta, snapshot: _fresh.snapshot };
-        _lsCursorSeed = _fresh.cursorEventId;
-        // Write the fresh entry into localStorage immediately — this
-        // function's own tail logic (savedAt/lastTab stamping) re-reads
-        // localStorage directly rather than reusing this local variable;
-        // without this write, that later re-read would silently see stale
-        // cached data instead of what was just fetched.
-        try { localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry)); } catch(e) {}
-      } else if (_fresh && _fresh.reason === 'no-access') {
-        // Fix (v8.127): confirmed no access (a clean, error-free query that
-        // simply returned nothing — RLS has excluded this row) must NOT
-        // fall back to serving stale local content, unlike a genuine
-        // network failure. Found in testing: a session card could still be
-        // "resumed" into a stale cached copy after being unshared, in the
-        // window before the next Home poll cycle noticed it was gone.
-        if (typeof _lsRemoveLocalSessionEntry === 'function') _lsRemoveLocalSessionEntry(sessionId);
-        if (typeof showToast === 'function') showToast('This session is no longer shared with you.', 'warn');
-        if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
-        _ssRestoring = false;
-        return;
-      } else {
-        // Genuine error (network, malformed response) — fall back to
-        // cached content, but say so explicitly rather than failing silent.
+    // Phase 3b (v8.126): for a cached-shared session, fetch that row fresh
+    // from the DB before applying anything — today's local-cache-only resume
+    // (the code below this point, unchanged) doesn't reflect a teammate's
+    // content generated while this browser wasn't watching. Private sessions
+    // take the exact pre-v8.126 path unchanged (no await ever happens, zero
+    // added latency or risk).
+    let entry = localEntry;
+    let _lsCursorSeed = null;
+    let _lsPreFetchFailed = false;
+    // v9.12.04 fix: showToast() has a single shared DOM slot with no queue
+    // (confirmed by reading utils.js's implementation) — a later call
+    // unconditionally overwrites an earlier one's content, even within the
+    // same synchronous tick. The unconditional 'Session restored.' toast
+    // near the end of this function was silently overwriting the occupancy
+    // lock's own toast (read-only demotion notice), which fires earlier in
+    // this same function and never gets a chance to actually be seen —
+    // root-caused via live testing: the occupancy gate's own logging
+    // proved the demotion toast call WAS being reached, but the user never
+    // saw it. This flag lets the occupancy toast claim the single slot as
+    // the more specific, more important message for THIS restore, and
+    // suppresses the generic one that would otherwise clobber it.
+    let _occupancyToastShown = false;
+    if (localEntry.meta && localEntry.meta.isShared && typeof _lsResumePreFetch === 'function') {
+      try {
+        const _fresh = await _lsResumePreFetch(sessionId);
+        // Re-check after this await — a second resume started while this
+        // one was in flight wins; this one bows out. Cleanup of
+        // _ssRestoring now happens once, in the finally block, not here.
+        if (_restoreSeq !== _ssRestoreSeq) { return; }
+        if (_fresh && _fresh.ok) {
+          entry = { meta: _fresh.meta, snapshot: _fresh.snapshot };
+          _lsCursorSeed = _fresh.cursorEventId;
+          // Write the fresh entry into localStorage immediately — this
+          // function's own tail logic (savedAt/lastTab stamping) re-reads
+          // localStorage directly rather than reusing this local variable;
+          // without this write, that later re-read would silently see stale
+          // cached data instead of what was just fetched.
+          try { localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry)); } catch(e) {}
+        } else if (_fresh && _fresh.reason === 'no-access') {
+          // Fix (v8.127): confirmed no access (a clean, error-free query that
+          // simply returned nothing — RLS has excluded this row) must NOT
+          // fall back to serving stale local content, unlike a genuine
+          // network failure. Found in testing: a session card could still be
+          // "resumed" into a stale cached copy after being unshared, in the
+          // window before the next Home poll cycle noticed it was gone.
+          if (typeof _lsRemoveLocalSessionEntry === 'function') _lsRemoveLocalSessionEntry(sessionId);
+          if (typeof showToast === 'function') showToast('This session is no longer shared with you.', 'warn');
+          if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
+          return;
+        } else {
+          // Genuine error (network, malformed response) — fall back to
+          // cached content, but say so explicitly rather than failing silent.
+          _lsPreFetchFailed = true;
+        }
+      } catch(e) {
         _lsPreFetchFailed = true;
       }
+    }
+    if (_restoreSeq !== _ssRestoreSeq) { return; }
+
+    const s = entry.snapshot;
+    const meta = entry.meta;
+
+    _ssApplySnapshotFields(s);
+
+    _activeSessionId = sessionId;
+    // Phase 5: capture the restored session's sharing state once, here — the
+    // single point where "which session is active" changes. Never re-derived
+    // mid-generation; withGenerationLock() (api.js) captures ITS OWN local
+    // copy from this global at call time, so a later stale read of this
+    // global can't retroactively affect an already-running generation.
+    _activeSessionIsShared = !!meta.isShared;
+    _activeSessionOwnerId = meta.userId || null;
+    // v9.08: read the restored session's share mode. Falls back to 'view'
+    // (fail-closed) if the field is missing on an old cached entry rather
+    // than defaulting to 'edit'.
+    _activeSessionShareMode = meta.shareMode === 'edit' ? 'edit' : 'view';
+    sessionActive = true;
+
+    // v9.12 — Session Occupancy Lock ("Single User Editing"). Only
+    // relevant for a shared session whose persisted share_mode is 'edit' AND
+    // the company-wide setting is 'single' (Multi mode is completely
+    // untouched by this block — no occupancy check, no claim, no heartbeat,
+    // identical to pre-v9.12 behavior). Placed here — after share_mode is
+    // captured, before the watch starts and before any rendering — so a
+    // failed claim can demote _activeSessionShareMode to 'view' in-memory
+    // BEFORE canEditSession() is consulted by anything below this point.
+    // This override is never written back to meta.shareMode or the session's
+    // DB row — it's a per-restore-instance in-memory fact only, exactly like
+    // the existing shareMode fallback-to-'view' pattern above it.
+    if (_activeSessionIsShared && _activeSessionShareMode === 'edit'
+        && (typeof appSettings !== 'undefined' && (appSettings.collabEditMode||'single') === 'single')
+        && typeof _lsClaimSessionOccupancy === 'function') {
+      // v9.12.02 fix: fail closed on a thrown/rejected claim call, not just
+      // a clean {claimed:false} response. Found via adversarial review — the
+      // original code had no try/catch here; a genuine RPC failure (network,
+      // auth) would throw past this point with _activeSessionShareMode
+      // already 'edit' and never demoted, silently leaving the session
+      // editable with no occupancy actually held, since callers never
+      // await/catch this function.
+      let _occRes = null;
+      try {
+        _occRes = await _lsClaimSessionOccupancy(sessionId);
+      } catch(e) {
+        console.warn('[live-sync] occupancy claim threw, failing closed:', e);
+        if (_restoreSeq === _ssRestoreSeq) {
+          _activeSessionShareMode = 'view';
+          if (typeof showToast === 'function') {
+            showToast('Could not verify edit access. The session was opened read-only.', 'warn');
+            _occupancyToastShown = true;
+          }
+        }
+        _occRes = null;
+      }
+      // Re-check after this await — same reasoning as the pre-fetch's own
+      // check above: a second restore started while this claim was in
+      // flight wins, this one must not clobber it. Per adversarial review:
+      // if THIS continuation's claim actually succeeded before losing the
+      // race, it must release what it just claimed, not merely abandon it —
+      // an abandoned successful claim would leave the session occupied by a
+      // tab that's no longer even looking at it.
+      if (_restoreSeq !== _ssRestoreSeq) {
+        if (_occRes && _occRes.claimed && typeof _lsReleaseSessionOccupancy === 'function') {
+          _lsReleaseSessionOccupancy(sessionId); // fire-and-forget, best-effort cleanup of the orphaned claim
+        }
+        return;
+      }
+      if (_occRes && !_occRes.claimed) {
+        _activeSessionShareMode = 'view';
+        if (typeof showToast === 'function') {
+          showToast("This session is currently being edited by " + (_occRes.occupantUserName || 'someone on your team') + ". You're viewing it in read-only mode for now.", 'warn');
+          _occupancyToastShown = true;
+        }
+      } else if (_occRes && _occRes.claimed && typeof _lsOccupancyHeartbeatStartTracked === 'function') {
+        _lsOccupancyHeartbeatStartTracked(sessionId, function(){
+          // Heartbeat reports the lease genuinely expired/lost server-side —
+          // demote in-memory and inform the user. Does not attempt to
+          // re-claim automatically; per product decision, a demoted viewer
+          // retries by leaving and reopening the session (same as any other
+          // "session became available" case), not via a live promotion path.
+          _activeSessionShareMode = 'view';
+          if (typeof showToast === 'function') {
+            showToast("You've lost edit access to this session. You're now viewing it in read-only mode.", 'warn');
+          }
+        });
+      }
+    }
+
+    // Phase 3b/3c (v8.126): watch starts here, not earlier — this is the
+    // single point where the active session's identity and sharing state are
+    // both already final for this restore. Seeded with the cursor captured
+    // BEFORE the snapshot fetch above (deliberate ordering — see
+    // _lsResumePreFetch), so anything generated in the gap between those two
+    // fetches surfaces as a redundant-but-safe banner rather than being
+    // silently acknowledged as already-seen.
+    if (_activeSessionIsShared && typeof _lsSessionWatchStart === 'function' && canEditSession()) {
+      _lsSessionWatchStart(sessionId, _lsCursorSeed);
+    }
+    if (_lsPreFetchFailed && typeof showToast === 'function') {
+      showToast('Could not confirm the latest version of this session. Showing the last saved copy.', 'warn');
+    }
+
+    // v8.45: seed el.textContent early so it's available if switchTab reads it
+    // Do NOT call hdrSetSessionName here — curTab is still 'home', visibility would hide it
+    var _hdrEl=document.getElementById('hdr-product-name');
+    if(_hdrEl&&meta.name){_hdrEl.textContent=meta.name.trim();}
+
+    // Fix #7c — hide tab lock message
+    const lockMsg = document.getElementById('home-tab-lock');
+    if (lockMsg) lockMsg.style.display = 'none';
+    const tabHint = document.querySelector('.tab-hint');
+    if (tabHint) tabHint.style.display = 'none';
+
+    // Hide-then-reveal tab visibility, matching this session's actual data —
+    // now a single shared function (see _ssSyncTabVisibility below), also
+    // used by the cross-user wholesale apply path.
+    _ssSyncTabVisibility(s);
+
+    // Navigate to last active tab — switchTab handles all left panel / content visibility
+    const targetTab = meta.lastTab || 'mm';
+    if (typeof switchTab === 'function') switchTab(targetTab);
+
+    // Fix #2 — re-render DM only if navigating to mm tab
+    if (targetTab === 'mm' && s.gData) {
+      if (typeof renderMM === 'function') renderMM(s.gData);
+      // Restore evidence dots and values on DM after session reload (v8.37)
+      if (typeof kpiRenderEvidenceStates === 'function') kpiRenderEvidenceStates();
+      const mmOut = document.getElementById('mm-out');
+      if (mmOut) mmOut.classList.add('on');
+      if (typeof mmRenderSessionPanel === 'function'){
+        mmRenderSessionPanel();
+        // v8.45: sync left panel immediately after rebuild — mmRenderSessionPanel uses productName fallback
+        if(typeof mmUpdateSessionName==='function')mmUpdateSessionName(meta.name||'');
+      }
+    }
+
+    // If session was interrupted before gData was set, show a clear interrupted state
+    if (targetTab === 'mm' && !s.gData && sessionActive) {
+      if (typeof hideLoad === 'function') hideLoad();
+      if (typeof endAiGen === 'function') endAiGen();
+      const esEl = document.getElementById('es');
+      if (esEl) {
+        const productName = (s.sessionContext && s.sessionContext.productProfile && s.sessionContext.productProfile.productName) || 'this product';
+        esEl.innerHTML = `
+          <div class="empty-icon"><i class="ti ti-player-pause" style="color:var(--purple);"></i></div>
+          <div class="empty-title">Generation was interrupted</div>
+          <div class="empty-desc">Your session for <strong>${e(productName)}</strong> was started but the Discovery Map didn't complete. Your product details are ready — click Generate to continue.</div>
+          <div class="empty-steps">
+            <button class="gen-btn" onclick="generate()" style="margin-top:8px;"><i class="ti ti-sparkles" style="font-size:13px;" aria-hidden="true"></i> Generate Discovery Map</button>
+          </div>`;
+        esEl.style.display = '';
+      }
+    }
+
+    // Fix #3 — for non-mm targets, ensure DM left panel is hidden
+    if (targetTab !== 'mm') {
+      const lp = document.getElementById('left-panel');
+      if (lp) lp.classList.add('sc-hidden');
+    }
+
+    // MI: re-render only if navigating to mi tab
+    if (targetTab === 'mi' && s.miGenerated) {
+      if (typeof miRenderScreen === 'function') miRenderScreen();
+    }
+
+    // Update home left panel to show active session
+    if (typeof homeRenderSessionPanel === 'function') homeRenderSessionPanel();
+
+    // v8.45: final authoritative UI sync — runs AFTER curTab is final and all DOM rebuilt
+    // This is the definitive fix for session name not showing after restore
+    sessionStoreSyncRestoredSessionName(meta.name||'');
+
+    // Save session immediately after restore — updates savedAt and forces lastTab to targetTab.
+    try {
+      const _raw = localStorage.getItem(_SS_PREFIX + sessionId);
+      if (_raw) {
+        const _entry = JSON.parse(_raw);
+        _entry.meta.savedAt = Date.now();
+        _entry.meta.lastTab = targetTab;
+        localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(_entry));
+      }
     } catch(e) {
-      _lsPreFetchFailed = true;
+      console.warn('sessionStoreRestore save failed:', e);
+    }
+
+    // v9.12.04 fix: only show the generic "Session restored." toast if the
+    // occupancy lock didn't already claim the single toast slot with a more
+    // specific, more important message — showToast() has no queue, so an
+    // unconditional call here would always overwrite (and hide) the
+    // occupancy warning, exactly the bug that motivated this flag.
+    if (!_occupancyToastShown) {
+      showToast('Session restored.', 'info');
+    }
+    // v8.149 fix (Issue 2): mark this as this person's own last active
+    // session, once the resume has genuinely completed — not earlier, and
+    // not on a failed/aborted resume path above.
+    if (typeof _ssUpdateMyLastActiveSession === 'function') _ssUpdateMyLastActiveSession(sessionId);
+  } finally {
+    // v9.12.02 fix: single, ownership-checked cleanup point — only the
+    // call that still owns the current seq clears the flags. A stale call
+    // waking up after being superseded must NOT clear state that now
+    // belongs to whichever newer restore took over.
+    if (_restoreSeq === _ssRestoreSeq) {
+      _ssRestoring = false;
+      _ssRestoringSessionId = null;
     }
   }
-  if (_restoreSeq !== _ssRestoreSeq) { _ssRestoring = false; return; }
-
-  const s = entry.snapshot;
-  const meta = entry.meta;
-
-  _ssApplySnapshotFields(s);
-
-  _activeSessionId = sessionId;
-  // Phase 5: capture the restored session's sharing state once, here — the
-  // single point where "which session is active" changes. Never re-derived
-  // mid-generation; withGenerationLock() (api.js) captures ITS OWN local
-  // copy from this global at call time, so a later stale read of this
-  // global can't retroactively affect an already-running generation.
-  _activeSessionIsShared = !!meta.isShared;
-  _activeSessionOwnerId = meta.userId || null;
-  // v9.08: read the restored session's share mode. Falls back to 'view'
-  // (fail-closed) if the field is missing on an old cached entry rather
-  // than defaulting to 'edit'.
-  _activeSessionShareMode = meta.shareMode === 'edit' ? 'edit' : 'view';
-  sessionActive = true;
-
-  // Phase 3b/3c (v8.126): watch starts here, not earlier — this is the
-  // single point where the active session's identity and sharing state are
-  // both already final for this restore. Seeded with the cursor captured
-  // BEFORE the snapshot fetch above (deliberate ordering — see
-  // _lsResumePreFetch), so anything generated in the gap between those two
-  // fetches surfaces as a redundant-but-safe banner rather than being
-  // silently acknowledged as already-seen.
-  if (_activeSessionIsShared && typeof _lsSessionWatchStart === 'function' && canEditSession()) {
-    _lsSessionWatchStart(sessionId, _lsCursorSeed);
-  }
-  if (_lsPreFetchFailed && typeof showToast === 'function') {
-    showToast('Could not confirm the latest version of this session. Showing the last saved copy.', 'warn');
-  }
-
-  // v8.45: seed el.textContent early so it's available if switchTab reads it
-  // Do NOT call hdrSetSessionName here — curTab is still 'home', visibility would hide it
-  var _hdrEl=document.getElementById('hdr-product-name');
-  if(_hdrEl&&meta.name){_hdrEl.textContent=meta.name.trim();}
-
-  // Fix #7c — hide tab lock message
-  const lockMsg = document.getElementById('home-tab-lock');
-  if (lockMsg) lockMsg.style.display = 'none';
-  const tabHint = document.querySelector('.tab-hint');
-  if (tabHint) tabHint.style.display = 'none';
-
-  // Hide-then-reveal tab visibility, matching this session's actual data —
-  // now a single shared function (see _ssSyncTabVisibility below), also
-  // used by the cross-user wholesale apply path.
-  _ssSyncTabVisibility(s);
-
-  // Navigate to last active tab — switchTab handles all left panel / content visibility
-  const targetTab = meta.lastTab || 'mm';
-  if (typeof switchTab === 'function') switchTab(targetTab);
-
-  // Fix #2 — re-render DM only if navigating to mm tab
-  if (targetTab === 'mm' && s.gData) {
-    if (typeof renderMM === 'function') renderMM(s.gData);
-    // Restore evidence dots and values on DM after session reload (v8.37)
-    if (typeof kpiRenderEvidenceStates === 'function') kpiRenderEvidenceStates();
-    const mmOut = document.getElementById('mm-out');
-    if (mmOut) mmOut.classList.add('on');
-    if (typeof mmRenderSessionPanel === 'function'){
-      mmRenderSessionPanel();
-      // v8.45: sync left panel immediately after rebuild — mmRenderSessionPanel uses productName fallback
-      if(typeof mmUpdateSessionName==='function')mmUpdateSessionName(meta.name||'');
-    }
-  }
-
-  // If session was interrupted before gData was set, show a clear interrupted state
-  if (targetTab === 'mm' && !s.gData && sessionActive) {
-    if (typeof hideLoad === 'function') hideLoad();
-    if (typeof endAiGen === 'function') endAiGen();
-    const esEl = document.getElementById('es');
-    if (esEl) {
-      const productName = (s.sessionContext && s.sessionContext.productProfile && s.sessionContext.productProfile.productName) || 'this product';
-      esEl.innerHTML = `
-        <div class="empty-icon"><i class="ti ti-player-pause" style="color:var(--purple);"></i></div>
-        <div class="empty-title">Generation was interrupted</div>
-        <div class="empty-desc">Your session for <strong>${e(productName)}</strong> was started but the Discovery Map didn't complete. Your product details are ready — click Generate to continue.</div>
-        <div class="empty-steps">
-          <button class="gen-btn" onclick="generate()" style="margin-top:8px;"><i class="ti ti-sparkles" style="font-size:13px;" aria-hidden="true"></i> Generate Discovery Map</button>
-        </div>`;
-      esEl.style.display = '';
-    }
-  }
-
-  // Fix #3 — for non-mm targets, ensure DM left panel is hidden
-  if (targetTab !== 'mm') {
-    const lp = document.getElementById('left-panel');
-    if (lp) lp.classList.add('sc-hidden');
-  }
-
-  // MI: re-render only if navigating to mi tab
-  if (targetTab === 'mi' && s.miGenerated) {
-    if (typeof miRenderScreen === 'function') miRenderScreen();
-  }
-
-  // Update home left panel to show active session
-  if (typeof homeRenderSessionPanel === 'function') homeRenderSessionPanel();
-
-  _ssRestoring = false;  // restore complete — switchTab can now write lastTab again
-
-  // v8.45: final authoritative UI sync — runs AFTER curTab is final and all DOM rebuilt
-  // This is the definitive fix for session name not showing after restore
-  sessionStoreSyncRestoredSessionName(meta.name||'');
-
-  // Save session immediately after restore — updates savedAt and forces lastTab to targetTab.
-  try {
-    const _raw = localStorage.getItem(_SS_PREFIX + sessionId);
-    if (_raw) {
-      const _entry = JSON.parse(_raw);
-      _entry.meta.savedAt = Date.now();
-      _entry.meta.lastTab = targetTab;
-      localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(_entry));
-    }
-  } catch(e) {
-    console.warn('sessionStoreRestore save failed:', e);
-  }
-
-  showToast('Session restored.', 'info');
-  // v8.149 fix (Issue 2): mark this as this person's own last active
-  // session, once the resume has genuinely completed — not earlier, and
-  // not on a failed/aborted resume path above.
-  if (typeof _ssUpdateMyLastActiveSession === 'function') _ssUpdateMyLastActiveSession(sessionId);
 }
 
 // Delete a session by ID

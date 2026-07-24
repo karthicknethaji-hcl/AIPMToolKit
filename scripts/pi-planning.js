@@ -323,7 +323,7 @@ function piSequence(rankedIds,effTier,effScore,blockersOf,pointsOf,squads,sprint
   const unassigned=new Set(rankedIds);
 
   function isReady(id,sprint){
-    return (blockersOf[id]||[]).every(b=>assignedSprintOf.hasOwnProperty(b)&&assignedSprintOf[b]<=sprint);
+    return (blockersOf[id]||[]).every(b=>!assignedSprintOf.hasOwnProperty(b)||assignedSprintOf[b]<=sprint);
   }
   function tryAssign(id,sprint,remaining){
     const pts=pointsOf[id]||3;

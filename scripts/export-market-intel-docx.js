@@ -154,9 +154,9 @@ function miBuildDocx(miData, ctx, exportMode){
     // "Capability Recommendations" panel shows.
     if(caps.length){
       const matchBg={aligned:'#E1F5EE',partial:'#FFF4D7'};
-      const matchLabel={aligned:'In KPI Tree',partial:'Partial in Tree'};
+      const matchLabel={aligned:'In Discovery Map',partial:'Partial in Discovery Map'};
       html+=`<table border="1" cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;margin:12px 0;">
-        <tr style="background:#003087;color:#fff;"><th>Capability</th><th>KPI Tree Alignment</th><th>Tree Path</th></tr>
+        <tr style="background:#003087;color:#fff;"><th>Capability</th><th>Discovery Map Alignment</th><th>Tree Path</th></tr>
         ${caps.map(c=>{
           const bg=matchBg[c.kpiTreeMatch]||'#FDE8E8';
           const label=matchLabel[c.kpiTreeMatch]||'Gap';

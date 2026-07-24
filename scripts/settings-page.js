@@ -1244,8 +1244,8 @@ function spP1() {
 function spP2() {
   return `
   ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Definition','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
-  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your KPI tree',appSettings.featDiag)}
-  ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before KPI tree generation.',appSettings.featMI)}
+  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your Discovery Map',appSettings.featDiag)}
+  ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before Discovery Map generation.',appSettings.featMI)}
   ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI)}
   ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse,true)}`;
 }
@@ -1254,7 +1254,7 @@ function spP2() {
 function spP3() {
   return `
   ${_spSubLbl('Discovery Map')}
-  ${_spRow('KPI Tree Depth','Controls metric levels in Outcome Metrics mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
+  ${_spRow('Outcome Metrics Depth','Controls metric levels in Outcome Metrics mode — L1 = top-level KPIs only, L2 = with sub-metrics, L3 = full diagnostic tree',
     _spStepper('sp-vkd',appSettings.kpiDepth||1,"spStep('sp-vkd',-1,1,3)","spStep('sp-vkd',1,1,3)"),'Max 3')}
   ${_spSubLbl('Capabilities')}
   <div class="sp-group-tight">
@@ -1275,54 +1275,86 @@ function spP3() {
   <div style="border-top:0.5px solid #D0D5E8;margin-top:4px;"></div>
   ${_spSubLbl('Session Sharing')}
   <div style="margin-bottom:4px;">
-    <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Default access for shared sessions</div>
-    <div style="font-size:10px;color:#6b6b68;margin-bottom:10px;font-family:'DM Sans',sans-serif;">Applies when a session is shared with your team.</div>
-    <div style="display:flex;gap:10px;margin-bottom:10px;">
-      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${(appSettings.defaultShareMode||'view')==='view'?'#5F1EBE':'#D0D5E8'};background:${(appSettings.defaultShareMode||'view')==='view'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-view-wrap">
-        <input type="radio" name="sp-sharemode" id="sp-sharemode-view" ${(appSettings.defaultShareMode||'view')==='view'?'checked':''} onchange="spSetShareMode('view')" style="margin-top:2px;accent-color:#5F1EBE;">
-        <div>
-          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">View only <span style="font-weight:400;color:#5F1EBE;">Default</span></div>
-          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can view and export session content. They can't add, edit, or delete anything.</div>
-        </div>
-      </label>
-      <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${appSettings.defaultShareMode==='edit'?'#5F1EBE':'#D0D5E8'};background:${appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-sharemode-edit-wrap">
-        <input type="radio" name="sp-sharemode" id="sp-sharemode-edit" ${appSettings.defaultShareMode==='edit'?'checked':''} onchange="spSetShareMode('edit')" style="margin-top:2px;accent-color:#5F1EBE;">
-        <div>
-          <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Collaborative editing</div>
-          <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Team members can generate, edit, and delete content, same as you.</div>
-        </div>
-      </label>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${appSettings.defaultShareMode==='edit'?'12px':'0'};">
+      <div>
+        <div style="font-size:11px;font-weight:600;color:#000;margin-bottom:2px;font-family:'DM Sans',sans-serif;">Collaborative Editing</div>
+        <div style="font-size:10px;color:#6b6b68;line-height:1.4;font-family:'DM Sans',sans-serif;">Lets shared team members edit sessions, either one at a time or together.</div>
+      </div>
+      <div id="sp-tog-collab" onclick="spSetCollabToggle(${appSettings.defaultShareMode!=='edit'})" style="position:relative;width:34px;height:18px;cursor:pointer;flex-shrink:0;">
+        <div id="sp-trk-collab" style="position:absolute;inset:0;background:${appSettings.defaultShareMode==='edit'?'#5F1EBE':'#D0D5E8'};border-radius:18px;"></div>
+        <div id="sp-tth-collab" style="position:absolute;top:2px;left:${appSettings.defaultShareMode==='edit'?'16px':'2px'};width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></div>
+      </div>
     </div>
-    <div id="sp-sharemode-warn" style="display:${appSettings.defaultShareMode==='edit'?'flex':'none'};gap:8px;align-items:flex-start;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:6px;padding:8px 10px;">
-      <i class="ti ti-alert-triangle" style="font-size:12px;color:#633806;flex-shrink:0;margin-top:1px;" aria-hidden="true"></i>
-      <div style="font-size:10px;color:#633806;line-height:1.5;font-family:'DM Sans',sans-serif;">Turning on collaborative editing means multiple people can update the same session at once. Updates can silently overwrite each other, so this mode needs active coordination among your team.</div>
+    <div id="sp-collab-submodes" style="display:${appSettings.defaultShareMode==='edit'?'block':'none'};">
+      <div style="display:flex;gap:10px;margin-bottom:10px;">
+        <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${(appSettings.collabEditMode||'single')==='single'?'#5F1EBE':'#D0D5E8'};background:${(appSettings.collabEditMode||'single')==='single'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-collabmode-single-wrap">
+          <input type="radio" name="sp-collabmode" id="sp-collabmode-single" ${(appSettings.collabEditMode||'single')==='single'?'checked':''} onchange="spSetCollabEditMode('single')" style="margin-top:2px;accent-color:#5F1EBE;">
+          <div>
+            <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Single User Editing <span style="font-weight:400;color:#5F1EBE;">Default</span></div>
+            <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Only one team member can edit at a time. Others view until the session is available.</div>
+          </div>
+        </label>
+        <label style="flex:1;display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:1px solid ${appSettings.collabEditMode==='multi'?'#5F1EBE':'#D0D5E8'};background:${appSettings.collabEditMode==='multi'?'#F7F6FE':'#fff'};border-radius:7px;cursor:pointer;" id="sp-collabmode-multi-wrap">
+          <input type="radio" name="sp-collabmode" id="sp-collabmode-multi" ${appSettings.collabEditMode==='multi'?'checked':''} onchange="spSetCollabEditMode('multi')" style="margin-top:2px;accent-color:#5F1EBE;">
+          <div>
+            <div style="font-size:11px;font-weight:600;color:#1a1a1a;font-family:'DM Sans',sans-serif;">Multi User Editing</div>
+            <div style="font-size:10px;color:#6b6b68;margin-top:2px;line-height:1.5;font-family:'DM Sans',sans-serif;">Everyone can generate, edit, and delete content at the same time.</div>
+          </div>
+        </label>
+      </div>
+      <div id="sp-sharemode-warn" style="display:${appSettings.collabEditMode==='multi'?'flex':'none'};gap:8px;align-items:flex-start;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:6px;padding:8px 10px;">
+        <i class="ti ti-alert-triangle" style="font-size:12px;color:#633806;flex-shrink:0;margin-top:1px;" aria-hidden="true"></i>
+        <div style="font-size:10px;color:#633806;line-height:1.5;font-family:'DM Sans',sans-serif;">Turning on collaborative editing means multiple people can update the same session at once. Updates can silently overwrite each other, so this mode needs active coordination among your team.</div>
+      </div>
     </div>
   </div>`;
 }
 
-// ── v9.08: Session Sharing radio handler ──
+// ── v9.12: Collaborative Editing toggle handler ──
 // Labeled clearly as a security/access-control setting in this comment
 // despite living in the Output Depth section for now — this is a
 // temporary placement, not a signal that this is a minor UX preference.
-function spSetShareMode(mode){
-  appSettings.defaultShareMode = (mode==='edit') ? 'edit' : 'view';
-  const viewWrap=document.getElementById('sp-sharemode-view-wrap');
-  const editWrap=document.getElementById('sp-sharemode-edit-wrap');
+// Replaces the old v9.08 two-radio (View only / Collaborative editing)
+// design — defaultShareMode is still the underlying persisted field (kept
+// for backward compat with canEditSession()/session-share logic elsewhere),
+// but the UI now presents it as a single on/off toggle, with a second,
+// new field (collabEditMode) distinguishing Single vs Multi once On.
+function spSetCollabToggle(on){
+  appSettings.defaultShareMode = on ? 'edit' : 'view';
+  const wrap=document.getElementById('sp-tog-collab');
+  const trk=document.getElementById('sp-trk-collab');
+  const tth=document.getElementById('sp-tth-collab');
+  if(trk) trk.style.background = on ? '#5F1EBE' : '#D0D5E8';
+  if(tth) tth.style.left       = on ? '16px' : '2px';
+  // Re-wire the next click to flip back — the onclick was rendered with the
+  // toggle's state baked in as a literal at render time, so it must be
+  // refreshed here or a second click would send the same 'on' value again.
+  if(wrap) wrap.setAttribute('onclick', 'spSetCollabToggle(' + !on + ')');
+  const submodes=document.getElementById('sp-collab-submodes');
+  if(submodes) submodes.style.display = on ? 'block' : 'none';
   const warn=document.getElementById('sp-sharemode-warn');
-  if(viewWrap){
-    viewWrap.style.border=appSettings.defaultShareMode==='view'?'1px solid #5F1EBE':'1px solid #D0D5E8';
-    viewWrap.style.background=appSettings.defaultShareMode==='view'?'#F7F6FE':'#fff';
+  if(warn) warn.style.display=(on && appSettings.collabEditMode==='multi')?'flex':'none';
+  if(typeof spMarkDirty==='function') spMarkDirty();
+}
+
+// ── v9.12: Single/Multi sub-choice handler ──
+function spSetCollabEditMode(mode){
+  appSettings.collabEditMode = (mode==='multi') ? 'multi' : 'single';
+  const singleWrap=document.getElementById('sp-collabmode-single-wrap');
+  const multiWrap=document.getElementById('sp-collabmode-multi-wrap');
+  const warn=document.getElementById('sp-sharemode-warn');
+  if(singleWrap){
+    singleWrap.style.border=appSettings.collabEditMode==='single'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    singleWrap.style.background=appSettings.collabEditMode==='single'?'#F7F6FE':'#fff';
   }
-  if(editWrap){
-    editWrap.style.border=appSettings.defaultShareMode==='edit'?'1px solid #5F1EBE':'1px solid #D0D5E8';
-    editWrap.style.background=appSettings.defaultShareMode==='edit'?'#F7F6FE':'#fff';
+  if(multiWrap){
+    multiWrap.style.border=appSettings.collabEditMode==='multi'?'1px solid #5F1EBE':'1px solid #D0D5E8';
+    multiWrap.style.background=appSettings.collabEditMode==='multi'?'#F7F6FE':'#fff';
   }
-  // v9.08.01 fix: warning strip now toggles live with selection, rather
-  // than always rendering regardless of which mode is selected. Initial
-  // render (in the template above) is gated on appSettings.defaultShareMode
-  // directly, so reopening Settings when Collaborative editing is already
-  // the saved default shows the warning immediately, not only after a click.
-  if(warn) warn.style.display=(appSettings.defaultShareMode==='edit')?'flex':'none';
+  // Warning strip toggles live with selection, matching the v9.08 pattern
+  // this replaces — gated on collabEditMode directly, so reopening Settings
+  // when Multi is already the saved choice shows the warning immediately.
+  if(warn) warn.style.display=(appSettings.collabEditMode==='multi')?'flex':'none';
   if(typeof spMarkDirty==='function') spMarkDirty();
 }
 

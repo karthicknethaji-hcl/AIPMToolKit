@@ -637,7 +637,12 @@ function homeClearSession(){
     && typeof _lsSessionMightBeUnsafeToOverwrite === 'function'
     && _lsSessionMightBeUnsafeToOverwrite(_activeSessionId));
   if(!_unsafeToOverwrite && !_isDemoSession && typeof sessionStoreSave==='function' && typeof _activeSessionId!=='undefined' && _activeSessionId){
-    sessionStoreSave(_activeSessionId);
+    // v9.12.05: expectedBlock=true — this save is EXPECTED to be blocked
+    // when the exiting session was view-only (including one demoted by the
+    // Session Occupancy Lock); a quieter console.log is correct here, not
+    // console.error's default alarm. See sessionStoreSave()'s own comment
+    // for why this isn't a blanket change affecting other callers.
+    sessionStoreSave(_activeSessionId, true);
   }
   // Phase 3c (v8.126) — explicit sign-off obtained separately before this
   // edit, per this project's own rule that this function requires that.
@@ -645,6 +650,30 @@ function homeClearSession(){
   // call even if no watch is running (no-op), and safe to call twice in a
   // row (e.g. kickout already stopped it before calling this) — idempotent.
   if(typeof _lsSessionWatchStop==='function') _lsSessionWatchStop();
+  // v9.12 — explicit sign-off obtained separately before this edit, per
+  // this function's own standing rule. Session id captured into a local
+  // BEFORE _activeSessionId is nulled below — releasing after the null
+  // would release nothing. Heartbeat stopped FIRST, release called SECOND
+  // (matches the adversarial-review-confirmed ordering: a late-arriving
+  // heartbeat tick landing after release has already run must not be able
+  // to silently re-write occupant_at for a session this tab just left —
+  // stopAndWait() inside _lsOccupancyHeartbeatStop() guarantees any
+  // in-flight tick has fully settled before this function proceeds to
+  // release). Fire-and-forget on the release call itself — this function
+  // doesn't await network calls elsewhere either, and a failed release
+  // still self-heals via the 60-second staleness window in
+  // claim_session_occupancy.
+  var _occSessionIdToRelease = (typeof _activeSessionId!=='undefined') ? _activeSessionId : null;
+  if(typeof _lsOccupancyHeartbeatStop==='function'){
+    var _occStopPromise = _lsOccupancyHeartbeatStop();
+    if(_occStopPromise && typeof _occStopPromise.then==='function'){
+      _occStopPromise.then(function(){
+        if(_occSessionIdToRelease && typeof _lsReleaseSessionOccupancy==='function') _lsReleaseSessionOccupancy(_occSessionIdToRelease);
+      });
+    } else if(_occSessionIdToRelease && typeof _lsReleaseSessionOccupancy==='function') {
+      _lsReleaseSessionOccupancy(_occSessionIdToRelease);
+    }
+  }
   _activeSessionId=null;
   // Phase 5: clear alongside _activeSessionId — no session active means
   // nothing is "shared" either. Prevents a stale true carrying over into
@@ -1622,7 +1651,12 @@ async function _homeCallAIRecs(sessions, token) {
   const hostedProxyUrl = (typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL : 'https://product-diagnostics-proxy.onrender.com/api/anthropic';
   const proxyUrl = isLocal ? LOCAL_PROXY : hostedProxyUrl;
 
-  const model = (typeof resolveModel==='function')?resolveModel(null,'ai-recommendations'):'claude-sonnet-4-6';
+  // v9.13: use the decision-carrying resolver so this call site's usage
+  // event gets the same real provenance (settingsMode/selectionRule) as
+  // every callAPI()-routed call, instead of just a bare model string.
+  const _aiRecsDecision=(typeof resolveModelDecision==='function')?resolveModelDecision(null,'ai-recommendations',null):{model:'claude-sonnet-4-6',settingsMode:'optimized',settingsModel:null,selectionRule:'optimized_caller_default'};
+  const model = _aiRecsDecision.model;
+  const _aiRecsClientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
 
   // Retrieve JWT token — proxy requires X-Auth-Token on hosted requests.
   // authGetFreshToken() guarantees a non-expired token (v8.33 fix).
@@ -1645,7 +1679,17 @@ async function _homeCallAIRecs(sessions, token) {
     body: JSON.stringify({
       model: model, max_tokens: 600, system: sys, messages: [{ role: 'user', content: usr }],
       _caller: 'ai-recommendations',
-      company_id: (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })()
+      company_id: (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+      // v9.13: AI usage-tracking fields — this call site is a separate fetch
+      // path from callAPI() (see the routing note above), so these fields
+      // are added here explicitly rather than inherited from that function.
+      product_id:(typeof activeProfileId!=='undefined')?activeProfileId:null,
+      session_id:(typeof _activeSessionId!=='undefined')?_activeSessionId:null,
+      client_call_id:_aiRecsClientCallId,
+      settings_mode:_aiRecsDecision.settingsMode,
+      settings_model:_aiRecsDecision.settingsModel,
+      selection_rule:_aiRecsDecision.selectionRule,
+      prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS['ai-recommendations'])?PROMPT_VERSIONS['ai-recommendations']:null
     })
   })
   .then(function(r) { return r.json(); })
@@ -1701,15 +1745,26 @@ function _homeRenderAIRecs(recs, sessions) {
   el.innerHTML = html;
 }
 
-function homeAIRecClick(sessionId, targetTab) {
+async function homeAIRecClick(sessionId, targetTab) {
   if (!sessionId) return;
-  // Restore session then navigate to target tab
+  // v9.12.02 fix: previously a bare sessionStoreRestore(sessionId) call
+  // followed by a fixed setTimeout(50ms) before switchTab — found via
+  // adversarial review to be unreliable now that sessionStoreRestore() can
+  // include a real network round-trip for the occupancy claim (v9.12), on
+  // top of the pre-existing pre-fetch round-trip — both can easily exceed
+  // 50ms, and if the timer fires before restore finishes, switchTab would
+  // run against a session that hasn't finished loading, or against a
+  // DIFFERENT session if the user clicked elsewhere in the interim.
+  // Awaiting the restore directly removes the guesswork; the extra
+  // _activeSessionId check guards against exactly that "user switched to a
+  // different session while this one was still restoring" case — if a
+  // newer restore has already taken over, this stale continuation must not
+  // force a tab switch on someone else's now-active session.
   if (typeof sessionStoreRestore === 'function') {
-    sessionStoreRestore(sessionId);
-    // After restore, switchTab to specific target
-    setTimeout(function() {
-      if (typeof switchTab === 'function') switchTab(targetTab);
-    }, 50);
+    await sessionStoreRestore(sessionId);
+    if (_activeSessionId === sessionId && typeof switchTab === 'function') {
+      switchTab(targetTab);
+    }
   }
 }
 

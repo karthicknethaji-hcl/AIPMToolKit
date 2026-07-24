@@ -600,24 +600,51 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
 function pcInjectWireframe(featId, html) {
   const container = document.getElementById('pc-wf-' + featId);
   if (!container) return;
-  // Revoke old blob URL if present
   const entry = protoStore[featId];
   const v = entry ? pcGetActiveVariant(featId) : null;
-  if (v && v.wireframeBlobUrl) {
-    try { URL.revokeObjectURL(v.wireframeBlobUrl); } catch (_) {}
-  }
-  // Create sandboxed iframe via blob URL
+  // v9.12.06 fix: capture the OLD url and only revoke it after the new
+  // iframe has been successfully constructed and appended — previously
+  // this revoked before attempting the new Blob/iframe creation, so a
+  // mid-attempt failure left v.wireframeBlobUrl pointing at an already-
+  // revoked URL. Also now unconditionally clears the old reference even
+  // if v is null on this call (a variant that didn't exist yet when first
+  // stored), rather than only clearing when v happened to already exist.
+  const _oldBlobUrl = v && v.wireframeBlobUrl ? v.wireframeBlobUrl : null;
   try {
-    const blob = new Blob([html], { type: 'text/html' });
+    // v9.12.06 fix: sanitize BEFORE constructing the Blob — previously raw
+    // AI-generated html went straight into the sandboxed iframe unfiltered,
+    // which is what caused the sandbox to block any <script> tag the LLM
+    // happened to include (visible to users as a console error on every
+    // prototype view). Stripping it here means there's nothing left for
+    // the sandbox to block, so the message stops appearing, and the same
+    // filtering the capture path already had now also protects the
+    // visible, long-lived preview.
+    const safeHtml = _pcPreparePreviewHTML(html);
+    const blob = new Blob([safeHtml], { type: 'text/html' });
     const blobUrl = URL.createObjectURL(blob);
-    if (v) v.wireframeBlobUrl = blobUrl;
     const iframe = document.createElement('iframe');
     iframe.className = 'pc-wf-iframe';
-    iframe.setAttribute('sandbox', 'allow-same-origin');
+    // v9.12.06 fix: tightened from 'allow-same-origin' to a fully empty
+    // sandbox value. Confirmed via code search that nothing in this app
+    // ever reads iframe.contentDocument/contentWindow on this specific
+    // preview iframe (unlike the capture iframe, which needs same-origin
+    // for html2canvas) — so there's no functional reason to grant it the
+    // real origin. An empty sandbox forces an opaque origin in addition
+    // to blocking scripts/forms/navigation, which is strictly more
+    // restrictive and removes allow-same-origin as later technical debt
+    // (per the HTML spec's own warning that allow-same-origin combined
+    // with allow-scripts can let a sandboxed frame remove its own sandbox
+    // — not our current config, but a risk if someone "fixes
+    // interactivity" here later by adding allow-scripts without
+    // reconsidering allow-same-origin too).
+    iframe.setAttribute('sandbox', '');
     iframe.setAttribute('title', 'Wireframe preview');
     iframe.src = blobUrl;
     container.innerHTML = '';
     container.appendChild(iframe);
+    // Only store/revoke AFTER the new iframe is successfully in the DOM.
+    if (v) v.wireframeBlobUrl = blobUrl;
+    if (_oldBlobUrl) { try { URL.revokeObjectURL(_oldBlobUrl); } catch (_) {} }
   } catch (err) {
     container.innerHTML = '<div class="pc-empty-section">Wireframe preview unavailable in this environment.</div>';
   }
@@ -1311,29 +1338,91 @@ async function _pcLoadHtml2Canvas() {
   return _pcHtml2CanvasPromise;
 }
 
-// ── DOM-based wireframe sanitizer for html2canvas capture ──
-function _pcSanitizeForCapture(html) {
-  try {
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    // Remove unsafe elements
-    tpl.content.querySelectorAll('script,iframe,object,embed,link[rel="import"]')
-      .forEach(function(n){ n.remove(); });
-    // Remove inline event handlers and javascript: URLs
-    tpl.content.querySelectorAll('*').forEach(function(el) {
-      Array.from(el.attributes).forEach(function(attr) {
-        const name = attr.name.toLowerCase();
-        const val = String(attr.value || '').trim().toLowerCase();
-        if (name.startsWith('on')) el.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src' || name === 'xlink:href') &&
-            val.startsWith('javascript:')) el.removeAttribute(attr.name);
-      });
+// ── Shared stripping primitive for AI-generated wireframe HTML ──
+// v9.12.06 hardening: this replaces the old _pcSanitizeForCapture, which
+// was used for BOTH the hidden capture iframe AND (after this same patch)
+// the visible preview iframe, despite the two having different lifetimes,
+// visibility, and risk profiles. Per adversarial review, this is
+// deliberately named to describe exactly what it does — a blocklist of
+// active/executable constructs — and NOT named in a way that implies a
+// general "this HTML is now safe" guarantee, which a blocklist of this
+// size cannot honestly claim. Two thin, purpose-specific wrappers below
+// (_pcPreparePreviewHTML, _pcPrepareCaptureHTML) call this with the same
+// policy today; kept separate per-caller so their behavior can diverge
+// later without coupling one path's changes to the other's.
+//
+// Known, accepted limitation (confirmed via adversarial review, not
+// fixed here — this is a blocklist, not a full HTML sanitizer like
+// DOMPurify): sufficiently obscure payloads (SVG-embedded handlers,
+// mutation-XSS-style parser quirks, CSS-based resource requests) may
+// still survive. The sandbox attribute on both iframes remains the real
+// security boundary; this function is defense-in-depth on top of that,
+// not a replacement for it.
+function _pcStripActiveWireframeMarkup(html) {
+  if (typeof html !== 'string') return '';
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+
+  // Remove elements capable of executing code, navigating the frame, or
+  // altering how relative URLs/targets resolve within it.
+  tpl.content.querySelectorAll(
+    'script,iframe,object,embed,base,meta[http-equiv="refresh" i],link[rel="import" i]'
+  ).forEach(function(n){ n.remove(); });
+
+  tpl.content.querySelectorAll('*').forEach(function(el) {
+    Array.from(el.attributes).forEach(function(attr) {
+      const name = attr.name.toLowerCase();
+      // Strip ASCII control characters (tabs, newlines, etc.) before
+      // scheme-matching — browsers ignore these when parsing a URL
+      // scheme, so "java\tscript:" still executes as javascript: even
+      // though a naive .trim()-only check would miss it.
+      const normalized = String(attr.value || '')
+        .replace(/[\u0000-\u0020\u007f-\u009f]/g, '')
+        .toLowerCase();
+
+      if (name.startsWith('on')) { el.removeAttribute(attr.name); return; }
+      // Beaconing attribute — not needed for a visual mockup, no reason
+      // to let a wireframe emit tracking requests on click.
+      if (name === 'ping') { el.removeAttribute(attr.name); return; }
+      if (name === 'href' || name === 'src' || name === 'xlink:href' ||
+          name === 'action' || name === 'formaction') {
+        if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:')) {
+          el.removeAttribute(attr.name);
+        }
+      }
     });
-    return tpl.innerHTML;
+  });
+
+  return tpl.innerHTML;
+}
+
+// ── Preview policy — used for the long-lived, user-visible iframe ──
+function _pcPreparePreviewHTML(html) {
+  try {
+    return _pcStripActiveWireframeMarkup(html);
   } catch(e) {
-    console.warn('[PC] Sanitize failed:', e.message);
-    // Fallback: strip script tags with regex
-    return html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    console.warn('[PC] Preview HTML preparation failed, showing nothing rather than unfiltered content:', e.message);
+    // v9.12.06 fix: fail CLOSED, not open. The old fallback
+    // (html.replace(/<script>.../, '')) shipped a much weaker filter with
+    // none of the attribute-level stripping above — confirmed via
+    // adversarial review to be a real gap, not an acceptable degradation.
+    // An empty string here renders as a blank preview, which is safe;
+    // returning partially-filtered attacker-influenced HTML is not.
+    return '';
+  }
+}
+
+// ── Capture policy — used for the short-lived, hidden html2canvas iframe ──
+// Currently identical filtering to the preview policy; kept as a separate
+// named function (not a shared call site) so this path's behavior can be
+// tuned independently later (e.g. if html2canvas needs different
+// image/font/CSS allowances) without touching the preview path.
+function _pcPrepareCaptureHTML(html) {
+  try {
+    return _pcStripActiveWireframeMarkup(html);
+  } catch(e) {
+    console.warn('[PC] Capture HTML preparation failed, aborting capture rather than using unfiltered content:', e.message);
+    return '';
   }
 }
 
@@ -1341,10 +1430,19 @@ function _pcSanitizeForCapture(html) {
 // Uses a sandboxed same-origin iframe so wireframe <style> tags never
 // leak into the live document — previously caused white border around app.
 async function _pcCaptureWireframeAsPng(wireframeHTML) {
-  const safeHTML = _pcSanitizeForCapture(wireframeHTML);
+  const safeHTML = _pcPrepareCaptureHTML(wireframeHTML);
 
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
+  // v9.12.06 fix: this iframe previously had NO sandbox attribute at all —
+  // confirmed via adversarial review to be the more serious of the two
+  // gaps found (the visible preview iframe was already sandboxed; this
+  // hidden one was not). allow-same-origin is required here (unlike the
+  // preview iframe below) because this function reads iframe.contentDocument
+  // directly for html2canvas — but scripts remain fully blocked regardless
+  // of sanitizer coverage, closing the "one sanitizer bypass = full
+  // same-origin code execution" risk the review identified.
+  iframe.setAttribute('sandbox', 'allow-same-origin');
   iframe.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;height:900px;border:0;visibility:hidden;pointer-events:none;';
   document.body.appendChild(iframe);
 
