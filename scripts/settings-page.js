@@ -312,20 +312,24 @@ function spMarkDirty(){_spDirty=true;}
 function spResetDirty(){_spDirty=false;}
 // ── API key snapshot, taken on open — checkKey() live-writes to
 // sessionStorage on every keystroke, so Discard must revert to this
-// snapshot rather than re-reading sessionStorage (already overwritten). ──
-let _spKeySnapshot = '';
+// snapshot rather than re-reading sessionStorage (already overwritten).
+// v9.14: now a small map, not a single scalar — the provider dropdown
+// live-mutates appSettings.provider/model on change (no-save-required
+// preview, per the multi-provider spec's Section 4.1/10.3), so Discard
+// needs to revert not just whichever provider's key was edited, but also
+// which provider/model was active when Settings was opened.
+// Shape: { provider, model, keys: { anthropic: '', openai: '' } }. ──
+let _spKeySnapshot = { provider:'anthropic', model:'optimized', keys:{} };
 
 // ── Defaults for restore ──
 const _spDefaults3 = { kpiDepth:1, maxCaps:4, includeSubCaps:false, maxFeatures:5, maxStories:5, maxACs:3 };
 const _spDefaults4 = { defaultSprints:6, defaultSprintDur:2, defaultSquadName:'Squad', defaultSquadCapacity:80, teamVelocity:'med' };
 
-// ── Available models ──
-const _spModels = [
-  { value:'optimized',         label:'Optimized (Default)' },
-  { value:'claude-haiku-4-5',  label:'claude-haiku-4-5' },
-  { value:'claude-sonnet-4-6', label:'claude-sonnet-4-6' },
-  { value:'claude-opus-4-8',   label:'claude-opus-4-8' },
-];
+// ── Available providers/models (v9.14) ──
+// _spProviders and _spModelsByProvider now live in scripts/config.js — see
+// there for the Anthropic + OpenAI catalog (Gemini deferred to a later
+// phase). No local _spModels array here anymore — the flat, single-provider
+// list this used to be.
 
 // ── Open settings page ──
 function openSettingsPage() {
@@ -521,18 +525,41 @@ function spCancelChanges() {
   </div>`;
   document.body.appendChild(_ov);
 }
+// Mirrors _byokKey()'s (auth.js) company+provider-scoped key naming, but for
+// an explicit provider rather than the live appSettings.provider — needed
+// here since the snapshot/restore logic must address a provider that may
+// not be the currently-selected one in the dropdown.
+function _spByokKeyForProvider(provider){
+  const companyId = (function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })();
+  return 'hcl_ak_' + (companyId || 'none') + '_' + (provider || 'anthropic');
+}
+
 function spConfirmDiscard(){
   const _ov=document.getElementById('sp-cancel-confirm-overlay');
   if(_ov)_ov.remove();
-  // Revert any unsaved API key edit back to the value present when Settings
-  // was opened. checkKey() live-writes to sessionStorage on every keystroke,
-  // so sessionStorage may already hold the discarded value - revert it too,
-  // then re-run checkKey() to refresh the header dot and key status pill.
+  // Revert any unsaved API key edits back to the values present when
+  // Settings was opened, for EVERY provider touched this session (not just
+  // whichever provider is currently selected) — checkKey() live-writes to
+  // sessionStorage on every keystroke, so sessionStorage may already hold
+  // discarded values for more than one provider if the user previewed
+  // multiple providers before cancelling.
+  (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic'}]).forEach(function(p){
+    const snapVal = _spKeySnapshot.keys ? _spKeySnapshot.keys[p.value] : undefined;
+    const slot = _spByokKeyForProvider(p.value);
+    if(snapVal) sessionStorage.setItem(slot, snapVal);
+    else sessionStorage.removeItem(slot);
+  });
+  // Revert the live-mutated provider/model globals too — the dropdown
+  // previews these immediately (no-save-required, per spec Section 4.1/10.3),
+  // so Cancel must undo that preview, not just the key values.
+  if(typeof appSettings!=='undefined'){
+    appSettings.provider = _spKeySnapshot.provider || 'anthropic';
+    appSettings.model = _spKeySnapshot.model || 'optimized';
+  }
   const keyEl=document.getElementById('api-key');
   if(keyEl){
-    keyEl.value=_spKeySnapshot;
-    if(_spKeySnapshot) sessionStorage.setItem(typeof _byokKey==='function'?_byokKey():'hcl_ak',_spKeySnapshot);
-    else sessionStorage.removeItem(typeof _byokKey==='function'?_byokKey():'hcl_ak');
+    const revertedVal = (_spKeySnapshot.keys && _spKeySnapshot.keys[appSettings.provider]) || '';
+    keyEl.value = revertedVal;
     if(typeof checkKey==='function') checkKey();
   }
   spResetDirty();
@@ -582,10 +609,20 @@ function spRender() {
     _spSection = 0;
   }
   spResetDirty();
-  // Snapshot the persisted key before any edits - checkKey() live-writes to
-  // sessionStorage on every keystroke, so this is the only point we can
-  // capture the "before" value for Discard to revert to.
-  _spKeySnapshot = sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak')||'';
+  // Snapshot the persisted key(s) before any edits - checkKey() live-writes
+  // to sessionStorage on every keystroke, and the provider dropdown
+  // live-mutates appSettings.provider/model before Save too (Section 4.1's
+  // no-save-required preview) - this is the only point we can capture the
+  // "before" state for Discard to revert to, for every provider, not just
+  // whichever one happens to be active right now.
+  _spKeySnapshot = {
+    provider: (typeof appSettings!=='undefined' && appSettings.provider) || 'anthropic',
+    model: (typeof appSettings!=='undefined' && appSettings.model) || 'optimized',
+    keys: {}
+  };
+  (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic'}]).forEach(function(p){
+    _spKeySnapshot.keys[p.value] = sessionStorage.getItem(_spByokKeyForProvider(p.value)) || '';
+  });
   page.innerHTML = spBuildHTML();
   // Restore stepper values and toggle states from appSettings
   spPopulate();
@@ -600,7 +637,7 @@ function spRender() {
   },{capture:true});
   // If on Section 1 and the API key is unset, scroll the field into view —
   // the persistent purple ring (rendered inline above) already marks it.
-  if(_spSection===0 && !_spKeySnapshot){
+  if(_spSection===0 && !_spKeySnapshot.keys[appSettings.provider]){
     const wrap=document.getElementById('api-key-wrap');
     if(wrap) wrap.scrollIntoView({block:'center'});
   }
@@ -1014,10 +1051,16 @@ function spP0() {
           const _pillColor = keyInvalid ? '#A32D2D' : '#007873';
           const _pillIcon  = keyInvalid ? 'ti-alert-circle' : (keyReady ? 'ti-circle-check' : 'ti-building');
           const _pillText  = keyInvalid ? 'Invalid key format' : (keyReady ? 'Personal key active' : 'Organisation key active');
+          // v9.14: label + placeholder are provider-conditional now — see
+          // scripts/config.js's _spKeyMetaForProvider(). The literal
+          // "Anthropic API Key" title this replaced was hardcoded for a
+          // single-provider app; this card is shared across whichever
+          // provider is active.
+          const _keyMeta = (typeof _spKeyMetaForProvider==='function') ? _spKeyMetaForProvider(appSettings.provider) : { label:'Anthropic API Key', placeholder:'sk-ant-api03-...' };
           return `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
             <div style="flex:1;min-width:0;">
-              <div style="font-size:11px;font-weight:700;color:#000;font-family:'DM Sans',sans-serif;">Anthropic API Key</div>
+              <div id="sp-key-label" style="font-size:11px;font-weight:700;color:#000;font-family:'DM Sans',sans-serif;">${_keyMeta.label}</div>
               <div style="font-size:10px;color:#6b6b68;margin-top:1px;font-family:'DM Sans',sans-serif;">Personal, per-company — never shared with other companies you belong to</div>
             </div>
             <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;">
@@ -1025,7 +1068,7 @@ function spP0() {
                 <i class="ti ${_pillIcon}" style="font-size:9px;"></i> ${_pillText}
               </span>
               <div id="api-key-wrap" style="display:flex;align-items:center;border:1px solid #D0D5E8;border-radius:5px;background:#fff;height:28px;width:200px;overflow:hidden;${keyInvalid?'box-shadow:0 0 0 3px rgba(124,58,237,0.25);border-color:#7C3AED;':''}">
-                <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="sk-ant-api03-..." autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
+                <input type="password" id="api-key" value="${keyVal}" oninput="checkKey()" placeholder="${_keyMeta.placeholder}" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" style="flex:1;border:none;outline:none;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:transparent;height:100%;min-width:0;">
                 <button onclick="toggleKeyVis()" style="background:none;border:none;border-left:1px solid #D0D5E8;padding:0 7px;height:100%;cursor:pointer;color:#6b6b68;display:flex;align-items:center;flex-shrink:0;">
                   <i class="ti ti-eye" id="eye-icon" style="font-size:12px;"></i>
                 </button>
@@ -1121,7 +1164,13 @@ function _spP0Toast(el, type, msg) {
 
 // ── Panel 1: Company Profile & Access ──
 function spP1() {
-  const modelOpts = _spModels.map(m =>
+  // v9.14: model catalog is now provider-keyed — see scripts/config.js.
+  const _activeProvider = (typeof appSettings!=='undefined' && appSettings.provider) || 'anthropic';
+  const providerOpts = (typeof _spProviders!=='undefined'?_spProviders:[{value:'anthropic',label:'Anthropic'}]).map(p =>
+    `<option value="${p.value}"${p.value===_activeProvider?' selected':''}>${p.label}</option>`
+  ).join('');
+  const _modelsForProvider = (typeof _spModelsByProvider!=='undefined' && _spModelsByProvider[_activeProvider]) || [];
+  const modelOpts = _modelsForProvider.map(m =>
     `<option value="${m.value}"${m.value===appSettings.model?' selected':''}>${m.label}</option>`
   ).join('');
 
@@ -1232,12 +1281,53 @@ function spP1() {
   ${_spSubLbl('API &amp; Access')}
 
   ${_spRow(
+    'AI Provider',
+    'Which AI service this company\'s calls are routed through.',
+    `<select id="sp-provider-select" onchange="spOnProviderChange(this.value)" style="height:28px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;cursor:pointer;width:280px;">${providerOpts}</select>`,
+    'Switching provider repopulates the model list below and resets it to Optimized (Default).',
+    true
+  )}
+
+  ${_spRow(
     'AI Model',
-    'Model used across all AI generation. Higher-capability models improve quality but increase cost.',
+    '"Optimized" auto-selects the right tier per task. Or pin a specific model.',
     `<select id="sp-model-select" style="height:28px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;cursor:pointer;width:280px;">${modelOpts}</select>`,
-    'If the selected model is unavailable for your key, the next tier down is used automatically.',
+    'If the selected model is unavailable for your key, generation fails with a clear error rather than silently switching models.',
     true
   )}`;
+}
+
+// ── Provider dropdown change handler (v9.14) ──
+// Client-side preview, no Save required (per spec Section 4.1/10.3): live-
+// mutates appSettings.provider/model immediately (not deferred to Save,
+// unlike most other Settings fields) so checkKey()/_byokKey() write to the
+// right provider-scoped sessionStorage slot the instant the user starts
+// typing a key for the newly-selected provider. spConfirmDiscard() reverts
+// this via _spKeySnapshot if the user cancels instead of saving.
+function spOnProviderChange(newProvider){
+  if(typeof appSettings==='undefined') return;
+  appSettings.provider = newProvider;
+  appSettings.model = 'optimized'; // no cross-provider "equivalent model" carry-over — model IDs are provider-specific
+  spMarkDirty();
+
+  // Repopulate the Model dropdown from the new provider's catalog
+  const modelSel = document.getElementById('sp-model-select');
+  if(modelSel && typeof _spModelsByProvider!=='undefined'){
+    const models = _spModelsByProvider[newProvider] || [];
+    modelSel.innerHTML = models.map(m => `<option value="${m.value}"${m.value==='optimized'?' selected':''}>${m.label}</option>`).join('');
+  }
+
+  // Swap the API key card's label/placeholder, and reload whichever key
+  // (if any) is already saved for this provider in this company.
+  const keyMeta = (typeof _spKeyMetaForProvider==='function') ? _spKeyMetaForProvider(newProvider) : { label:'Anthropic API Key', placeholder:'sk-ant-api03-...' };
+  const labelEl = document.getElementById('sp-key-label');
+  if(labelEl) labelEl.textContent = keyMeta.label;
+  const keyEl = document.getElementById('api-key');
+  if(keyEl){
+    keyEl.placeholder = keyMeta.placeholder;
+    keyEl.value = sessionStorage.getItem(typeof _byokKey==='function'?_byokKey():'hcl_ak') || '';
+    if(typeof checkKey==='function') checkKey(); // refreshes the dot + sp-key-status pill for the reloaded value
+  }
 }
 
 // ── Panel 2: Feature Modules ──

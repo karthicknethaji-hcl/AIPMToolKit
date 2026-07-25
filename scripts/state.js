@@ -34,6 +34,10 @@ const seg={industry:'Technology & Software',productType:'B2C Product'};
 // v6.76 will wire these into prompts and PI planning defaults.
 const appSettings={
   // Section 1 — API & Access
+  // v9.14 — which provider every AI call routes through. 'model' is
+  // interpreted in the context of this field (see scripts/config.js's
+  // _spModelsByProvider and scripts/api.js's TIER_MODEL_BY_PROVIDER).
+  provider:'anthropic',
   model:'optimized',
   // Section 2 — Feature Modules
   featDD:true,

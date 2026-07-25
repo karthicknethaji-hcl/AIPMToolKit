@@ -431,6 +431,12 @@ document.addEventListener('DOMContentLoaded', async function(){
   // One-time carry-forward of a pre-v8.105 unscoped BYOK key into whichever
   // company is active now — see auth.js for why this exists.
   if (typeof _migrateByokKeyIfNeeded === 'function') _migrateByokKeyIfNeeded();
+  // v9.14: second migration step, run immediately after the one above and
+  // in this order deliberately — this carries the (now company-scoped)
+  // key forward again, into the new provider-suffixed slot, so a pre-v9.14
+  // key survives BOTH migrations in sequence on a user's very first load
+  // after this feature ships. See auth.js for why this exists.
+  if (typeof _migrateByokKeyToProviderScopeIfNeeded === 'function') _migrateByokKeyToProviderScopeIfNeeded();
 
   // Genuinely block interaction for the duration of the data sync below —
   // restored in v8.104, see the note on _pgtShowBootGate() for why this

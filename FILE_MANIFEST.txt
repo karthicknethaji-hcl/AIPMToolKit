@@ -93,3 +93,4 @@ anthropic-proxy.js            ← lives only here; never duplicated into scripts
 README.md
 package.json                  ← proxy-specific dependency list, distinct content from root package.json — see AI_EDITING_RULES.md for exact contents
 server.js                     ← lives only here; never duplicated into scripts/; requires npm install, cannot run standalone
+providerAdapters.js           ← v9.14; canonical, single copy — imported by BOTH server.js and netlify/functions/anthropic-proxy.js (relative require across the two trees), never hand-duplicated into either

@@ -247,53 +247,96 @@ async function withGenerationLock(fn){
 }
 
 
-// ── Per-caller default model table ──
-// Used only when appSettings.model === 'optimized' (the new default — see
-// settings-page.js _spModels). Any other appSettings.model value is a
-// deliberate user override and wins outright over everything below, via
-// resolveModel()'s precedence chain. Keys must exactly match the `caller`
-// tag passed as callAPI's last argument. Sourced from the v8.87 AI Model
-// Defaults spreadsheet — keep these two in sync if either changes.
-const CALLER_MODEL_DEFAULTS = {
-  'dm-generate': 'claude-sonnet-4-6',
-  'mi-suggest': 'claude-haiku-4-5',
-  'mi-generate': 'claude-haiku-4-5',
-  'mi-docx-gen': 'claude-haiku-4-5',
-  'cc-gen-one': 'claude-sonnet-4-6',
-  'cc-gen-all': 'claude-haiku-4-5',
-  'cc-gen-features': 'claude-sonnet-4-6',
-  'cc-regen-metric': 'claude-sonnet-4-6',
-  'cc-refine-metric': 'claude-sonnet-4-6',
-  'cc-gen-features-pi': 'claude-sonnet-4-6',
-  'cc-dd-batch': 'claude-haiku-4-5',
-  'cc-dd-single': 'claude-haiku-4-5',
-  'cc-gen-features-cap': 'claude-sonnet-4-6',
-  'drawer-gen-features': 'claude-sonnet-4-6',
-  'diagnostic-leak': 'claude-sonnet-4-6',
-  'fc-gen-stories': 'claude-sonnet-4-6',
-  'md-dd-batch': 'claude-haiku-4-5',
-  'pi-generate': 'claude-sonnet-4-6',
-  'prototype-wireframe': 'claude-haiku-4-5',
-  'prototype-brief': 'claude-sonnet-4-6',
-  'doc-summary': 'claude-haiku-4-5',
-  'ai-recommendations': 'claude-haiku-4-5',
-  // v9.10.03: was silently falling through to _MODEL_FALLBACK
-  // ('claude-sonnet-4-6') by omission, not deliberate choice — this call
-  // (Add Feature's on-demand single-hypothesis generation) is a lighter,
-  // single-item task closer in profile to cc-dd-single/mi-suggest than
-  // to the bulk multi-feature generation callers, so registered here at
-  // the Haiku tier rather than Sonnet.
-  'sc-add-feat-hyp-gen': 'claude-haiku-4-5',
+// ── Per-caller tiering table (v9.14 — multi-provider) ──
+// Used only when appSettings.model === 'optimized' (see scripts/config.js's
+// _spModelsByProvider). Any other appSettings.model value is a deliberate
+// user override and wins outright over everything below, via
+// resolveModelDecision()'s precedence chain.
+//
+// Two-layer, replacing the old flat CALLER_MODEL_DEFAULTS map: a provider-
+// independent tier classification per caller (unchanged from the implicit
+// Haiku/Sonnet split this table encoded before — just made explicit and
+// named), plus a tier-to-model map per provider. Sourced from the v8.87 AI
+// Model Defaults spreadsheet — keep in sync if either changes.
+const CALLER_TIERS = {
+  'dm-generate': 'general',
+  'mi-suggest': 'lightweight',
+  'mi-generate': 'lightweight',
+  'mi-docx-gen': 'lightweight',
+  'cc-gen-one': 'general',
+  'cc-gen-all': 'lightweight',
+  'cc-gen-features': 'general',
+  'cc-regen-metric': 'general',
+  'cc-refine-metric': 'general',
+  'cc-gen-features-pi': 'general',
+  'cc-dd-batch': 'lightweight',
+  'cc-dd-single': 'lightweight',
+  'cc-gen-features-cap': 'general',
+  'drawer-gen-features': 'general',
+  'diagnostic-leak': 'general',
+  'fc-gen-stories': 'general',
+  'md-dd-batch': 'lightweight',
+  'pi-generate': 'general',
+  'prototype-wireframe': 'lightweight',
+  'prototype-brief': 'general',
+  'doc-summary': 'lightweight',
+  'ai-recommendations': 'lightweight',
+  // v9.10.03: was silently falling through to the fallback tier by
+  // omission, not deliberate choice — this call (Add Feature's on-demand
+  // single-hypothesis generation) is a lighter, single-item task closer in
+  // profile to cc-dd-single/mi-suggest than to the bulk multi-feature
+  // generation callers, so registered here at the lightweight tier.
+  'sc-add-feat-hyp-gen': 'lightweight',
   // v9.12.05 fix: was hardcoded to a specific Haiku model string directly
   // at the call site (outcome-pulse.js), completely bypassing this table
   // and the Optimized/user-choice precedence chain in resolveModel() below
   // — confirmed a real gap, not a deliberate choice. Optimized now
-  // correctly resolves to Sonnet 4.6 for this caller; an explicit user
-  // model choice in Settings is also now correctly respected here, same as
-  // every other caller in this table.
-  'outcome-pulse-suggest': 'claude-sonnet-4-6'
+  // correctly resolves to the general tier for this caller; an explicit
+  // user model choice in Settings is also now correctly respected here,
+  // same as every other caller in this table.
+  'outcome-pulse-suggest': 'general'
 };
-const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing from the table above — should never happen, but never silently fail to a non-existent model
+
+// Tier -> model, per provider. This is the ONLY place a literal model ID
+// for "optimized" mode lives. No caller currently maps to 'premium' — that
+// tier exists for manual user pinning only (e.g. user explicitly selects
+// Opus in Settings). Preserved as-is; not a behavior change.
+//
+// OpenAI model IDs confirmed 2026-07-25 via direct human screenshot of
+// developers.openai.com/api/docs/models — see scripts/config.js's
+// _spModelsByProvider for the full residual-uncertainty note (GPT-5.6 family
+// reportedly limited-preview per press, not yet confirmed callable by this
+// org's account due to a $0 billing balance blocker).
+const TIER_MODEL_BY_PROVIDER = {
+  anthropic: {
+    lightweight: 'claude-haiku-4-5',
+    general:     'claude-sonnet-4-6',
+    premium:     'claude-opus-4-8'
+  },
+  openai: {
+    lightweight: 'gpt-5.6-luna',
+    general:     'gpt-5.6-terra',
+    premium:     'gpt-5.6-sol'
+  },
+  // Gemini model IDs confirmed via direct raw-documentation paste (not
+  // search-tool output) — see scripts/config.js's _spModelsByProvider
+  // comment for the source and the confirmed-no-premium-tier finding.
+  // premium: null is intentional, not a placeholder — resolveModelDecision()
+  // already handles a null tier-lookup result by falling through to
+  // _MODEL_FALLBACK_BY_PROVIDER.gemini below, never silently sending
+  // null/undefined upstream (verified correct in the shipped v9.14.02 code).
+  gemini: {
+    lightweight: 'gemini-3.5-flash-lite',
+    general:     'gemini-3.6-flash',
+    premium:     null
+  }
+};
+
+const _MODEL_FALLBACK_BY_PROVIDER = {
+  anthropic: 'claude-sonnet-4-6',
+  openai:    'gpt-5.6-terra', // general tier, mirroring anthropic's fallback being its own general-tier model
+  gemini:    'gemini-3.6-flash' // general tier, same pattern
+};
 
 // ── Shared model resolver ──
 // Single source of truth for "which model should this call actually use."
@@ -307,13 +350,18 @@ const _MODEL_FALLBACK = 'claude-sonnet-4-6'; // used if caller tag is missing fr
 // future change to precedence only needs to happen in one place.
 // ── Multi-select model threshold ──
 // Used by CC's ccGenerateFeaturesForSelected and FC's scGenerateStories
-// batch path. Forces claude-haiku-4-5 for 4+ items ONLY when the user is
-// still on the 'optimized' default — if they've explicitly chosen a model
-// in Settings, that choice always wins, with no exception for batch size.
+// batch path. Forces the active provider's lightweight tier for 4+ items
+// ONLY when the user is still on the 'optimized' default — if they've
+// explicitly chosen a model in Settings, that choice always wins, with no
+// exception for batch size. v9.14: no longer hardcodes claude-haiku-4-5 —
+// forces whichever provider is active's lightweight tier instead.
 function resolveThresholdModel(itemCount){
   const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
   if(settingsVal && settingsVal!=='optimized') return null; // user has an explicit choice — don't touch it
-  return itemCount>=4 ? 'claude-haiku-4-5' : null;
+  if(itemCount<4) return null;
+  const provider=(typeof appSettings!=='undefined'&&appSettings.provider)?appSettings.provider:'anthropic';
+  const tierMap=TIER_MODEL_BY_PROVIDER[provider]||TIER_MODEL_BY_PROVIDER.anthropic;
+  return tierMap.lightweight || _MODEL_FALLBACK_BY_PROVIDER[provider] || _MODEL_FALLBACK_BY_PROVIDER.anthropic;
 }
 
 // ── v9.13: AI usage-tracking model-selection provenance ──
@@ -333,25 +381,43 @@ function resolveThresholdModel(itemCount){
 // any other modelOverride-passing call site not yet audited will show up
 // as 'explicit_override_unclassified' in the data, a visible gap rather
 // than a wrong answer.
+// v9.14: provider-aware. Precedence chain is unchanged in shape:
+// 1. modelOverride wins outright (as before).
+// 2. User's explicit Settings pin (appSettings.model !== 'optimized') wins (as before).
+// 3. CALLER_TIERS[caller] -> TIER_MODEL_BY_PROVIDER[provider][tier] — new
+//    two-step lookup replacing the old single-step CALLER_MODEL_DEFAULTS[caller].
+// 4. _MODEL_FALLBACK_BY_PROVIDER[provider] — provider-aware fallback,
+//    replacing the old single hardcoded _MODEL_FALLBACK.
+// Return shape gains `provider` so downstream usage-tracking can log which
+// provider was actually used without re-deriving it.
 function resolveModelDecision(modelOverride, caller, overrideSource){
   const settingsVal=(typeof appSettings!=='undefined')?appSettings.model:undefined;
   const settingsMode=(settingsVal && settingsVal!=='optimized')?'fixed_model':'optimized';
+  const provider=(typeof appSettings!=='undefined'&&appSettings.provider)?appSettings.provider:'anthropic';
 
   if(modelOverride){
     return {
       model: modelOverride,
+      provider,
       settingsMode,
       settingsModel: settingsMode==='fixed_model'?settingsVal:null,
       selectionRule: overrideSource || 'explicit_override_unclassified'
     };
   }
   if(settingsMode==='fixed_model'){
-    return { model: settingsVal, settingsMode, settingsModel: settingsVal, selectionRule: 'user_selected_model' };
+    return { model: settingsVal, provider, settingsMode, settingsModel: settingsVal, selectionRule: 'user_selected_model' };
   }
-  if(CALLER_MODEL_DEFAULTS[caller]){
-    return { model: CALLER_MODEL_DEFAULTS[caller], settingsMode, settingsModel: null, selectionRule: 'optimized_caller_default' };
+  const tier=CALLER_TIERS[caller];
+  const tierMap=TIER_MODEL_BY_PROVIDER[provider]||TIER_MODEL_BY_PROVIDER.anthropic;
+  const tierModel=tier?tierMap[tier]:null;
+  if(tierModel){
+    return { model: tierModel, provider, settingsMode, settingsModel: null, selectionRule: 'optimized_caller_default' };
   }
-  return { model: _MODEL_FALLBACK, settingsMode, settingsModel: null, selectionRule: 'optimized_fallback_default' };
+  // Covers both "caller has no tier assignment" and "tier resolved to null"
+  // (e.g. a provider with no premium tier — see TIER_MODEL_BY_PROVIDER)
+  // — never silently return null/undefined as a model string to send upstream.
+  const fallback=_MODEL_FALLBACK_BY_PROVIDER[provider]||_MODEL_FALLBACK_BY_PROVIDER.anthropic;
+  return { model: fallback, provider, settingsMode, settingsModel: null, selectionRule: 'optimized_fallback_default' };
 }
 
 function resolveModel(modelOverride, caller){
@@ -761,7 +827,13 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
     settings_mode:_decision.settingsMode,
     settings_model:_decision.settingsModel,
     selection_rule:_decision.selectionRule,
-    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null
+    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null,
+    // v9.14: the client's believed provider — useful for diagnostics/logging
+    // only. The proxy does NOT trust this for dispatch, billing, or
+    // usage-attribution; it independently resolves the company's actual
+    // configured provider server-side and that value always wins (see
+    // proxy/server.js's requireActiveCompanyMember + provider resolution).
+    provider:_decision.provider
   });
 
   let r;
@@ -778,7 +850,12 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
   if(data.error){
     throw new Error(_pgtAnthropicErrorMessage(data.error));
   }
-  return data.content&&data.content[0]?data.content[0].text:'';
+  // v9.14: provider-neutral response envelope — the proxy's adapter layer
+  // (proxy/providerAdapters.js) normalizes every provider's response shape
+  // to {text, ...} before it reaches the client, so this line is the same
+  // regardless of which provider actually ran. Previously read
+  // data.content[0].text (Anthropic Messages API's raw shape directly).
+  return data.text||'';
 }
 
 // Shared between callAPI() and any other direct caller of /api/anthropic
