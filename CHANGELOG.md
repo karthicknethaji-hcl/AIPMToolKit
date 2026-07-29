@@ -1,5 +1,9 @@
 # Changelog — AI PM Toolkit
 
+## v9.14.05 — Fix Home "AI Recommendations" empty since v9.14
+
+- **Fixed — `_homeCallAIRecs()` (`scripts/home.js`) does its own direct `fetch()` to the proxy rather than going through `api.js`'s `callAPI()`, and its response handler still parsed `data.content[0].text` (the pre-v9.14 Anthropic-native envelope), while the proxy has sent a provider-neutral `{text:...}` envelope for every provider since v9.14.** This silently produced `raw = '[]'` via the line's own fallback, parsed to an empty array, and rendered "No recommendations available" with no visible error, regardless of which provider was selected. Now reads `data.text || '[]'`, matching `callAPI()`'s existing v9.14 pattern. Confirmed no other line in `_homeCallAIRecs()`/`_homeRenderAIRecs()` assumes the old `data.content` shape, and confirmed (via grep of every other direct-`fetch()` caller outside `api.js`) that no other call site has this same bypass-and-stale-parse issue — `auth.js` and `team-management.js`'s direct fetches hit unrelated, non-AI-content endpoints.
+
 ## v9.14.04 — Fix Gemini resolved-model field name
 
 - **Fixed — the Gemini adapter's `normalizeSuccess()` read `data.modelVersion` for `resolvedModel`, a field that doesn't exist in any real Gemini Interactions API response** (every example response in the raw doc paste — interaction-created, interaction-completed, get-interaction — uses the top-level field `model`, not `modelVersion`). As written, `resolvedModel` would have silently fallen back to `null` on every successful Gemini call, meaning the dated-alias-drift tracking this field exists for (same purpose as Anthropic's `response_model` handling) would never actually populate. Now reads `data.model`, matching the confirmed response shape.

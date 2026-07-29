@@ -1695,7 +1695,7 @@ async function _homeCallAIRecs(sessions, token) {
   .then(function(r) { return r.json(); })
   .then(function(data) {
     if (data.error) throw new Error((typeof _pgtAnthropicErrorMessage==='function')?_pgtAnthropicErrorMessage(data.error):(data.error.message||'Unknown error'));
-    const raw = data.content && data.content[0] ? data.content[0].text : '[]';
+    const raw = data.text || '[]';
     const clean = raw.replace(/```json|```/g, '').trim();
     const recs = JSON.parse(clean);
     // Cache result
