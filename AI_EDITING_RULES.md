@@ -9,7 +9,7 @@ Read this file before making any change to any file in this project.
 ## Project structure
 
 ```
-index.html            app entry point — layout, tab buttons, script/CSS references
+index.html            app entry point — layout, tab buttons, script/CSS reference
 login.html             standalone login/signup page
 styles/                CSS files grouped by app area
 scripts/                JavaScript files grouped by feature
