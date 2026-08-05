@@ -1081,3 +1081,73 @@ function buildPrototypeBriefPrompt(ctx, feat, storySnapshot, screenTitle, wirefr
 
   return { sys: sys, usr: usr };
 }
+
+// ── Guided Launch (gl) — v9.15 ──
+// Both builders return {sys,usr} and expect the model to respond with ONLY
+// valid JSON (no markdown fences) so guided-launch.js's _glParseJSON() can
+// parse it directly — same convention as the wireframe/brief prompts above.
+
+// Opening turn — reads the identical context Quick Launch would have used
+// (sessionContext, see home.js's _homeDoLaunch()) and produces a first-draft
+// requirements brief plus a conversational summary of what the agent understood.
+function buildGuidedLaunchOpeningPrompt(sessionContext){
+  const cp=sessionContext.companyProfile||{};
+  const pp=sessionContext.productProfile||{};
+  const docsStr=(sessionContext.sessionDocs||[]).map(function(d){
+    return '- '+(d.name||'Untitled')+(d.aiSummary?(': '+d.aiSummary):'');
+  }).join('\n')||'None';
+
+  const sys='You are a senior product management practitioner running a guided intake conversation for a product discovery tool. '
+    + 'You open the conversation by reading everything already known about the product and proposing a starting requirements brief — not by asking the user to repeat context they already gave. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='COMPANY PROFILE:\n'+(cp.name||'Unnamed company')+' — '+(cp.description||'No description provided')+'\n\n'
+    + 'PRODUCT PROFILE:\n'+(pp.name||'Unnamed product')+' — '+(pp.description||'No description provided')+'\n'
+    + 'Industry: '+(pp.industry||'Not specified')+'\n'
+    + 'Product type: '+(pp.productType||'Not specified')+'\n\n'
+    + 'SESSION SETUP:\nApproach: '+(sessionContext.approach||'outcome-based')+'\nGeneration mode: '+(sessionContext.generationMode||'ai-generated')+'\n'
+    + (sessionContext.customValueChain?('Custom value chain:\n'+sessionContext.customValueChain+'\n'):'')
+    + (sessionContext.additionalContext?('Additional context: '+sessionContext.additionalContext+'\n'):'')
+    + '\nUPLOADED DOCUMENTS:\n'+docsStr+'\n\n'
+    + 'TASK: Write a conversational opening message (chatReply) that shows you understood the above — reference 2-3 specific facts from it, not generic filler — then state a clear recommendation for where to start. Then draft a first requirements brief in markdown (markdown) covering: a one-paragraph summary, a recommended starting capability/focus area (as a "## Recommended Starting Point" section with an H3 sub-heading naming the specific capability), supporting capabilities, and key constraints.\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "markdown": "the full requirements brief in markdown, starting with a single # H1 title"\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}
+
+// Revision turn — takes the running chat history + current draft + the
+// user's latest message (or an uploaded document's extracted text) and
+// produces a targeted update, not a full rewrite. changedSectionHeading is
+// the exact H2 heading text of whichever section actually changed, used by
+// guided-launch.js to flash-highlight just that section — the simplest
+// robust marker-based approach the spec flagged as an open decision,
+// deliberately not client-side HTML diffing.
+function buildGuidedLaunchTurnPrompt(sessionContext, draftMd, chatHistory, userMessage, uploadedDocText, uploadedDocName){
+  const historyStr=(chatHistory||[]).map(function(m){
+    return (m.role==='user'?'User: ':'You: ')+m.content;
+  }).join('\n');
+
+  const sys='You are continuing a guided product-intake conversation, refining a requirements brief that already has a real draft. '
+    + 'When the user pushes back or corrects something, make a TARGETED update to the relevant section only — never a full rewrite of sections that were not affected. '
+    + 'When a document is uploaded, extract and summarize only what is relevant into the appropriate section(s) — never dump raw file text into the draft. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='CURRENT DRAFT (markdown):\n'+draftMd+'\n\n'
+    + 'CONVERSATION SO FAR:\n'+historyStr+'\n\n'
+    + (uploadedDocText
+      ? ('THE USER JUST UPLOADED A DOCUMENT ("'+(uploadedDocName||'document')+'"). Extract and summarize only what is relevant into the draft, merging it into the right existing section (or add one if genuinely new). Document text:\n'+uploadedDocText.slice(0,8000)+'\n')
+      : ('THE USER JUST SAID:\n'+userMessage+'\n'))
+    + '\nTASK: Reply conversationally (chatReply) confirming what changed and re-prompting for confirmation. Update the draft (markdown) with a targeted change — keep every unaffected section exactly as it was. Identify the exact H2 heading text of the section you changed (changedSectionHeading) — or null if the change does not map to a single H2 section (e.g. a brand-new section added, or no material change).\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "markdown": "the FULL updated requirements brief in markdown, starting with a single # H1 title",\n'
+    + '  "changedSectionHeading": "exact H2 heading text that changed, or null"\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}

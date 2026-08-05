@@ -233,6 +233,16 @@
 
 `scripts/export-market-intel-docx.js` — `miBuildDocx()`
 
+`scripts/guided-launch.js` — Guided Launch tab (gl), v9.15, unified onto `mt_sessions` in v9.15.02. Conversational intake flow, second Home entry path alongside Quick Launch. A Guided Launch session IS a real `mt_sessions` row from creation — no separate table.
+- **Entry points:** `glCreateAndOpen(sessionContext)` (called from `home.js`'s `homeGuidedLaunch()`) — calls `sessionStoreCreate(sc, {lastTab:'gl', lastStage:'Guided Launch', intakeStatus:'active'})`, sets `sessionActive=true`. `glApplyRestoredSnapshot(meta, snapshot)` (called from `session-store.js`'s `sessionStoreRestore()` whenever `meta.intakeStatus` is set, independent of which tab is landed on) — populates `gl*` state from the restored snapshot and renders; does not navigate, the caller's existing `switchTab(targetTab)` already has. There is no separate resume function — every resume is the same `sessionStoreRestore()` path every session uses.
+- **State reset:** `glResetState()` — called from `home.js`'s `homeClearSession()` on every session transition.
+- **Shell/render:** `glRenderShell()` (left-panel content via `home.js`'s shared `_mmBuildSessionSummaryHtml()`), `glRenderChatHistory()`, `glRenderMdBody()`, `glUpdateFooterState()`, `glOpenPanel()`/`glCollapsePanel()`, `glTogglePanel()` (left panel, mirrors `left-panel.js`'s `togglePanel()`)
+- **Chat:** `glSendMessage()`, `glHandleUpload()` (reuses `utils.js`'s `extractTextFromFile()`), `_glRunRevisionTurn()`, `glRunOpeningTurn()` — persistence via `_glPersistMessage()`/`_glPersistDraft()`, both now thin wrappers around `sessionStoreSave(_activeSessionId)`. All AI calls route through `callAPI()`'s `extraFields` param (`session_type:'ChatCanvas'`) and `resolveModelDecision()`'s Optimized chain, not a hardcoded model.
+- **Finalize:** `glFinalize()` — one-way `active`→`completed`; calls `sessionStoreSetIntakeStatus()` then `sessionStoreSave()` (updates the existing row, does not create a second one); hands off to the existing Discovery Map pipeline via `sessionContext.additionalContext` (no changes to `kpi-tree.js`/`prompts.js`'s generation prompts).
+- **Prompts:** `buildGuidedLaunchOpeningPrompt()`, `buildGuidedLaunchTurnPrompt()` (both in `prompts.js`)
+- **Data model:** `mt_sessions.intake_status` (`'active'|'completed'|null`); `snapshot.glMessages`/`glDraftMd`/`glFinalMd`/`glContextHash` (see `session-store.js`'s `_sessionStoreBuildSnapshot()`). `mt_intake_sessions`/`mt_intake_messages` are dropped — do not reference them.
+- **Session-store additions (shared, additive-only):** `sessionStoreCreate(sc, opts)` — optional `{lastTab, lastStage, intakeStatus}`; `sessionStoreSetIntakeStatus(sessionId, status)` — new, local-cache-only meta flip for `glFinalize()`; `_ssComputeLastStage()` checks live `glStatus` first; `_ssSyncTabVisibility(s, meta)`/`_ssRevealTabs(s, meta)` gained an optional `meta` param, `tab-gl` revealed whenever `meta.intakeStatus` is set (active or completed). Three independent DB-row→meta mapping sites needed the same `intakeStatus`/`intake_status` field added: `sessionStoreSyncFromDB()` (session-store.js), `_lsResumePreFetch()` and `_lsMergeHomeMetaEntry()`/`_lsHomeRunOnePollCycle()`'s explicit column list (both live-sync.js).
+
 ---
 
 ### Styles (load order matters)
@@ -356,6 +366,12 @@
 | Story generation hypothesis context injection | `scripts/feature-canvas.js` (scBuildStoryPrompt) |
 | gData.nsm baseline/target/actual/updatedAt | `scripts/kpi-tree.js` (generateConfirmed's gData=parsed reassignment — preserved across regeneration via _prevNsmTracking snapshot) |
 | Outcome Pulse demo data | `scripts/demo-data.js` (_demoAttachOutcomeHypotheses, _demoSetNsmTracking) — do NOT open for any other task |
+| **Guided Launch** | |
+| Guided Launch tab layout, chat, MD panel, collapse/reopen | `scripts/guided-launch.js`, `styles/22-guided-launch.css` |
+| Guided Launch entry / resume / Home banner | `scripts/guided-launch.js` (glCreateAndOpen, glResumeSession, glRenderHomeResumeBanner), `scripts/home.js` (homeGuidedLaunch, homeSessionResume) |
+| Guided Launch AI prompts (opening, revision) | `scripts/prompts.js` (buildGuidedLaunchOpeningPrompt, buildGuidedLaunchTurnPrompt) |
+| Guided Launch finalize → Discovery Map handoff | `scripts/guided-launch.js` (glFinalize) — feeds `sessionContext.additionalContext`, existing generation pipeline unchanged |
+| Guided Launch usage-tracking tag (`session_type:'ChatCanvas'`) | `scripts/api.js` (callAPI extraFields), `proxy/server.js` (mt_ai_usage_events insert) |
 
 
 

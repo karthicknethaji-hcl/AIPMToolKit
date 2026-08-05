@@ -28,6 +28,7 @@
 <link rel="stylesheet" href="./styles/20-team-management.css">
 <link rel="stylesheet" href="./styles/17-home.css">
 <link rel="stylesheet" href="./styles/21-outcome-pulse.css">
+<link rel="stylesheet" href="./styles/22-guided-launch.css">
 </head>
 <body>
 <!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
@@ -102,6 +103,7 @@
 <div class="app-shell" id="app-shell">
   <div class="out-hdr"><div class="tab-row">
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
+    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
@@ -198,10 +200,16 @@
         </div>
       </div>
       <div class="home-gen-wrap">
-        <button class="home-gen-btn" id="home-gen-btn" onclick="homeLaunch()">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          Launch Session
-        </button>
+        <div class="home-launch-cta-row">
+          <button class="home-gen-btn home-gen-btn-quick" id="home-gen-btn" onclick="homeLaunch()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            Quick Launch
+          </button>
+          <button class="home-gen-btn" id="home-guided-launch-btn" onclick="homeGuidedLaunch()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Guided Launch
+          </button>
+        </div>
       </div>
     </div>
     <div class="home-main" id="home-main-body">
@@ -507,6 +515,8 @@
       <div id="op-main" style="display:flex;flex-direction:column;flex:1;overflow:hidden;height:100%;"></div>
       <div class="op-lib-panel" id="op-lib-panel"></div>
     </div>
+    <!-- Guided Launch Tab -->
+    <div class="gl-tab" id="gl-tab"></div>
   </div>
 </div>
 </div><!-- end app-shell -->
@@ -616,6 +626,7 @@
   <script src="./scripts/outcome-pulse.js"></script>
 <script src="./scripts/session-store.js"></script>
 <script src="./scripts/live-sync.js"></script>
+<script src="./scripts/guided-launch.js"></script>
 <script src="./scripts/home.js"></script>
 <script src="./scripts/api.js"></script>
 <script src="./scripts/demo-data.js"></script>

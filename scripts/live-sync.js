@@ -396,6 +396,11 @@ function _lsMergeHomeMetaEntry(row){
       approach: row.approach || '',
       lastTab: row.last_tab || 'mm',
       lastStage: row.last_stage || '',
+      // v9.15.02 — same denormalized read as every other field here; three
+      // independent DB-row-to-meta mapping sites in this codebase needed
+      // this identical addition (this one, sessionStoreSyncFromDB() in
+      // session-store.js, and _lsResumePreFetch() below in this file).
+      intakeStatus: row.intake_status || null,
       counts: row.counts || { caps:0, features:0, stories:0, sprintActive:null },
       createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
       savedAt: incomingSavedAt,
@@ -427,7 +432,7 @@ async function _lsHomeRunOnePollCycle(seq){
   if (!client) return;
   try {
     var res = await client.from('mt_sessions')
-      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,product_id,company_name,product_type,approach,last_tab,last_stage,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
+      .select('id,user_id,company_id,is_shared,share_mode,name,product_name,product_id,company_name,product_type,approach,last_tab,last_stage,intake_status,counts,created_at,saved_at,last_edited_by_name,active_user_id,active_at,active_user_name')
       .eq('company_id', companyId);
     if (seq !== _lsHomePollSeq) return; // superseded while this fetch was in flight
     if (res.error) { console.warn('[live-sync] home poll query failed:', res.error.message); return; }
@@ -512,6 +517,11 @@ async function _lsResumePreFetch(sessionId){
       approach: row.approach || '',
       lastTab: row.last_tab || 'mm',
       lastStage: row.last_stage || '',
+      // v9.15.02 — same denormalized read as every other field here; three
+      // independent DB-row-to-meta mapping sites in this codebase needed
+      // this identical addition (this one, sessionStoreSyncFromDB() in
+      // session-store.js, and _lsResumePreFetch() below in this file).
+      intakeStatus: row.intake_status || null,
       counts: row.counts || { caps:0, features:0, stories:0, sprintActive:null },
       createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
       savedAt: row.saved_at ? new Date(row.saved_at).getTime() : Date.now(),

@@ -211,6 +211,9 @@ async function _ssUpsertToDB(sessionId, entry) {
       approach:        meta.approach     || '',
       last_tab:        meta.lastTab      || 'mm',
       last_stage:      meta.lastStage    || '',
+      // v9.15.02 — null for every non-Guided-Launch session (column allows
+      // null; see mt_sessions.intake_status CHECK constraint).
+      intake_status:   meta.intakeStatus || null,
       counts:          meta.counts       || {},
       snapshot:        entry.snapshot    || {},
       saved_at:        new Date(meta.savedAt || Date.now()).toISOString()
@@ -297,6 +300,9 @@ async function sessionStoreSyncFromDB() {
         approach:    row.approach     || '',
         lastTab:     row.last_tab     || 'mm',
         lastStage:   row.last_stage   || '',
+        // v9.15.02 — read straight off the row, same denormalized pattern
+        // as every other field here.
+        intakeStatus: row.intake_status || null,
         counts:      row.counts       || { caps: 0, features: 0, stories: 0, sprintActive: null },
         createdAt:   row.created_at ? new Date(row.created_at).getTime() : Date.now(),
         savedAt:     row.saved_at   ? new Date(row.saved_at).getTime()   : Date.now(),
@@ -364,7 +370,12 @@ async function sessionStoreSyncFromDB() {
 
 // Create a new session entry. Called at Launch Session.
 // Returns the new sessionId.
-function sessionStoreCreate(sc) {
+// opts (v9.15.02, optional): {lastTab, lastStage, intakeStatus}. Guided
+// Launch passes all three so its session is a real mt_sessions row from
+// creation, not a second, unrelated table. Every existing call site passes
+// no second argument, so defaults below reproduce exactly today's behavior.
+function sessionStoreCreate(sc, opts) {
+  opts = opts || {};
   const id = _ssUUID();
   const productName = (sc && sc.productProfile && sc.productProfile.productName) || 'Session';
   const now = Date.now();
@@ -385,8 +396,12 @@ function sessionStoreCreate(sc) {
     name,
     createdAt: now,
     savedAt: now,
-    lastTab: 'mm',
-    lastStage: 'Discovery Map',
+    lastTab: opts.lastTab || 'mm',
+    lastStage: opts.lastStage || 'Discovery Map',
+    // v9.15.02: null for every session type except Guided Launch —
+    // 'active' while chatting, 'completed' once Finalize & Generate has
+    // run (see guided-launch.js's glFinalize() / sessionStoreSetIntakeStatus()).
+    intakeStatus: opts.intakeStatus || null,
     productName,
     // v9.13.01: real product FK, captured alongside the existing denormalized
     // productName. A session is always launched against a selected product
@@ -462,6 +477,27 @@ function sessionStoreCreate(sc) {
   })();
 
   return id;
+}
+
+// v9.15.02 — flips a session's meta.intakeStatus in the local cache only
+// (synchronous, no DB call itself). sessionStoreSave()'s normal read-
+// modify-write reuses the existing cached entry.meta unchanged except for
+// savedAt/lastTab/lastStage/counts/snapshot — it never touches intakeStatus
+// on its own, so this exists specifically for glFinalize() to call right
+// before its own explicit sessionStoreSave(), which then persists both the
+// flipped status and the finalized snapshot (glFinalMd etc.) together, in
+// one immediate write — matching the "don't wait on a later autosave"
+// guarantee every other session-creating/finalizing action in this app
+// already has.
+function sessionStoreSetIntakeStatus(sessionId, status){
+  try{
+    var raw=localStorage.getItem(_SS_PREFIX+sessionId);
+    if(!raw)return;
+    var entry=JSON.parse(raw);
+    entry.meta=entry.meta||{};
+    entry.meta.intakeStatus=status;
+    localStorage.setItem(_SS_PREFIX+sessionId, JSON.stringify(entry));
+  }catch(e){ console.warn('sessionStoreSetIntakeStatus failed:', e); }
 }
 
 // Save current state to the active session.
@@ -1122,7 +1158,7 @@ async function sessionStoreRestore(sessionId) {
     // Hide-then-reveal tab visibility, matching this session's actual data —
     // now a single shared function (see _ssSyncTabVisibility below), also
     // used by the cross-user wholesale apply path.
-    _ssSyncTabVisibility(s);
+    _ssSyncTabVisibility(s, meta);
 
     // Navigate to last active tab — switchTab handles all left panel / content visibility
     const targetTab = meta.lastTab || 'mm';
@@ -1164,6 +1200,18 @@ async function sessionStoreRestore(sessionId) {
     if (targetTab !== 'mm') {
       const lp = document.getElementById('left-panel');
       if (lp) lp.classList.add('sc-hidden');
+    }
+
+    // v9.15.02 — Guided Launch content restore. Independent of targetTab:
+    // a COMPLETED Guided Launch session's meta.lastTab is 'mm' (set at
+    // finalize, see guided-launch.js's glFinalize()), so the user lands on
+    // Discovery Map as expected, but #gl-tab must still be populated so
+    // manually clicking the (now-visible, per _ssRevealTabs above) Guided
+    // Launch tab shows the real chat/brief rather than empty or stale DOM.
+    // Only an ACTIVE (unfinalized) session has meta.lastTab==='gl' and so
+    // actually lands here via the switchTab(targetTab) call above.
+    if (meta.intakeStatus && typeof glApplyRestoredSnapshot === 'function') {
+      glApplyRestoredSnapshot(meta, s);
     }
 
     // MI: re-render only if navigating to mi tab
@@ -1497,11 +1545,32 @@ function _sessionStoreBuildSnapshot(opts) {
     // generated, causing silent, redundant regeneration on every open.
     ddRows: (typeof window !== 'undefined' && window._ddRows) ? window._ddRows : [],
     mmBannerCollapsed: (typeof mmBannerCollapsed !== 'undefined') ? mmBannerCollapsed : false,
-    protoStore: _ssStripProtoTransient(typeof protoStore !== 'undefined' ? protoStore : {}, opts || {})
+    protoStore: _ssStripProtoTransient(typeof protoStore !== 'undefined' ? protoStore : {}, opts || {}),
+    // v9.15.02 — Guided Launch chat/draft, replacing the old separate
+    // mt_intake_sessions/mt_intake_messages tables entirely. Same
+    // typeof-guarded pattern as every other field above: harmless empty
+    // defaults for every session that never touched Guided Launch.
+    // glResetState() (guided-launch.js), called from homeClearSession() on
+    // every session transition, is what keeps these from a DIFFERENT,
+    // abandoned Guided Launch session bleeding into an unrelated session's
+    // snapshot here.
+    glMessages: (typeof glMessages !== 'undefined') ? glMessages : [],
+    glDraftMd: (typeof glDraftMd !== 'undefined') ? glDraftMd : '',
+    glFinalMd: (typeof glFinalMd !== 'undefined') ? glFinalMd : null,
+    glContextHash: (typeof glContextHash !== 'undefined') ? glContextHash : null
   };
 }
 
 function _ssComputeLastStage() {
+  // v9.15.02 — checked first, before any downstream-content check: while a
+  // Guided Launch chat is active, nothing else below exists yet (no gData,
+  // no capStore), so without this every save during the chat would
+  // incorrectly recompute 'Not started'. Reads the live glStatus global
+  // (guided-launch.js), not meta.intakeStatus — this function has always
+  // read live globals directly, on the same one-session-live-at-a-time
+  // invariant glResetState() (called from homeClearSession()) enforces for
+  // every other field it checks below.
+  if (typeof glStatus !== 'undefined' && glStatus === 'active') return 'Guided Launch';
   if (typeof piPlan !== 'undefined' && piPlan) return 'PI Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });
@@ -1602,8 +1671,8 @@ function _ssShouldShowMiTab(s) {
 // this session's own prior data, or — for cross-user apply — the
 // receiving viewer's own current tabs) never survives into what's shown
 // next; only then reveal what THIS snapshot's data actually supports.
-function _ssSyncTabVisibility(s) {
-  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-op'].forEach(function(id){
+function _ssSyncTabVisibility(s, meta) {
+  ['tab-mm','tab-cc','tab-mi','tab-la','tab-fc','tab-op','tab-gl'].forEach(function(id){
     var el=document.getElementById(id);
     if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
   });
@@ -1611,10 +1680,20 @@ function _ssSyncTabVisibility(s) {
     var el=document.getElementById(id);
     if(el) el.classList.remove('revealed');
   });
-  _ssRevealTabs(s);
+  _ssRevealTabs(s, meta);
 }
 
-function _ssRevealTabs(s) {
+function _ssRevealTabs(s, meta) {
+  // v9.15.02 — Guided Launch, meta-driven (not snapshot-driven like every
+  // other tab below): visible for ANY session that ever went through
+  // Guided Launch, active or completed, so a finalized session can still be
+  // navigated back into to see the chat that produced it. meta is optional
+  // — the two live-sync.js wholesale-apply call sites don't have it and
+  // don't need to; intake_status never changes via that path.
+  if (meta && meta.intakeStatus) {
+    const tabGl = document.getElementById('tab-gl');
+    if (tabGl) tabGl.style.display = '';
+  }
   if (s.gData) {
     const tabMm = document.getElementById('tab-mm');
     if (tabMm) tabMm.style.display = '';

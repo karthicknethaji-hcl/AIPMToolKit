@@ -294,7 +294,13 @@ const CALLER_TIERS = {
   // correctly resolves to the general tier for this caller; an explicit
   // user model choice in Settings is also now correctly respected here,
   // same as every other caller in this table.
-  'outcome-pulse-suggest': 'general'
+  'outcome-pulse-suggest': 'general',
+  // v9.15: Guided Launch chat turns (opening summary, revisions, upload
+  // summarisation) and its final MD synthesis — general tier so Optimized
+  // resolves to each provider's Sonnet-equivalent, matching the product
+  // decision to use the standard resolution chain rather than a hardcoded
+  // model string (see guided-launch.js).
+  'guided-launch': 'general'
 };
 
 // Tier -> model, per provider. This is the ONLY place a literal model ID
@@ -478,7 +484,7 @@ function switchTab(t){
   // Close DD panel on every tab switch
   if(typeof ccCloseDDPanel==='function')ccCloseDDPanel();
   // Update all tab buttons — includes home, fc (Feature Canvas) and sc (Story Canvas)
-  ['mm','cc','pi','mi','la','fc','sc','op','home'].forEach(id=>{
+  ['mm','cc','pi','mi','la','fc','sc','op','gl','home'].forEach(id=>{
     const el=document.getElementById('tab-'+id);
     if(el)el.classList.toggle('active',t===id);
   });
@@ -490,6 +496,7 @@ function switchTab(t){
   const ccTab=document.getElementById('cc-tab');
   const piTab=document.getElementById('pi-tab');
   const opTab=document.getElementById('op-tab');
+  const glTab=document.getElementById('gl-tab');
   const homeTab=document.getElementById('home-tab');
   const lp=document.getElementById('left-panel');
 
@@ -503,6 +510,7 @@ function switchTab(t){
   if(ccTab)ccTab.classList.toggle('on',t==='cc');
   if(piTab)piTab.classList.toggle('on',t==='pi');
   if(opTab)opTab.classList.toggle('on',t==='op');
+  if(glTab)glTab.classList.toggle('on',t==='gl');
 
   // Left panel: hidden on all tabs except mm post-launch (handled in mm case above)
   // For all non-mm tabs, always hide old left panel — Home has its own, others don't use it
@@ -655,6 +663,16 @@ function switchTab(t){
     if(bar)bar.style.display='none';
     if(typeof opRender==='function')opRender();
   }
+  // Guided Launch tab entry (Item 19) — matches the same per-branch hide
+  // already applied for every other non-mm tab above; gl's own render
+  // (glRenderShell/glRenderChatHistory/glRenderMdBody) is triggered
+  // directly by guided-launch.js's glCreateAndOpen() or, on resume, by
+  // session-store.js's sessionStoreRestore() -> glApplyRestoredSnapshot(),
+  // not from here.
+  if(t==='gl'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+  }
   // Close export dropdowns when switching tabs
   const expDrop=document.getElementById('sc-export-drop');
   if(expDrop)expDrop.classList.remove('open');
@@ -761,7 +779,15 @@ function hideDDLoad(){
   document.getElementById('dd-ls').classList.remove('on');
 }
 
-async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource){
+// extraFields (v9.15, optional 8th param): {session_id, product_id, session_type}.
+// Guided Launch passes session_type:'ChatCanvas' so mt_ai_usage_events can
+// distinguish its chat-turn costs from Discovery Map generation costs, even
+// though both now share the same real mt_sessions row (v9.15.02 unified
+// Guided Launch onto mt_sessions — it no longer has a separate table, so
+// session_id/product_id here are just its own already-correct values,
+// passed explicitly rather than relying on the defaults below). Every other
+// caller passes undefined, so those defaults are unchanged for them.
+async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource,extraFields){
   const key=getKey();
 
   // ── Proxy URL ─────────────────────────────────────────────────────────────────
@@ -821,8 +847,9 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
     company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
     // v9.13: AI usage-tracking fields — read here, stripped by server.js
     // before forwarding to Anthropic (never part of anthropicBody there).
-    product_id:(typeof activeProfileId!=='undefined')?activeProfileId:null,
-    session_id:(typeof _activeSessionId!=='undefined')?_activeSessionId:null,
+    product_id:(extraFields&&extraFields.product_id!=null)?extraFields.product_id:((typeof activeProfileId!=='undefined')?activeProfileId:null),
+    session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
+    session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
     client_call_id:_clientCallId,
     settings_mode:_decision.settingsMode,
     settings_model:_decision.settingsModel,

@@ -33,6 +33,7 @@ export-market-intel-docx.js
 export-pi-docx.js
 export-xlsx.js
 feature-canvas.js
+guided-launch.js
 home.js
 kpi-tree.js
 left-panel.js
@@ -78,6 +79,7 @@ utils.js
 19-prototype-canvas.css
 20-team-management.css
 21-outcome-pulse.css
+22-guided-launch.css
 
 ## assets/
 prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/
