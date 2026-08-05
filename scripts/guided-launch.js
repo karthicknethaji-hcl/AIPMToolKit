@@ -36,23 +36,35 @@ var glSessionCtx=null; // sessionContext snapshot — company/product profile, d
 var glBusy=false; // true while an AI call is in flight — blocks concurrent sends
 var glLastChangedSectionId=null; // one-shot flash target for the next glRenderMdBody()
 var glPanelOpen=true; // left panel expand/collapse state (v9.15.01, Items 1-4) — independent of DM's own panelOpen in left-panel.js
+// Item 5 (v9.15.04) — plain integer, not a float: incrementing a float by
+// 0.01 repeatedly risks binary floating-point drift over many edits (e.g.
+// 0.01+0.01+... not landing exactly on 0.03). Stored as a count, formatted
+// as "v0.0N" for display only, in _glFormatVersion() below. Starts at 1
+// after the opening turn (displayed "v0.01"); increments by 1 on every
+// successful revision turn (chat or upload — both go through
+// _glRunRevisionTurn()).
+var glVersionCount=1;
 var _glLeaveConfirmed=false; // one-shot bypass for the leave-confirmation modal's own retry, see blockIfLeavingGuidedLaunch()
 
-// v9.15.03, Item 1 — leave-confirmation modal for an unfinalized Guided
-// Launch session. Reuses showConfirm() (utils.js), the same component DM's
-// "Hold on, don't lose this" modal (blockIfGenerating()) uses, but this is
-// an intent-confirmation modal, not a data-loss-prevention one — progress
-// is never actually lost (it's a real, saved mt_sessions row from creation,
-// per v9.15.02) — so it fires on any departure attempt while unfinalized,
-// not just mid-turn/glBusy. Called from api.js's switchTab(), right after
+// Leave-confirmation modal for an unfinalized Guided Launch session, mid-
+// response only (v9.15.04, Item 1 — narrowed from v9.15.03's original
+// "fires on any departure while unfinalized," an explicit product reversal:
+// leaving an idle unfinalized chat is fine, only leaving mid-agent-response
+// warns, matching DM's own aiGenInFlight-gated pattern). Reuses showConfirm()
+// (utils.js), the same component DM's "Hold on, don't lose this" modal
+// (blockIfGenerating()) uses. Called from api.js's switchTab(), right after
 // the existing blockIfGenerating() guard. _glLeaveConfirmed is a one-shot
 // bypass flag for the retry after "Leave anyway" — unlike aiGenInFlight,
-// glStatus doesn't change on its own after the user confirms, so the retry
-// needs an explicit escape hatch or it would re-trigger itself forever.
+// glBusy doesn't change on its own after the user confirms (there's no
+// in-flight request to abort here), so the retry needs an explicit escape
+// hatch or it would re-trigger itself forever.
 function blockIfLeavingGuidedLaunch(t){
   if(_glLeaveConfirmed){ _glLeaveConfirmed=false; return false; }
   if(typeof curTab==='undefined'||curTab!=='gl'||t==='gl')return false;
-  if(glStatus!=='active')return false;
+  // v9.15.04, Item 1 — narrowed to mid-response only (glBusy), per explicit
+  // reversal of the original "fires on any departure while unfinalized"
+  // design: leaving an unfinalized-but-idle chat now navigates freely.
+  if(glStatus!=='active'||!glBusy)return false;
   showConfirm(
     "You won't lose your progress. Resume this session anytime from Home. You'll just need to come back and finalize before your Discovery Map can be generated.",
     'Leave this chat?',
@@ -90,6 +102,13 @@ function glResetState(){
   glBusy=false;
   glLastChangedSectionId=null;
   glPanelOpen=true;
+  glVersionCount=1;
+}
+
+// Item 5 (v9.15.04) — "v0.01", "v0.02", ... "v1.00" past 100 edits. Display
+// only; glVersionCount itself stays a plain integer (see its declaration).
+function _glFormatVersion(){
+  return 'v'+(glVersionCount/100).toFixed(2);
 }
 
 // ── Context-freshness hash ──
@@ -242,6 +261,7 @@ function glApplyRestoredSnapshot(meta,snapshot){
   glFinalMd=(snapshot&&snapshot.glFinalMd)||null;
   glContextHash=(snapshot&&snapshot.glContextHash)||null;
   glSessionCtx=(snapshot&&snapshot.sessionContext)||null;
+  glVersionCount=(snapshot&&snapshot.glVersionCount)||1;
   glMdOpen=true;
 
   glRenderShell();
@@ -325,7 +345,7 @@ function glRenderShell(){
     +'</div>'
     +'<div class="gl-md-panel" id="gl-md-panel">'
       +'<div class="gl-md-hdr">'
-        +'<div><div class="gl-md-hdr-eyebrow">Live Draft</div><div class="gl-md-hdr-title">Requirements Brief</div></div>'
+        +'<div><div class="gl-md-hdr-eyebrow">Live Draft</div><div class="gl-md-hdr-title" id="gl-md-hdr-title"></div></div>'
         +'<div class="gl-md-hdr-actions">'
           +'<button class="gl-export-btn" onclick="glExportMd()" title="Download the current draft as a .md file"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export</button>'
           // Chevron rule (v9.15.01): the arrow points in the direction the
@@ -506,6 +526,7 @@ async function _glRunRevisionTurn(userMessage,uploadedDocText,uploadedDocName){
     }
     glDraftMd=parsed.markdown;
     glLastChangedSectionId=parsed.changedSectionHeading||null;
+    glVersionCount++; // Item 5 (v9.15.04) — every successful revision, chat or upload
     glAppendAgentMessage(parsed.chatReply||'Updated the draft — take a look.',null,true);
     glRenderMdBody();
     _glPersistDraft();
@@ -560,9 +581,21 @@ async function glHandleUpload(inputEl){
 // MD panel
 // ══════════════════════════════════════════════════════════════════════════
 
+// Item 5 (v9.15.04) — "{ProductName} Requirements Brief v0.0N". Called
+// wherever the draft/version could have changed (glRenderShell() on first
+// build, glRenderMdBody() on every subsequent re-render) rather than only
+// at creation, since the title itself isn't rebuilt by those later calls.
+function _glUpdateMdTitle(){
+  var titleEl=document.getElementById('gl-md-hdr-title');
+  if(!titleEl)return;
+  var pName=(glSessionCtx&&glSessionCtx.productProfile&&glSessionCtx.productProfile.productName)||'Product';
+  titleEl.textContent=pName+' Requirements Brief '+_glFormatVersion();
+}
+
 function glRenderMdBody(){
   var body=document.getElementById('gl-md-body');
   if(!body)return;
+  _glUpdateMdTitle();
   var md=(glStatus==='completed')?(glFinalMd||glDraftMd):glDraftMd;
   var badge='<span class="gl-status-badge '+(glStatus==='completed'?'gl-status-final':'gl-status-drafting')+'">'+(glStatus==='completed'?'Finalized':'Drafting')+'</span>';
   var hadFlash=!!glLastChangedSectionId;
@@ -585,7 +618,13 @@ function glUpdateFooterState(){
   var statusLbl=document.getElementById('gl-status-label');
   var isCompletedForFooter=(glStatus==='completed');
   if(btn)btn.disabled=isCompletedForFooter;
-  if(note)note.textContent=isCompletedForFooter?'Locked. Edit via Discovery Map or a new session.':'Locks your brief and starts Discovery Map generation.';
+  // Item 4 (v9.15.04) — hidden entirely once finalized, not just re-texted;
+  // the extra line's height was also throwing off footer alignment across
+  // the three panels.
+  if(note){
+    note.style.display=isCompletedForFooter?'none':'';
+    note.textContent='Locks your brief and starts Discovery Map generation.';
+  }
   if(statusLbl)statusLbl.textContent=isCompletedForFooter?'Finalized — Discovery Map generation in progress':'Drafting requirements together';
   // Item 6 (v9.15.03) — same condition as the Finalize button's disabled
   // state above, so the two can never disagree.

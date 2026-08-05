@@ -1,5 +1,13 @@
 # Changelog — AI PM Toolkit
 
+## v9.15.04 — Guided Launch: polish pass on the v9.15.03 fixes
+
+- **Narrowed the leave-confirmation modal to mid-response only** — it now warns only when leaving while the agent is actively responding, not on every departure from an unfinalized chat (reversing v9.15.03's original "any departure" design, per explicit product decision).
+- **Fixed the Discovery Map tab button not showing after resuming an interrupted-generation session** — the shared "Generation was interrupted" state now explicitly reveals `tab-mm`, since the normal reveal condition (a populated Discovery Map) is correctly false at that point.
+- **Fixed Guided Launch's left panel spacing** to match Discovery Map's real left panel — it was missing the `display:flex`/`gap` treatment that actually produces the spacing between rows, not just the padding value.
+- **Hid the footer note entirely once finalized** (was only re-texted before), which also fixes a footer height mismatch across the three panels.
+- **Added a version number to the requirements brief title** (e.g. "Zomato Requirements Brief v0.01"), incrementing on every successful revision.
+
 ## v9.15.03 — Guided Launch: context bug fixes, leave-confirmation, resume-to-DM link
 
 - **Fixed a real data bug:** the opening chat prompt read the wrong field names on the product/company profile (`name`/`description` instead of the real `productName`/`productDesc`/`companyName`/`companyStrategy`), so every fresh Guided Launch session opened as if no product profile existed at all, regardless of what was actually configured in Settings.

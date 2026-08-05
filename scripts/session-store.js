@@ -1544,7 +1544,12 @@ function _sessionStoreBuildSnapshot(opts) {
     glMessages: (typeof glMessages !== 'undefined') ? glMessages : [],
     glDraftMd: (typeof glDraftMd !== 'undefined') ? glDraftMd : '',
     glFinalMd: (typeof glFinalMd !== 'undefined') ? glFinalMd : null,
-    glContextHash: (typeof glContextHash !== 'undefined') ? glContextHash : null
+    glContextHash: (typeof glContextHash !== 'undefined') ? glContextHash : null,
+    // v9.15.04, Item 5 — plain integer edit count, formatted for display
+    // only (see guided-launch.js's _glFormatVersion()). Default 1, matching
+    // glVersionCount's own initial value for a session that never touched
+    // Guided Launch.
+    glVersionCount: (typeof glVersionCount !== 'undefined') ? glVersionCount : 1
   };
 }
 
@@ -1652,6 +1657,14 @@ function _ssComputeCounts() {
 function _ssShowInterruptedGenerationState(s) {
   if (typeof hideLoad === 'function') hideLoad();
   if (typeof endAiGen === 'function') endAiGen();
+  // v9.15.04, Item 2 — _ssRevealTabs()'s normal tab-mm condition (if s.gData)
+  // is correctly false here (no map exists yet), but the user is looking
+  // straight at the mm content area and needs the button to navigate back
+  // to it later. glContinueToDiscoveryMap() (guided-launch.js) already did
+  // this at its own call site; moved here so every caller of this shared
+  // state gets it, not just that one.
+  const tabMm = document.getElementById('tab-mm');
+  if (tabMm) tabMm.style.display = '';
   const esEl = document.getElementById('es');
   if (esEl) {
     const productName = (s.sessionContext && s.sessionContext.productProfile && s.sessionContext.productProfile.productName) || 'this product';

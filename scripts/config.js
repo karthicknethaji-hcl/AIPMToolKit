@@ -1,7 +1,7 @@
 // ── App version — single source of truth ──
 // Both index.html and login.html read this on DOMContentLoaded via #hdr-version span.
 // Update ONLY this constant on every release — never hardcode version strings in HTML.
-const APP_VERSION = 'v9.15.03';
+const APP_VERSION = 'v9.15.04';
 
 // ── KPI Tree loader — 3-stage progressive disclosure ──
 
