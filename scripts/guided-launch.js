@@ -36,6 +36,37 @@ var glSessionCtx=null; // sessionContext snapshot — company/product profile, d
 var glBusy=false; // true while an AI call is in flight — blocks concurrent sends
 var glLastChangedSectionId=null; // one-shot flash target for the next glRenderMdBody()
 var glPanelOpen=true; // left panel expand/collapse state (v9.15.01, Items 1-4) — independent of DM's own panelOpen in left-panel.js
+var _glLeaveConfirmed=false; // one-shot bypass for the leave-confirmation modal's own retry, see blockIfLeavingGuidedLaunch()
+
+// v9.15.03, Item 1 — leave-confirmation modal for an unfinalized Guided
+// Launch session. Reuses showConfirm() (utils.js), the same component DM's
+// "Hold on, don't lose this" modal (blockIfGenerating()) uses, but this is
+// an intent-confirmation modal, not a data-loss-prevention one — progress
+// is never actually lost (it's a real, saved mt_sessions row from creation,
+// per v9.15.02) — so it fires on any departure attempt while unfinalized,
+// not just mid-turn/glBusy. Called from api.js's switchTab(), right after
+// the existing blockIfGenerating() guard. _glLeaveConfirmed is a one-shot
+// bypass flag for the retry after "Leave anyway" — unlike aiGenInFlight,
+// glStatus doesn't change on its own after the user confirms, so the retry
+// needs an explicit escape hatch or it would re-trigger itself forever.
+function blockIfLeavingGuidedLaunch(t){
+  if(_glLeaveConfirmed){ _glLeaveConfirmed=false; return false; }
+  if(typeof curTab==='undefined'||curTab!=='gl'||t==='gl')return false;
+  if(glStatus!=='active')return false;
+  showConfirm(
+    "You won't lose your progress. Resume this session anytime from Home. You'll just need to come back and finalize before your Discovery Map can be generated.",
+    'Leave this chat?',
+    null,
+    'Stay here',
+    'stay',
+    'Leave anyway',
+    function(){
+      _glLeaveConfirmed=true;
+      switchTab(t);
+    }
+  );
+  return true;
+}
 
 // ── Reset (v9.15.01, Item 20) ──
 // Called by home.js's homeClearSession() — the one shared cleanup function
@@ -153,18 +184,32 @@ async function _glCallModel(sys,usr){
 // class of bug at its root: sessionActive=true here means switchTab('home')'s
 // existing guard now reliably fires homeClearSession() -> glResetState() on
 // every departure, exactly like every other real session.
-async function glCreateAndOpen(sessionContext){
-  glSessionCtx=sessionContext;
+// v9.15.03, Items 3+5 fix — parameter renamed from "sessionContext" to "sc":
+// the old name shadowed the GLOBAL sessionContext variable for this entire
+// function body, so the global was never assigned here. sessionStoreCreate()
+// calls _sessionStoreBuildSnapshot() with no arguments, which reads the
+// GLOBAL sessionContext for its snapshot.sessionContext key — meaning every
+// snapshot saved from the moment of creation (including every chat-turn
+// save afterward) persisted a stale/null sessionContext, even though
+// in-memory glSessionCtx stayed correct (masking this during the live chat
+// itself). On resume, glApplyRestoredSnapshot() reads that corrupted
+// snapshot.sessionContext back out — this is the confirmed root cause of
+// Item 3 (empty left panel on resume). Explicitly assigning the global here
+// mirrors exactly how _homeDoLaunch() already does it for Quick Launch
+// (no parameter shadowing there, since it's not passed as an argument).
+async function glCreateAndOpen(sc){
+  glSessionCtx=sc;
+  sessionContext=sc;
   glStatus='active';
   glMessages=[];
   glDraftMd='';
   glFinalMd=null;
   glMdOpen=false;
-  glContextHash=_glHashContext(sessionContext.companyProfile,sessionContext.productProfile);
+  glContextHash=_glHashContext(sc.companyProfile,sc.productProfile);
 
-  var id=sessionStoreCreate(sessionContext,{lastTab:'gl',lastStage:'Guided Launch',intakeStatus:'active'});
+  var id=sessionStoreCreate(sc,{lastTab:'gl',lastStage:'Guided Launch',intakeStatus:'active'});
   glSessionId=id;
-  glProductId=(sessionContext.productProfile&&sessionContext.productProfile.id)||null;
+  glProductId=(sc.productProfile&&sc.productProfile.id)||null;
   glCompanyId=(function(){ try{ return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY)||null; }catch(e){ return null; } })();
 
   sessionActive=true;
@@ -257,7 +302,7 @@ function glRenderShell(){
           +'<textarea class="gl-chat-input" id="gl-chat-input" rows="1" placeholder="Type your response..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();glSendMessage();}"></textarea>'
           +'<button class="gl-chat-send" id="gl-send-btn" onclick="glSendMessage()" title="Send"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>'
         +'</div>'
-        +'<div class="gl-upload-chip" id="gl-upload-chip" onclick="if(glStatus===\'active\')document.getElementById(\'gl-file-input\').click()" title="Click to select a file to upload">'
+        +'<div class="gl-upload-chip" id="gl-upload-chip" onclick="if(glStatus===\'active\'&&!glBusy)document.getElementById(\'gl-file-input\').click()" title="Click to select a file to upload">'
           +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
           +' <span id="gl-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="gl-upload-chip-suffix"> to add context anytime</span>'
         +'</div>'
@@ -297,6 +342,13 @@ function glRenderShell(){
       +'<div class="gl-md-footer">'
         +'<button class="gl-finalize-btn" id="gl-finalize-btn" onclick="glFinalize()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Finalize &amp; Generate</button>'
         +'<div class="gl-footer-note" id="gl-footer-note">Locks your brief and starts Discovery Map generation.</div>'
+        // Item 6 (v9.15.03) — visible only when glStatus==='completed', same
+        // condition that disables the Finalize button above (both driven
+        // from glUpdateFooterState() so they can never disagree). Handles
+        // the case where the user finalized then left before generation
+        // ever produced gData — reuses the existing "Generation was
+        // interrupted" empty state rather than landing on a blank Discovery Map.
+        +'<button class="gl-continue-dm-btn" id="gl-continue-dm-btn" style="display:none;" onclick="glContinueToDiscoveryMap()">&#8594; Continue to Discovery Map</button>'
       +'</div>'
     +'</div>';
 
@@ -364,6 +416,11 @@ function _glSetBusy(busy){
   var input=document.getElementById('gl-chat-input');
   if(sendBtn)sendBtn.disabled=busy;
   if(input)input.disabled=busy;
+  // Item 4 (v9.15.03) — upload chip's onclick already checks glBusy (see
+  // glRenderShell()), this is the matching visual state so it stops
+  // looking clickable while the agent is thinking, same as send/input above.
+  var uploadChip=document.getElementById('gl-upload-chip');
+  if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',busy||glStatus==='completed');
 }
 // Items 5+7 (v9.15.01) — cc-spin-sm was an orphaned reference to a
 // Capability Canvas class that doesn't exist in this file, rendering as a
@@ -526,21 +583,45 @@ function glUpdateFooterState(){
   var btn=document.getElementById('gl-finalize-btn');
   var note=document.getElementById('gl-footer-note');
   var statusLbl=document.getElementById('gl-status-label');
-  if(btn)btn.disabled=(glStatus==='completed');
-  if(note)note.textContent=(glStatus==='completed')?'Locked. Edit via Discovery Map or a new session.':'Locks your brief and starts Discovery Map generation.';
-  if(statusLbl)statusLbl.textContent=(glStatus==='completed')?'Finalized — Discovery Map generation in progress':'Drafting requirements together';
+  var isCompletedForFooter=(glStatus==='completed');
+  if(btn)btn.disabled=isCompletedForFooter;
+  if(note)note.textContent=isCompletedForFooter?'Locked. Edit via Discovery Map or a new session.':'Locks your brief and starts Discovery Map generation.';
+  if(statusLbl)statusLbl.textContent=isCompletedForFooter?'Finalized — Discovery Map generation in progress':'Drafting requirements together';
+  // Item 6 (v9.15.03) — same condition as the Finalize button's disabled
+  // state above, so the two can never disagree.
+  var continueBtn=document.getElementById('gl-continue-dm-btn');
+  if(continueBtn)continueBtn.style.display=isCompletedForFooter?'block':'none';
 
   // Item 10 (v9.15.01) — uploads are a no-op post-finalize at the handler
   // level already (glHandleUpload()'s own glStatus check); this adds the
   // matching visual/interactive disabled state so the chip stops looking
-  // clickable once it actually stops doing anything.
+  // clickable once it actually stops doing anything. Item 4 (v9.15.03):
+  // also disabled while glBusy — _glSetBusy() applies the same combined
+  // condition, this just keeps it correct on calls that don't go through
+  // _glSetBusy (e.g. right after a fresh render).
   var uploadChip=document.getElementById('gl-upload-chip');
   var uploadText=document.getElementById('gl-upload-chip-text');
   var uploadSuffix=document.getElementById('gl-upload-chip-suffix');
   var isCompleted=(glStatus==='completed');
-  if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',isCompleted);
+  if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',isCompleted||glBusy);
   if(uploadText)uploadText.textContent=isCompleted?'Session finalized.':'Upload a document';
   if(uploadSuffix)uploadSuffix.textContent=isCompleted?' Uploads closed.':' to add context anytime';
+}
+
+// Item 6 (v9.15.03) — only reachable when glStatus==='completed' (button is
+// hidden otherwise, per glUpdateFooterState()). If generation genuinely
+// never produced gData (user left before it finished), shows the same
+// "Generation was interrupted" state sessionStoreRestore() shows on a
+// direct resume-to-mm, rather than landing on a silently blank Discovery
+// Map — reuses _ssShowInterruptedGenerationState(), does not duplicate it.
+function glContinueToDiscoveryMap(){
+  if(glStatus!=='completed')return;
+  var tabMm=document.getElementById('tab-mm');
+  if(tabMm)tabMm.style.display='';
+  switchTab('mm');
+  if(!gData&&typeof _ssShowInterruptedGenerationState==='function'){
+    _ssShowInterruptedGenerationState({sessionContext:glSessionCtx});
+  }
 }
 
 // Left panel collapse/expand (v9.15.01, Items 1-4) — mirrors left-panel.js's

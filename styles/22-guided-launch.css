@@ -117,6 +117,11 @@
 .gl-finalize-btn:hover{background:var(--purple-deep);}
 .gl-finalize-btn:disabled{opacity:0.5;cursor:not-allowed;}
 .gl-footer-note{font-size:10px;color:var(--t3);text-align:center;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* Item 6 (v9.15.03) — link-style, matching the app's small-secondary-action
+   convention; hidden by default (display:none inline on the element itself),
+   toggled by glUpdateFooterState(). */
+.gl-continue-dm-btn{width:100%;background:none;border:none;padding:2px;font-size:10px;font-weight:700;color:var(--purple);cursor:pointer;font-family:var(--font);}
+.gl-continue-dm-btn:hover{color:var(--purple-deep);text-decoration:underline;}
 
 /* Collapsed rail handle */
 .gl-md-collapsed-rail{width:26px;min-width:26px;background:var(--card);border-left:1px solid var(--divider);display:none;flex-direction:column;align-items:center;padding-top:14px;flex-shrink:0;cursor:pointer;}

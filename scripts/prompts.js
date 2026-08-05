@@ -1101,9 +1101,9 @@ function buildGuidedLaunchOpeningPrompt(sessionContext){
     + 'You open the conversation by reading everything already known about the product and proposing a starting requirements brief — not by asking the user to repeat context they already gave. '
     + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
 
-  const usr='COMPANY PROFILE:\n'+(cp.name||'Unnamed company')+' — '+(cp.description||'No description provided')+'\n\n'
-    + 'PRODUCT PROFILE:\n'+(pp.name||'Unnamed product')+' — '+(pp.description||'No description provided')+'\n'
-    + 'Industry: '+(pp.industry||'Not specified')+'\n'
+  const usr='COMPANY PROFILE:\n'+(cp.companyName||'Unnamed company')+' — '+(cp.companyStrategy||cp.companyContext||'No description provided')+'\n\n'
+    + 'PRODUCT PROFILE:\n'+(pp.productName||'Unnamed product')+' — '+(pp.productDesc||'No description provided')+'\n'
+    + 'Industry: '+(pp.industry||cp.companyIndustry||'Not specified')+'\n'
     + 'Product type: '+(pp.productType||'Not specified')+'\n\n'
     + 'SESSION SETUP:\nApproach: '+(sessionContext.approach||'outcome-based')+'\nGeneration mode: '+(sessionContext.generationMode||'ai-generated')+'\n'
     + (sessionContext.customValueChain?('Custom value chain:\n'+sessionContext.customValueChain+'\n'):'')

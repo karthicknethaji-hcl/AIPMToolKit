@@ -445,6 +445,10 @@ function clearTabPending(tabId){
 
 function switchTab(t){
   if(blockIfGenerating(()=>switchTab(t)))return;
+  // v9.15.03, Item 1 — checked BEFORE curTab is reassigned below, since the
+  // guard itself needs to compare curTab (the tab being left) against t
+  // (the tab being entered).
+  if(typeof blockIfLeavingGuidedLaunch==='function'&&blockIfLeavingGuidedLaunch(t))return;
   const prev=curTab;
   curTab=t;
   // Phase 3a (v8.126): Home poll only runs while Home is actually visible —

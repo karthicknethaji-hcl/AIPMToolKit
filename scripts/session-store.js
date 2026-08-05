@@ -1180,20 +1180,7 @@ async function sessionStoreRestore(sessionId) {
 
     // If session was interrupted before gData was set, show a clear interrupted state
     if (targetTab === 'mm' && !s.gData && sessionActive) {
-      if (typeof hideLoad === 'function') hideLoad();
-      if (typeof endAiGen === 'function') endAiGen();
-      const esEl = document.getElementById('es');
-      if (esEl) {
-        const productName = (s.sessionContext && s.sessionContext.productProfile && s.sessionContext.productProfile.productName) || 'this product';
-        esEl.innerHTML = `
-          <div class="empty-icon"><i class="ti ti-player-pause" style="color:var(--purple);"></i></div>
-          <div class="empty-title">Generation was interrupted</div>
-          <div class="empty-desc">Your session for <strong>${e(productName)}</strong> was started but the Discovery Map didn't complete. Your product details are ready — click Generate to continue.</div>
-          <div class="empty-steps">
-            <button class="gen-btn" onclick="generate()" style="margin-top:8px;"><i class="ti ti-sparkles" style="font-size:13px;" aria-hidden="true"></i> Generate Discovery Map</button>
-          </div>`;
-        esEl.style.display = '';
-      }
+      _ssShowInterruptedGenerationState(s);
     }
 
     // Fix #3 — for non-mm targets, ensure DM left panel is hidden
@@ -1655,6 +1642,30 @@ function _ssComputeCounts() {
 // shipped) correctly fails both strict checks and falls through to
 // whichever of the two conditions is actually true, unchanged from
 // today's behavior for old sessions.
+// v9.15.03, Item 6 — extracted from sessionStoreRestore()'s own targetTab
+//==='mm' branch so guided-launch.js's "Continue to Discovery Map" link (a
+// completed Guided Launch session whose generation never finished before
+// the user left) can show the exact same "interrupted" state, rather than
+// landing on a silently blank Discovery Map. Shows only when gData is
+// actually absent — this function does not itself check that condition,
+// callers do (matches the extracted call site's own existing guard).
+function _ssShowInterruptedGenerationState(s) {
+  if (typeof hideLoad === 'function') hideLoad();
+  if (typeof endAiGen === 'function') endAiGen();
+  const esEl = document.getElementById('es');
+  if (esEl) {
+    const productName = (s.sessionContext && s.sessionContext.productProfile && s.sessionContext.productProfile.productName) || 'this product';
+    esEl.innerHTML = `
+      <div class="empty-icon"><i class="ti ti-player-pause" style="color:var(--purple);"></i></div>
+      <div class="empty-title">Generation was interrupted</div>
+      <div class="empty-desc">Your session for <strong>${e(productName)}</strong> was started but the Discovery Map didn't complete. Your product details are ready — click Generate to continue.</div>
+      <div class="empty-steps">
+        <button class="gen-btn" onclick="generate()" style="margin-top:8px;"><i class="ti ti-sparkles" style="font-size:13px;" aria-hidden="true"></i> Generate Discovery Map</button>
+      </div>`;
+    esEl.style.display = '';
+  }
+}
+
 function _ssShouldShowMiTab(s) {
   if (!s) return false;
   if (s.miGenerated === true) return true;

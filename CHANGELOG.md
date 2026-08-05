@@ -1,5 +1,12 @@
 # Changelog — AI PM Toolkit
 
+## v9.15.03 — Guided Launch: context bug fixes, leave-confirmation, resume-to-DM link
+
+- **Fixed a real data bug:** the opening chat prompt read the wrong field names on the product/company profile (`name`/`description` instead of the real `productName`/`productDesc`/`companyName`/`companyStrategy`), so every fresh Guided Launch session opened as if no product profile existed at all, regardless of what was actually configured in Settings.
+- **Fixed a second, related data bug:** `glCreateAndOpen()`'s parameter was named `sessionContext`, shadowing the global variable of the same name for its whole function body — so the global was never assigned at creation, and every snapshot saved during the chat (including the very first one) persisted a stale or null `sessionContext`, even though the live in-memory copy driving the chat stayed correct. This surfaced as an empty left panel on resume, since resume reads the persisted snapshot back. Fixed by renaming the parameter and explicitly assigning the global, matching how Quick Launch already does it.
+- **Added a leave-confirmation modal** for an unfinalized Guided Launch session, reusing the app's existing confirmation-modal component (same one Discovery Map's in-progress-generation guard uses) with Guided-Launch-specific copy, since no progress is ever actually lost.
+- **Fixed the upload control staying enabled while the agent is responding** (chat input and send were already correctly disabled); added a "Continue to Discovery Map" link, shown only once finalized, for the case where a user finalizes then leaves before generation ever completes.
+
 ## v9.15.02 — Guided Launch: unified onto mt_sessions
 
 - **Architectural fix:** a Guided Launch session is now a real `mt_sessions` row from the moment of creation — the same `sessionStoreCreate()`/`sessionStoreSave()`/`sessionStoreRestore()` machinery every other canvas uses — instead of a separate `mt_intake_sessions`/`mt_intake_messages` pair that only became a real session at Finalize (via a second, unrelated row). Those two tables are dropped (migration run directly, no data migrated — test data only). Chat transcript and draft/final brief now live in the session's own `snapshot.gl*` keys; a new `mt_sessions.intake_status` column (`active`/`completed`/`null`) drives Guided Launch's tab visibility and resume routing.
