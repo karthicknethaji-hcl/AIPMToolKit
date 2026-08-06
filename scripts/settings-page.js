@@ -405,11 +405,13 @@ async function settingsPageSave() {
   const togMi = document.getElementById('sp-tog-mi');
   const togPi = document.getElementById('sp-tog-pi');
   const togOp = document.getElementById('sp-tog-op');
+  const togRa = document.getElementById('sp-tog-ra');
   if(togMd) appSettings.featDD   = _spTogState('md');
   if(togPd) appSettings.featDiag = _spTogState('pd');
   if(togMi) appSettings.featMI   = _spTogState('mi');
   if(togPi) appSettings.featPI   = _spTogState('pi');
   if(togOp) appSettings.featOutcomePulse = _spTogState('op');
+  if(togRa) appSettings.featRA = _spTogState('ra');
 
   // Section 3 — Output Depth
   const vkdEl = document.getElementById('sp-vkd');
@@ -840,6 +842,7 @@ function spPopulate() {
   _spSetTog('pd', appSettings.featDiag);
   _spSetTog('mi', appSettings.featMI);
   _spSetTog('pi', appSettings.featPI);
+  _spSetTog('ra', appSettings.featRA);
 
   // Section 3
   _spSetSpan('sp-vkd', appSettings.kpiDepth||1);
@@ -1333,11 +1336,12 @@ function spOnProviderChange(newProvider){
 // ── Panel 2: Feature Modules ──
 function spP2() {
   return `
-  ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Definition','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
-  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your Discovery Map',appSettings.featDiag)}
+  ${_spModRow('ra','ti-message-2','#EEEDFE','#5F1EBE','Requirement Agent','Conversational requirements refinement before Discovery Map generation',appSettings.featRA)}
   ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before Discovery Map generation.',appSettings.featMI)}
-  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI)}
-  ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse,true)}`;
+  ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse)}
+  ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Dictionary','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
+  ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your Discovery Map',appSettings.featDiag)}
+  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI,true)}`;
 }
 
 // ── Panel 3: Output Depth ──

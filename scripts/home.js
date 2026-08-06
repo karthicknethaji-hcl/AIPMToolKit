@@ -26,6 +26,11 @@ function homeInit(){
   _homeUploadedFileName='';
   _homeSessionDocs=[];
   _homeCtxExpanded=false;
+  // v9.16 — set Requirement Agent's toggle from the Settings master switch
+  // on first render. (No equivalent wiring exists for home-mi-toggle today —
+  // that's a separate pre-existing gap, flagged, not fixed here.)
+  var raToggleInit=document.getElementById('home-ra-toggle');
+  if(raToggleInit) raToggleInit.checked=(typeof appSettings!=='undefined'?appSettings.featRA:true);
   _homeRenderProductSelector();
   homeRenderPreviewCard();
   homeSetApproach('outcome-based');
@@ -79,7 +84,7 @@ function _homeApplyReadOnlyState(){
   // Disable every left-panel setup control individually — Demo Data card
   // controls are NOT in this list, by design (see comment above).
   const _fieldIds=['home-product-sel','home-approach-outcome','home-approach-capability',
-    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-gen-btn','home-guided-launch-btn'];
+    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-ra-toggle','home-launch-btn'];
   _fieldIds.forEach(function(id){
     const el=document.getElementById(id);
     if(el) el.disabled=isReadOnly;
@@ -190,12 +195,7 @@ function homeOnProductChange(){
 // Enable/disable launch button
 // Blocks if no product selected OR if any session doc is still processing
 function _homeUpdateLaunchBtn(){
-  const btn=document.getElementById('home-gen-btn');
-  // v9.15 — Guided Launch's button shares every gating condition below with
-  // Quick Launch's (same product/doc/manual-list preconditions — see spec
-  // Section 5.1). Both buttons are disabled/enabled together rather than
-  // duplicating this function's ~15 call sites for a second button.
-  const guidedBtn=document.getElementById('home-guided-launch-btn');
+  const btn=document.getElementById('home-launch-btn');
   const errEl=document.getElementById('home-launch-error');
   if(!btn)return;
   // v9.09 — Read Only hard-blocks launch regardless of product/doc state.
@@ -205,7 +205,6 @@ function _homeUpdateLaunchBtn(){
   const isReadOnly=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
   if(isReadOnly){
     btn.disabled=true;
-    if(guidedBtn)guidedBtn.disabled=true;
     if(errEl){
       errEl.style.display='flex';
       errEl.innerHTML='<i class="ti ti-alert-triangle" style="font-size:11px;color:#BA7517;" aria-hidden="true"></i> <span style="color:#BA7517;font-weight:400;">Setup is disabled for view only access</span>';
@@ -218,7 +217,6 @@ function _homeUpdateLaunchBtn(){
   const missingCapList=isCapManual&&_homeManualList.length===0;
   const isBlocked=!hasProduct||pendingDocs.length>0||missingCapList;
   btn.disabled=isBlocked;
-  if(guidedBtn)guidedBtn.disabled=isBlocked;
   if(errEl){
     if(pendingDocs.length>0){
       errEl.style.display='flex';
@@ -520,6 +518,20 @@ function _homeWireCounters(){
       ctxCount.textContent=len+'/'+MAX;
       ctxCount.className='home-ctx-counter'+(len>=MAX?' home-ctx-red':len>=(MAX*0.8)?' home-ctx-amber':'');
     });
+  }
+}
+
+// v9.16 — single consolidated CTA, replaces the old Quick Launch / Guided
+// Launch button pair. Routes to the exact same two pre-existing functions
+// based on the Requirement Agent toggle state — neither homeLaunch() nor
+// homeGuidedLaunch()'s own bodies change.
+function homeLaunchUnified(){
+  var raToggle=document.getElementById('home-ra-toggle');
+  var raOn=!!(raToggle&&raToggle.checked);
+  if(raOn){
+    homeGuidedLaunch();
+  } else {
+    homeLaunch();
   }
 }
 
@@ -1462,7 +1474,8 @@ function _homeGetStagePill(stage){
     'Feature Canvas':['home-sess-pill-stage-fc','ti-writing'],
     'Capability Canvas':['home-sess-pill-stage-cc','ti-layers-subtract'],
     'Discovery Map':['home-sess-pill-stage-dm','ti-hierarchy-2'],
-    'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search']
+    'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search'],
+    'Requirement Agent':['home-sess-pill-stage-ra','ti-message-2']
   };
   const s=stage||'Discovery Map';
   const cfg=map[s]||map['Discovery Map'];
@@ -2223,6 +2236,13 @@ function _homeResetSetupForm(){
   // 4. Uncheck Market Intelligence toggle
   var miEl=document.getElementById('home-mi-toggle');
   if(miEl) miEl.checked=false;
+
+  // 4a. Reset Requirement Agent toggle to its default (ON), mirroring step 4's
+  //     MI reset immediately above, but opposite default state — read from
+  //     appSettings.featRA (the Settings master switch) rather than a
+  //     hardcoded true.
+  var raEl=document.getElementById('home-ra-toggle');
+  if(raEl) raEl.checked=(typeof appSettings!=='undefined'?appSettings.featRA:true);
 
   // 5. Uncheck AI Suggestions toggle — must happen BEFORE homeSetApproach() because
   //    homeSetApproach calls homeRenderSdocsSection() which removes this element from DOM

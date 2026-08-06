@@ -103,7 +103,7 @@
 <div class="app-shell" id="app-shell">
   <div class="out-hdr"><div class="tab-row">
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
-    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
+    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Requirement Agent</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
@@ -175,6 +175,25 @@
             placeholder="One stage per line e.g. Discover, Plan, Purchase..."></textarea>
           <span class="home-hint">Overrides AI-derived value chain stages</span>
         </div>
+        <div class="home-tog-row" id="home-ra-row">
+          <div class="home-tog-lhs">
+            <div class="home-tog-label"><i class="ti ti-message-2" style="font-size:10px;" aria-hidden="true"></i> Requirement Agent</div>
+            <div class="home-tog-sub">Refine your brief conversationally before generating</div>
+          </div>
+          <label class="sp-toggle" style="flex-shrink:0;">
+            <input type="checkbox" id="home-ra-toggle" checked>
+            <div class="sp-track"></div><div class="sp-thumb"></div>
+          </label>
+        </div>
+        <div class="home-tog-row mi-gated" id="home-mi-row">
+          <div class="home-tog-lhs">
+            <div class="home-tog-label"><i class="ti ti-world-search" style="font-size:10px;" aria-hidden="true"></i> Market Intelligence</div>
+            <div class="home-tog-sub">Make your map market-aware from the start</div>
+          </div>
+          <label class="sp-toggle" style="flex-shrink:0;">
+            <input type="checkbox" id="home-mi-toggle"><div class="sp-track"></div><div class="sp-thumb"></div>
+          </label>
+        </div>
         <div class="home-fl">
           <div style="display:flex;align-items:center;justify-content:space-between;">
             <label style="margin:0;"><i class="ti ti-notes" style="font-size:10px;" aria-hidden="true"></i> Additional Context</label>
@@ -186,30 +205,15 @@
             <div class="home-ctx-counter"><span id="home-ctx-counter">0/2000</span></div>
           </div>
         </div>
-        <div class="home-tog-row mi-gated" id="home-mi-row">
-          <div class="home-tog-lhs">
-            <div class="home-tog-label"><i class="ti ti-world-search" style="font-size:10px;" aria-hidden="true"></i> Market Intelligence</div>
-            <div class="home-tog-sub">Make your map market-aware from the start</div>
-          </div>
-          <label class="sp-toggle" style="flex-shrink:0;">
-            <input type="checkbox" id="home-mi-toggle"><div class="sp-track"></div><div class="sp-thumb"></div>
-          </label>
-        </div>
         <!-- Error/status message — margin-top:auto pins it above the gen-wrap divider -->
         <div class="home-launch-error" id="home-launch-error" style="display:none;"></div>
         </div>
       </div>
       <div class="home-gen-wrap">
-        <div class="home-launch-cta-row">
-          <button class="home-gen-btn home-gen-btn-quick" id="home-gen-btn" onclick="homeLaunch()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-            Quick Launch
-          </button>
-          <button class="home-gen-btn" id="home-guided-launch-btn" onclick="homeGuidedLaunch()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            Guided Launch
-          </button>
-        </div>
+        <button class="home-gen-btn" id="home-launch-btn" onclick="homeLaunchUnified()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          Launch Session
+        </button>
       </div>
     </div>
     <div class="home-main" id="home-main-body">
@@ -305,7 +309,6 @@
       </div>
     </div>
         <div class="gen-wrap"><button class="gen-btn" id="gen-btn" onclick="generate()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Generate Discovery Map</button></div>
-        <div class="gen-wrap" style="margin-top:0;padding-top:0;"><button class="gen-btn-secondary" onclick="ccActivatePIFirst();revealAndSwitchTab('cc')"><i class="ti ti-clipboard-list" style="font-size:13px;" aria-hidden="true"></i> I already have a capability plan</button></div>
   </div>
 
   <div class="right">
@@ -438,7 +441,7 @@
                 <div class="sc-legend-item"><i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</div>
               </div>
               </div>
-              <div id="sc-cards-scroll" style="flex:1;overflow-y:auto;padding:0 22px 16px;">
+              <div id="sc-cards-scroll" style="flex:1;overflow-y:auto;overflow-x:hidden;padding:0 22px 16px;">
                 <div id="sc-cards-container"></div>
               </div>
             </div>

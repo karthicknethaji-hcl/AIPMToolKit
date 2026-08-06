@@ -1,5 +1,14 @@
 # Changelog — AI PM Toolkit
 
+## v9.16 — Requirement Agent settings module, Home consolidation, two bug fixes
+
+- **Added Requirement Agent as a proper Settings-gated module** (default ON) — new Feature Modules row and master switch, reordered to lead the module list; renamed the stale "Metrics Definition" Settings label to "Metrics Dictionary" to match every other live reference to that module.
+- **Consolidated Home's Quick Launch / Guided Launch buttons into a single "Launch Session" CTA**, routed by a new Requirement Agent toggle on the Home panel; removed the redundant "I already have a capability plan" shortcut (Capability Canvas's own dual-entry screen already offers this). Moved Additional Context to the end of the panel and dropped the divider line between toggle rows.
+- **Renamed the "Guided Launch" tab and its user-facing copy to "Requirement Agent"** (tab label, chat header, new-session stage label, session-card pill) — internal identifiers (`glStatus`, `gl-*` element ids, filenames) are unchanged. Existing sessions created before this release keep showing "Guided Launch" on their session card, by design — no backfill.
+- **Fixed an unwanted horizontal scrollbar on Feature Canvas's card grid** — `#sc-cards-scroll` was missing `overflow-x:hidden`.
+- **Fixed Guided Launch's chat input and send button staying visually enabled after finalize** — they were already functionally blocked, just not visually disabled to match.
+- Server-side: renamed the `guided-launch` caller/tier-lookup key to `requirement-agent` (logging only — no change to historical usage data).
+
 ## v9.15.04 — Guided Launch: polish pass on the v9.15.03 fixes
 
 - **Narrowed the leave-confirmation modal to mid-response only** — it now warns only when leaving while the agent is actively responding, not on every departure from an unfinalized chat (reversing v9.15.03's original "any departure" design, per explicit product decision).

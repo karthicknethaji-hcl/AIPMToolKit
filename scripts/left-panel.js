@@ -15,6 +15,7 @@ function applyFeats(){
   featMI   = appSettings.featMI;
   featPI   = appSettings.featPI;
   featOutcomePulse = appSettings.featOutcomePulse;
+  featRA = appSettings.featRA;
 
   // #tab-dd retired — no longer a tab. DD is download-only panel triggered from KPI tree.
   document.querySelectorAll('.cap-trigger').forEach(function(b){b.style.display='';});

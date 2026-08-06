@@ -519,18 +519,19 @@
 }
 #home-tab .home-cond-error:not(:empty){display:block;}
 
-/* ── Toggle row (Market Intelligence) ── */
+/* ── Toggle row (Market Intelligence, Requirement Agent) ── */
 #home-tab .home-tog-row{
   display:flex;
   align-items:center;
   justify-content:space-between;
   gap:12px;
   padding:6px 0;
-  border-top:1px solid var(--divider);
 }
+#home-tab #home-ra-row{border-top:1px solid var(--divider);}
+#home-tab #home-mi-row{border-bottom:1px solid var(--divider);}
 
 #home-tab .home-tog-lhs .home-tog-label{
-  font-size:10px;
+  font-size:11px;
   font-weight:600;
   color:var(--t1);
   display:flex;
@@ -1055,6 +1056,7 @@
 #home-tab .home-sess-pill-stage-sc{background:var(--purple-pale);color:var(--purple);border-color:var(--purple-light);}
 #home-tab .home-sess-pill-stage-pi{background:#E6F5EF;color:var(--green);border-color:#9CDBCE;}
 #home-tab .home-sess-pill-stage-mi{background:var(--blue-pale);color:var(--blue);border-color:var(--blue-mid);}
+#home-tab .home-sess-pill-stage-ra{background:var(--purple-pale);color:var(--purple);border-color:var(--purple-light);}
 
 #home-tab .home-sess-divider{height:1px;background:var(--divider);margin:0 11px;}
 

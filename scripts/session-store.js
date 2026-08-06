@@ -1562,7 +1562,7 @@ function _ssComputeLastStage() {
   // read live globals directly, on the same one-session-live-at-a-time
   // invariant glResetState() (called from homeClearSession()) enforces for
   // every other field it checks below.
-  if (typeof glStatus !== 'undefined' && glStatus === 'active') return 'Guided Launch';
+  if (typeof glStatus !== 'undefined' && glStatus === 'active') return 'Requirement Agent';
   if (typeof piPlan !== 'undefined' && piPlan) return 'PI Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });

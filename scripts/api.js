@@ -300,7 +300,7 @@ const CALLER_TIERS = {
   // resolves to each provider's Sonnet-equivalent, matching the product
   // decision to use the standard resolution chain rather than a hardcoded
   // model string (see guided-launch.js).
-  'guided-launch': 'general'
+  'requirement-agent': 'general'
 };
 
 // Tier -> model, per provider. This is the ONLY place a literal model ID

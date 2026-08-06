@@ -188,7 +188,7 @@ function _glParseJSON(txt){
 // api.js/proxy/server.js).
 async function _glCallModel(sys,usr){
   var extra={session_id:glSessionId,product_id:glProductId,session_type:'ChatCanvas'};
-  return await callAPI(sys,usr,3000,null,null,'guided-launch',null,extra);
+  return await callAPI(sys,usr,3000,null,null,'requirement-agent',null,extra);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -226,7 +226,7 @@ async function glCreateAndOpen(sc){
   glMdOpen=false;
   glContextHash=_glHashContext(sc.companyProfile,sc.productProfile);
 
-  var id=sessionStoreCreate(sc,{lastTab:'gl',lastStage:'Guided Launch',intakeStatus:'active'});
+  var id=sessionStoreCreate(sc,{lastTab:'gl',lastStage:'Requirement Agent',intakeStatus:'active'});
   glSessionId=id;
   glProductId=(sc.productProfile&&sc.productProfile.id)||null;
   glCompanyId=(function(){ try{ return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY)||null; }catch(e){ return null; } })();
@@ -314,7 +314,7 @@ function glRenderShell(){
     +'</div>'
     +'<div class="gl-center">'
       +'<div class="gl-chat-hdr">'
-        +'<div><div class="gl-chat-hdr-eyebrow">Guided Launch</div><div class="gl-chat-hdr-title" id="gl-status-label">Drafting requirements together</div></div>'
+        +'<div><div class="gl-chat-hdr-eyebrow">Requirement Agent</div><div class="gl-chat-hdr-title" id="gl-status-label">Drafting requirements together</div></div>'
       +'</div>'
       +'<div class="gl-chat-body" id="gl-chat-body"></div>'
       +'<div class="gl-chat-input-wrap">'
@@ -630,6 +630,13 @@ function glUpdateFooterState(){
   // state above, so the two can never disagree.
   var continueBtn=document.getElementById('gl-continue-dm-btn');
   if(continueBtn)continueBtn.style.display=isCompletedForFooter?'block':'none';
+
+  // v9.16 — glSendMessage() already hard-guards glStatus!=='active', this
+  // closes the matching visual gap so finalized sessions don't look typeable.
+  var chatInput=document.getElementById('gl-chat-input');
+  var chatSend=document.getElementById('gl-send-btn');
+  if(chatInput)chatInput.disabled=isCompletedForFooter;
+  if(chatSend)chatSend.disabled=isCompletedForFooter;
 
   // Item 10 (v9.15.01) — uploads are a no-op post-finalize at the handler
   // level already (glHandleUpload()'s own glStatus check); this adds the

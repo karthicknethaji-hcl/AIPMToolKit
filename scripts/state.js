@@ -51,6 +51,9 @@ const appSettings={
   // instruction otherwise — this is a genuinely new tab, not a fix to
   // existing behavior.
   featOutcomePulse:true,
+  // Requirement Agent — default ON per explicit product decision (differs
+  // from featMI's default-off pattern).
+  featRA:true,
   // Section 3 — Output Depth (wired into prompts in v6.76)
   maxCaps:4,
   includeSubCaps:false,
@@ -86,6 +89,7 @@ let featCap=appSettings.featCap;
 let featDiag=appSettings.featDiag;
 let featPI=appSettings.featPI;
 let featOutcomePulse=appSettings.featOutcomePulse;
+let featRA=appSettings.featRA;
 
 // ── COMPANY PROFILE ──
 // Org-level context. Set once in Settings Section 1. Shared across all products.
