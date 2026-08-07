@@ -84,6 +84,20 @@ function applyFeats(){
       opTabEl.style.display='';
     }
   }
+  // v9.17.01 — Requirement Agent's Capability Canvas "Define Requirements"
+  // mode. There is no toolbar switch in CC anymore (that was the wrong
+  // location, flagged and removed) — this Settings > Feature Modules
+  // toggle is now the single, immediate-effect control for it, matching
+  // every other module toggle's pattern. raEnabled (state.js) stays the
+  // per-session value _ccRaOn() actually reads; syncing it here on every
+  // settings save is what makes the toggle take effect without a reload.
+  if(typeof raEnabled!=='undefined' && raEnabled!==featRA){
+    raEnabled=featRA;
+    if(typeof capActiveMetricKey!=='undefined'){
+      if(capActiveMetricKey===null && typeof ccRenderAllCaps==='function') ccRenderAllCaps();
+      else if(typeof ccRenderMainContent==='function') ccRenderMainContent();
+    }
+  }
 }
 function updateFeatLock(){
   // Retired in v6.75 — fly-out panel DOM IDs (feat-locked, feat-toggles) no longer exist.

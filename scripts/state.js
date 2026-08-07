@@ -51,8 +51,12 @@ const appSettings={
   // instruction otherwise — this is a genuinely new tab, not a fix to
   // existing behavior.
   featOutcomePulse:true,
-  // Requirement Agent — default ON per explicit product decision (differs
-  // from featMI's default-off pattern).
+  // v9.17.01 — Requirement Agent's Capability Canvas "Define Requirements"
+  // mode (raEnabled — see capability-canvas.js's _ccRaOn()). Default ON,
+  // matching the product decision made for this flag under its earlier
+  // (now-removed) name in v9.16. Not to be confused with the unrelated,
+  // now-reverted Guided Launch naming collision — this flag exists solely
+  // for the real, global Requirement Agent feature (requirement-agent.js).
   featRA:true,
   // Section 3 — Output Depth (wired into prompts in v6.76)
   maxCaps:4,
@@ -146,6 +150,15 @@ let capActiveCapIdx=null;
 let capActiveSubCapIdx=null;
 let ccSelectedCapIds=new Set(); // cap keys selected for feature generation (metricKey+"|"+capIdx)
 let ccPanelCapKey=null;           // cap currently open in right panel ("metricKey|capIdx")
+
+// ── REQUIREMENT AGENT STATE (v9.16) ── read by capability-canvas.js (toggle
+// gate) and owned/rendered by requirement-agent.js. Persisted per-session —
+// see session-store.js's _sessionStoreBuildSnapshot()/_ssApplySnapshotFields().
+let raEnabled=false;              // boolean toggle, set in Capability Canvas UI
+let raConversations=[];           // [{id,title,rqNumber,createdAt,updatedAt,status,touchedCapabilityKeys,messages,openQuestions,liveDraftMd,generatedFeatureIds}]
+let raLastOpenConversationId=null;
+let raActiveConversationId=null;  // transient — which conversation is open in the left panel right now
+let raBusy=false;                 // true while an AI call is in flight — blocks concurrent sends
 
 // ── DIAGNOSTIC STATE ──
 let diagnosticSessions=[];

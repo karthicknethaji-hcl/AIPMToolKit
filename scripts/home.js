@@ -26,11 +26,6 @@ function homeInit(){
   _homeUploadedFileName='';
   _homeSessionDocs=[];
   _homeCtxExpanded=false;
-  // v9.16 — set Requirement Agent's toggle from the Settings master switch
-  // on first render. (No equivalent wiring exists for home-mi-toggle today —
-  // that's a separate pre-existing gap, flagged, not fixed here.)
-  var raToggleInit=document.getElementById('home-ra-toggle');
-  if(raToggleInit) raToggleInit.checked=(typeof appSettings!=='undefined'?appSettings.featRA:true);
   _homeRenderProductSelector();
   homeRenderPreviewCard();
   homeSetApproach('outcome-based');
@@ -84,7 +79,7 @@ function _homeApplyReadOnlyState(){
   // Disable every left-panel setup control individually — Demo Data card
   // controls are NOT in this list, by design (see comment above).
   const _fieldIds=['home-product-sel','home-approach-outcome','home-approach-capability',
-    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-ra-toggle','home-launch-btn'];
+    'home-mode-ai','home-mode-manual','home-custom-vc','home-mi-toggle','home-launch-btn'];
   _fieldIds.forEach(function(id){
     const el=document.getElementById(id);
     if(el) el.disabled=isReadOnly;
@@ -521,18 +516,16 @@ function _homeWireCounters(){
   }
 }
 
-// v9.16 — single consolidated CTA, replaces the old Quick Launch / Guided
-// Launch button pair. Routes to the exact same two pre-existing functions
-// based on the Requirement Agent toggle state — neither homeLaunch() nor
-// homeGuidedLaunch()'s own bodies change.
+// v9.17.01 — single CTA, replaces the old Quick Launch / Guided Launch
+// button pair. The v9.16 Guided Launch toggle that used to route this to
+// homeGuidedLaunch() has been removed per product decision (Guided Launch
+// is no longer a Home entry point — it collided naming-wise with the real,
+// global Requirement Agent tab and is being retired as a Home CTA). This
+// always calls homeLaunch(); homeGuidedLaunch() itself is left intact in
+// case Guided Launch needs a future entry point, but nothing on Home calls
+// it anymore.
 function homeLaunchUnified(){
-  var raToggle=document.getElementById('home-ra-toggle');
-  var raOn=!!(raToggle&&raToggle.checked);
-  if(raOn){
-    homeGuidedLaunch();
-  } else {
-    homeLaunch();
-  }
+  homeLaunch();
 }
 
 // ── Launch Session ──
@@ -850,6 +843,13 @@ function homeClearSession(){
   const glTabContent=document.getElementById('gl-tab');
   if(glTabContent){glTabContent.innerHTML='';glTabContent.classList.remove('on');}
   if(typeof glResetState==='function') glResetState();
+
+  // v9.16 — Requirement Agent, same reasoning as glResetState() above:
+  // per-session in-memory state (raConversations, active/open conversation
+  // pointers) must not survive into whichever session is opened next.
+  const raTabContent=document.getElementById('ra-tab');
+  if(raTabContent){raTabContent.innerHTML='';raTabContent.classList.remove('on');}
+  if(typeof raResetState==='function') raResetState();
 
   // Re-show lock message
   const lock=document.getElementById('home-tab-lock');
@@ -1475,7 +1475,7 @@ function _homeGetStagePill(stage){
     'Capability Canvas':['home-sess-pill-stage-cc','ti-layers-subtract'],
     'Discovery Map':['home-sess-pill-stage-dm','ti-hierarchy-2'],
     'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search'],
-    'Requirement Agent':['home-sess-pill-stage-ra','ti-message-2']
+    'Guided Launch':['home-sess-pill-stage-gl','ti-message-2']
   };
   const s=stage||'Discovery Map';
   const cfg=map[s]||map['Discovery Map'];
@@ -2236,13 +2236,6 @@ function _homeResetSetupForm(){
   // 4. Uncheck Market Intelligence toggle
   var miEl=document.getElementById('home-mi-toggle');
   if(miEl) miEl.checked=false;
-
-  // 4a. Reset Requirement Agent toggle to its default (ON), mirroring step 4's
-  //     MI reset immediately above, but opposite default state — read from
-  //     appSettings.featRA (the Settings master switch) rather than a
-  //     hardcoded true.
-  var raEl=document.getElementById('home-ra-toggle');
-  if(raEl) raEl.checked=(typeof appSettings!=='undefined'?appSettings.featRA:true);
 
   // 5. Uncheck AI Suggestions toggle — must happen BEFORE homeSetApproach() because
   //    homeSetApproach calls homeRenderSdocsSection() which removes this element from DOM

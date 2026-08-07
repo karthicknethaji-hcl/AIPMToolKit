@@ -778,10 +778,25 @@ Rules:
 - features array always empty`;
 }
 
-function buildPIStoryPrompt(ctx,piGoal,capName,featName,featWhy,refinement){
+// v9.16 — extended with two OPTIONAL trailing params (intakeBriefExcerpt,
+// siblingStorySummaries) for the Requirement Agent path. Confirmed via grep
+// (see PROJECT_MAP.md/CHANGELOG note on this build) that this function has
+// ZERO existing call sites today — buildPIStoryPrompt is defined but never
+// invoked; scBuildStoryPrompt() in feature-canvas.js is the function that
+// actually drives today's KPI-linked/PI-first story generation, via its own
+// independent implementation. The optional-params extension here is still
+// applied exactly as specified (backward compatible, additive only) so any
+// future non-RA caller keeps working unchanged with no extra args, and the
+// RA path (once wired to a story-generation flow, not part of this build's
+// Finalize scope — Finalize generates FEATURES only, see requirement-agent.js)
+// can pass the extra context immediately.
+function buildPIStoryPrompt(ctx,piGoal,capName,featName,featWhy,refinement,intakeBriefExcerpt,siblingStorySummaries){
   if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildPIStoryPrompt');
   const productName=ctx.name;const industry=ctx.industry;
   const context=piGoal?piGoal:'delivering value this PI';
+  const _siblingsStr=(siblingStorySummaries&&siblingStorySummaries.length)
+    ?('\nStories already generated for OTHER features under this same intake brief/capability — do NOT duplicate these:\n'+siblingStorySummaries.map(function(s){return '- '+s;}).join('\n')+'\n')
+    :'';
   return `You are a senior product strategist writing user stories for a PI plan.
 
 Product: ${productName}
@@ -790,7 +805,7 @@ PI Goal: ${context}
 Capability: "${capName}"
 Feature: "${featName}"
 Feature rationale: ${featWhy}
-${refinement?'PM context: '+refinement:''}
+${intakeBriefExcerpt?('\nRELEASE REQUIREMENTS BRIEF (PRIMARY content driver — ground the stories in this, using feature name/why above only as supporting context):\n'+intakeBriefExcerpt+'\n'):''}${_siblingsStr}${refinement?'PM context: '+refinement:''}
 
 Generate user stories in Gherkin format. Return ONLY this JSON — no markdown, no backticks:
 {
@@ -1150,4 +1165,145 @@ function buildGuidedLaunchTurnPrompt(sessionContext, draftMd, chatHistory, userM
     + '}';
 
   return { sys: sys, usr: usr };
+}
+
+// ── Requirement Agent (ra) — v9.16 ──
+// Global, one-conversation-per-release-scope agent, symmetric across
+// capabilities from the start (unlike Guided Launch, which is a single
+// pre-Discovery-Map intake chat). Reads gData/capStore GLOBALS directly
+// (not passed as params) — same load-order reasoning already documented
+// above buildCapFeaturesPrompt() for OUTCOME_HYP_UNITS: these functions are
+// only ever invoked at chat-turn time, long after kpi-tree.js/
+// capability-canvas.js have populated both globals, and Requirement Agent
+// is itself gated on capStore already having content (see
+// capability-canvas.js's raEnabled gate), so both are always meaningfully
+// populated by the time either builder below actually runs.
+// Both return {sys,usr}; the model must respond with ONLY valid JSON, same
+// convention as Guided Launch's builders — requirement-agent.js's own
+// _raParseJSON() parses it.
+
+function _raSummarizeCapStore(){
+  if(typeof capStore==='undefined'||!capStore)return 'No capabilities generated yet.';
+  var lines=[];
+  Object.keys(capStore).forEach(function(mk){
+    var entry=capStore[mk];
+    if(!entry||!entry.capabilities)return;
+    var label=(entry.metricName||mk)+(entry.stageLabel?(' ['+entry.stageLabel+']'):'');
+    entry.capabilities.forEach(function(cap){
+      var feats=(cap.featStore&&cap.featStore.top)?cap.featStore.top.map(function(f){return f.name;}):[];
+      lines.push('- '+label+' › '+cap.name+(cap.why?(' - '+cap.why):'')+(feats.length?(' | existing features: '+feats.join(', ')):' | existing features: none'));
+    });
+  });
+  return lines.length?lines.join('\n'):'No capabilities generated yet.';
+}
+
+function _raSummarizeDiscoveryMap(){
+  if(typeof gData==='undefined'||!gData||!gData.stages)return 'No Discovery Map generated yet.';
+  var lines=[];
+  gData.stages.forEach(function(st){
+    (st.l1_metrics||[]).forEach(function(m){
+      lines.push('- ['+(st.label||st.id)+'] '+m.name+(m.why?(' - '+m.why):''));
+    });
+  });
+  return lines.length?lines.join('\n'):'No Discovery Map generated yet.';
+}
+
+// Shared section-content rules for the Live Draft — used by BOTH the
+// opening prompt and every ongoing-turn prompt so liveDraftMd stays
+// comprehensive across the whole conversation, not just at turn one.
+// This is the detailed brief structure the user confirmed must be restored
+// (Summary/Capabilities Touched already existed; the sections below bring
+// the brief back to full downstream-usable detail, with Recommended
+// Features as the one genuinely new section).
+function _raSectionContentRules(){
+  return 'LIVE DRAFT SECTION RULES (apply to every section, every turn - liveDraftMd must always contain ALL of these sections, in this order, even if a section is thin early in the conversation):\n'
+    + '- "## Summary": one tight paragraph - what release/scope this conversation covers, in plain product language.\n'
+    + '- "## Objectives & Success Criteria": what success looks like for this release - bullet list of concrete, measurable outcomes or signals (not generic platitudes like "improve user experience"). If the user has not stated success criteria yet, infer reasonable candidates from the Discovery Map context and mark each inferred bullet with "(inferred - confirm with PM)".\n'
+    + '- "## Capabilities Touched": one sub-heading per touched capability, each tagged exactly "(existing)" or "(will be created)", with a short bullet list under each sub-heading of what changes for that capability in this release.\n'
+    + '- "## Recommended Features": a per-capability bullet list (one sub-heading per touched capability, matching the sub-headings above) of the specific features Requirement Agent currently intends to generate for that capability at Finalize time - short, specific feature names with a one-line rationale each. Keep this list current every turn as the conversation refines scope; this is a preview of what Finalize will generate, not a final commitment.\n'
+    + '- "## Assumptions & Open Questions": two sub-lists. "Assumptions made so far" - every assumption the agent has made to fill a gap the user has not addressed, each bullet STARTING WITH THE LITERAL PREFIX "**Assumed:** " followed by the assumption in plain language, specific to this release (e.g. "**Assumed:** Points are credited only after order confirmation.") - do not repeat the literal openQuestions text here as an assumption, and never write an assumption bullet without the "**Assumed:**" prefix so a PM can visually distinguish agent-guessed content from explicit PM intent at a glance. "Open questions" - a bullet mirroring each entry in the openQuestions field below, so the brief itself shows the same unresolved items visible in the openQuestions array (never more, never fewer).\n'
+    + '- "## Out of Scope & Risks": what is explicitly excluded from this release (bullet list - be specific, not "everything else"), plus known risks, dependencies, or constraints worth flagging to engineering/design before work starts.\n'
+    + 'Never write a section as boilerplate filler ("TBD", "N/A", generic platitudes) - if there is genuinely nothing yet for a section, say specifically what is still needed to fill it in one short sentence.';
+}
+
+// Opening turn — analogous to buildGuidedLaunchOpeningPrompt(). Proactively
+// suggests, unprompted, which capabilities this release is likely to touch,
+// based on Discovery Map intent + existing Capability Canvas state.
+function buildRequirementAgentOpeningPrompt(sessionContext,firstName){
+  const sc=sessionContext||{};
+  const pp=sc.productProfile||{};
+  const dmStr=_raSummarizeDiscoveryMap();
+  const ccStr=_raSummarizeCapStore();
+
+  const sys='You are a senior product management practitioner running a Requirement Agent conversation - a global, release-scoped requirements intake, distinct from and downstream of Discovery Map and Capability Canvas (which you have full read access to below, for context only - you never regenerate them). '
+    + 'One conversation here always maps to one release scope, symmetric across every capability it touches from the very first turn. '
+    + 'In the opening turn, proactively suggest which capabilities this release is likely to touch, based on Discovery Map intent - do this unprompted, before the user has said anything. '
+    + 'DEFAULT TO EXISTING CAPABILITIES: the Capability Canvas below is not just background reading - it is your first hypothesis for what this release touches. Before proposing anything new, check whether the existing capabilities already plausibly cover the release intent you are inferring from the Discovery Map. If they do, propose THOSE existing capabilities by name and stop there. Only propose a "will be created" capability when you can articulate a SPECIFIC, CONCRETE gap that no existing capability covers - never as a reflexive default on every fresh conversation just because the product has room for more capabilities. A conversation opening with zero user input is the point where over-proposing new capabilities is easiest and least justified - hold that bar high. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='PRODUCT: '+(pp.productName||'Unnamed product')+' - '+(pp.productDesc||'No description provided')+'\n\n'
+    + 'DISCOVERY MAP (metrics/stages):\n'+dmStr+'\n\n'
+    + 'CAPABILITY CANVAS (every capability + existing features):\n'+ccStr+'\n\n'
+    + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally - do not invent a different greeting or omit it) and proactively proposes 1-3 capabilities this release is likely to touch, with a one-line reason for each, then asks the user to confirm or redirect. PREFER EXISTING CAPABILITIES FROM THE CAPABILITY CANVAS ABOVE FOR THIS PROPOSAL BY DEFAULT - only reach for a new "will be created" capability if you can name the specific gap in your one-line reason (e.g. "no existing capability covers X yet"); do not propose a new capability as a first resort when an existing one is a reasonable fit. Then draft a first Live Draft in markdown (liveDraftMd) with sections, in this exact order: "## Summary", "## Objectives & Success Criteria", "## Capabilities Touched", "## Recommended Features" (may be empty/placeholder at this stage - populated fully once capabilities are confirmed), "## Assumptions & Open Questions", "## Out of Scope & Risks". See the section-content rules below (shared with every turn) for what belongs in each.\n\n'
+    + _raSectionContentRules()+'\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "liveDraftMd": "the full live draft in markdown, starting with a single # H1 title",\n'
+    + '  "openQuestions": ["short clarification question text", "..."]\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}
+
+// Ongoing turns — analogous to buildGuidedLaunchTurnPrompt(). When a
+// proposed feature set doesn't map to any existing capability, the agent
+// says so in plain conversational text (never a structured consent-card
+// message type - that mechanism does not exist in this version) AND tags
+// the new capability "will be created" (exact copy, never "new") in the
+// Live Draft's "## Capabilities Touched" section.
+function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage){
+  const sc=sessionContext||{};
+  const historyStr=(chatHistory||[]).map(function(m){
+    return (m.role==='user'?'User: ':'You: ')+m.text;
+  }).join('\n');
+  const ccStr=_raSummarizeCapStore();
+
+  const sys='You are continuing a Requirement Agent conversation, refining a release-scoped Live Draft that already has real content. '
+    + 'This conversation is symmetric across every capability it touches - never favor one capability\'s section over another\'s once both are in scope. '
+    + 'When the requirements you are discussing do not map to any EXISTING capability listed below, say so in plain conversational text (never a structured card, button, or special message type) and tag that capability "will be created" (this exact phrase, never "new") in the Live Draft\'s "## Capabilities Touched" section, under its own sub-heading. '
+    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+
+  const usr='EXISTING CAPABILITY CANVAS (for matching against - capabilities NOT in this list, if the conversation needs them, must be tagged "will be created"):\n'+ccStr+'\n\n'
+    + 'CURRENT LIVE DRAFT (markdown):\n'+(liveDraftMd||'')+'\n\n'
+    + 'CONVERSATION SO FAR:\n'+historyStr+'\n\n'
+    + 'THE USER JUST SAID:\n'+userMessage+'\n\n'
+    + 'TASK: Reply conversationally (chatReply) - never invent your own greeting here, this is a continuing turn. Update the Live Draft (liveDraftMd), keeping ALL of its sections current and in the same order: "## Summary", "## Objectives & Success Criteria", "## Capabilities Touched" (one sub-section per touched capability, each tagged either "(existing)" or "(will be created)" exactly), "## Recommended Features", "## Assumptions & Open Questions", "## Out of Scope & Risks". See the section-content rules below for what belongs in each - do not drop a section just because this turn is not about it.\n\n'
+    + _raSectionContentRules()+'\n\n'
+    + 'CRITICAL - openQuestions consistency: the openQuestions array below must be the EXACT set of clarifying questions you are still waiting on the user to answer, no more and no fewer. Never include a question the user\'s latest message already answered. Never include a question that is not also reflected in the Live Draft\'s "## Assumptions & Open Questions" section. If your chatReply text numbers or lists specific open questions to the user, the openQuestions array must contain exactly those same questions, same count, same order - a mismatch between what you show the user and what you return in this field is treated as a bug.\n\n'
+    + 'Return ONLY valid JSON with these exact fields:\n'
+    + '{\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "liveDraftMd": "the FULL updated live draft in markdown, starting with a single # H1 title",\n'
+    + '  "openQuestions": ["short clarification question text", "..."]\n'
+    + '}';
+
+  return { sys: sys, usr: usr };
+}
+
+// Feature-generation-from-brief — used at Finalize time, generating features
+// for ALL touched capabilities in one release, sourced from liveDraftMd
+// content rather than a live chat exchange. Thin wrapper reusing
+// buildCapFeaturesPrompt()'s JSON contract/rules (features[] with
+// name/why/hypothesis) so the parsed output slots into capStore's existing
+// featStore.top shape unmodified - but the grounding context is the brief
+// excerpt, not a single capability's chat-derived refinement string.
+function buildRAFeatureGenPrompt(ctx,nsm,stageLabel,metricName,capName,liveDraftMd){
+  if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildRAFeatureGenPrompt');
+  // liveDraftMd passed as the "refinement" context buildCapFeaturesPrompt()
+  // already accepts - this IS the "thin wrapper" the spec allows for, since
+  // buildCapFeaturesPrompt's own rules/JSON contract need no change, only
+  // the source of grounding context (release brief vs. one-off chat text).
+  var excerpt='Release requirements brief (this is the PRIMARY source for these features - ground every feature in it):\n'+(liveDraftMd||'').slice(0,6000);
+  return buildCapFeaturesPrompt(ctx,nsm,stageLabel,metricName,capName,null,excerpt);
 }

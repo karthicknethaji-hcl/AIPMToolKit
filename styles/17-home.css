@@ -527,7 +527,6 @@
   gap:12px;
   padding:6px 0;
 }
-#home-tab #home-ra-row{border-top:1px solid var(--divider);}
 #home-tab #home-mi-row{border-bottom:1px solid var(--divider);}
 
 #home-tab .home-tog-lhs .home-tog-label{
@@ -1056,7 +1055,7 @@
 #home-tab .home-sess-pill-stage-sc{background:var(--purple-pale);color:var(--purple);border-color:var(--purple-light);}
 #home-tab .home-sess-pill-stage-pi{background:#E6F5EF;color:var(--green);border-color:#9CDBCE;}
 #home-tab .home-sess-pill-stage-mi{background:var(--blue-pale);color:var(--blue);border-color:var(--blue-mid);}
-#home-tab .home-sess-pill-stage-ra{background:var(--purple-pale);color:var(--purple);border-color:var(--purple-light);}
+#home-tab .home-sess-pill-stage-gl{background:var(--purple-pale);color:var(--purple);border-color:var(--purple-light);}
 
 #home-tab .home-sess-divider{height:1px;background:var(--divider);margin:0 11px;}
 

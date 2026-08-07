@@ -1336,7 +1336,7 @@ function spOnProviderChange(newProvider){
 // ── Panel 2: Feature Modules ──
 function spP2() {
   return `
-  ${_spModRow('ra','ti-message-2','#EEEDFE','#5F1EBE','Requirement Agent','Conversational requirements refinement before Discovery Map generation',appSettings.featRA)}
+  ${_spModRow('ra','ti-clipboard-text','#EEEDFE','#5F1EBE','Requirement Agent','Adds the "Define Requirements" workflow to Capability Canvas, routing feature generation through a finalized release brief',appSettings.featRA)}
   ${_spModRow('mi','ti-world-search','#EAF3DE','#3B6D11','Market Intelligence','Market sizing, competitor mapping, and SWOT. Runs before Discovery Map generation.',appSettings.featMI)}
   ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse)}
   ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Dictionary','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}

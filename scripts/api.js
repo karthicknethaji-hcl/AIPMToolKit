@@ -300,6 +300,11 @@ const CALLER_TIERS = {
   // resolves to each provider's Sonnet-equivalent, matching the product
   // decision to use the standard resolution chain rather than a hardcoded
   // model string (see guided-launch.js).
+  'guided-launch': 'general',
+  // v9.16: Requirement Agent (the real, global, multi-conversation
+  // post-Capability-Canvas agent — see requirement-agent.js) — same general
+  // tier/resolution-chain reasoning as guided-launch above. Distinct caller
+  // key from 'guided-launch' on purpose: these are two separate features.
   'requirement-agent': 'general'
 };
 
@@ -488,7 +493,7 @@ function switchTab(t){
   // Close DD panel on every tab switch
   if(typeof ccCloseDDPanel==='function')ccCloseDDPanel();
   // Update all tab buttons — includes home, fc (Feature Canvas) and sc (Story Canvas)
-  ['mm','cc','pi','mi','la','fc','sc','op','gl','home'].forEach(id=>{
+  ['mm','cc','pi','mi','la','fc','sc','op','gl','ra','home'].forEach(id=>{
     const el=document.getElementById('tab-'+id);
     if(el)el.classList.toggle('active',t===id);
   });
@@ -501,6 +506,7 @@ function switchTab(t){
   const piTab=document.getElementById('pi-tab');
   const opTab=document.getElementById('op-tab');
   const glTab=document.getElementById('gl-tab');
+  const raTab=document.getElementById('ra-tab');
   const homeTab=document.getElementById('home-tab');
   const lp=document.getElementById('left-panel');
 
@@ -515,6 +521,7 @@ function switchTab(t){
   if(piTab)piTab.classList.toggle('on',t==='pi');
   if(opTab)opTab.classList.toggle('on',t==='op');
   if(glTab)glTab.classList.toggle('on',t==='gl');
+  if(raTab)raTab.classList.toggle('on',t==='ra');
 
   // Left panel: hidden on all tabs except mm post-launch (handled in mm case above)
   // For all non-mm tabs, always hide old left panel — Home has its own, others don't use it
@@ -549,7 +556,7 @@ function switchTab(t){
       if(el) el.style.display='none';
     });
     // SC and PI use .revealed class — hide them too when on Home
-    ['tab-sc','tab-pi'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.classList.contains('revealed')){
         el.setAttribute('data-home-hidden','1');
@@ -567,7 +574,7 @@ function switchTab(t){
       }
     });
     // Restore SC and PI revealed state if they were hidden on Home entry
-    ['tab-sc','tab-pi'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.getAttribute('data-home-hidden')==='1'){
         el.classList.add('revealed');
@@ -676,6 +683,15 @@ function switchTab(t){
   if(t==='gl'){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
+  }
+  // Requirement Agent tab entry (v9.16) — ra's own render (raRenderShell/
+  // raRenderConversationList/raRenderChatHistory/raRenderLiveDraft) is
+  // triggered directly by requirement-agent.js's raOnTabEnter(), same
+  // per-branch hide-diag-bar convention every other non-mm tab above uses.
+  if(t==='ra'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+    if(typeof raOnTabEnter==='function')raOnTabEnter();
   }
   // Close export dropdowns when switching tabs
   const expDrop=document.getElementById('sc-export-drop');

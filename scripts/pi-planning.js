@@ -782,7 +782,14 @@ function piGetSelectedStories(){
         cap:f.cap||'',name:f.name,stage:f.stage||'',
         priority:st.priority||'Should Have',
         origin:f.origin||'kpi',
-        diagnosticContext:f.origin==='diagnostic'?(f.diagnosticContext||null):null
+        diagnosticContext:f.origin==='diagnostic'?(f.diagnosticContext||null):null,
+        // v9.16 (Requirement Agent provenance) — denormalized from the
+        // feature onto the story so PI Canvas can trace a story back to the
+        // intake conversation/RQ number that generated its feature, without
+        // a cross-canvas lookup. null for every non-RA feature (unchanged
+        // behavior for existing KPI-linked/PI-first stories).
+        intakeBriefId:f.intakeBriefId||null,
+        rqNumber:f.rqNumber||null
       });
     });
   });
@@ -794,7 +801,18 @@ function piGetAllStories(){
   scCanvas.forEach(f=>{
     if(f.stories&&f.stories.length>0){
       f.stories.forEach(st=>{
-        stories.push({id:st.id,title:st.statement||st.title||'',points:st.points||3,cap:f.cap||'',name:f.name,stage:f.stage||''});
+        stories.push({
+          id:st.id,title:st.statement||st.title||'',points:st.points||3,
+          cap:f.cap||'',name:f.name,stage:f.stage||'',
+          // v9.16 — priority/origin were silently dropped here (hand-
+          // whitelisted, pre-existing bug, independent of the RA feature)
+          // even though piGetSelectedStories() already carried both;
+          // fixed alongside the new intakeBriefId/rqNumber fields below.
+          priority:st.priority||'Should Have',
+          origin:f.origin||'kpi',
+          intakeBriefId:f.intakeBriefId||null,
+          rqNumber:f.rqNumber||null
+        });
       });
     }
   });

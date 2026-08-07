@@ -29,6 +29,7 @@
 <link rel="stylesheet" href="./styles/17-home.css">
 <link rel="stylesheet" href="./styles/21-outcome-pulse.css">
 <link rel="stylesheet" href="./styles/22-guided-launch.css">
+<link rel="stylesheet" href="./styles/23-requirement-agent.css">
 </head>
 <body>
 <!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
@@ -103,10 +104,17 @@
 <div class="app-shell" id="app-shell">
   <div class="out-hdr"><div class="tab-row">
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
-    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Requirement Agent</button>
+    <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
+    <!-- v9.16 — NAMING RESOLVED: tab-gl above is the pre-existing Guided
+      Launch pre-Discovery-Map intake chat (a v9.16 commit briefly mislabeled
+      it "Requirement Agent"; reverted). This tab-ra is the real, functionally
+      distinct, global, post-Capability-Canvas multi-conversation
+      release-requirements agent per this build's own spec, and is the sole
+      owner of the "Requirement Agent" name going forward. -->
+    <button class="tab-btn tab-gated" id="tab-ra" onclick="switchTab('ra')"><i class="ti ti-clipboard-text"></i> Requirement Agent<span class="tab-pending-dot" id="tab-ra-dot"></span></button>
     <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Experiment Canvas</button>
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
@@ -174,16 +182,6 @@
           <textarea class="home-f-textarea" id="home-custom-vc" rows="2"
             placeholder="One stage per line e.g. Discover, Plan, Purchase..."></textarea>
           <span class="home-hint">Overrides AI-derived value chain stages</span>
-        </div>
-        <div class="home-tog-row" id="home-ra-row">
-          <div class="home-tog-lhs">
-            <div class="home-tog-label"><i class="ti ti-message-2" style="font-size:10px;" aria-hidden="true"></i> Requirement Agent</div>
-            <div class="home-tog-sub">Refine your brief conversationally before generating</div>
-          </div>
-          <label class="sp-toggle" style="flex-shrink:0;">
-            <input type="checkbox" id="home-ra-toggle" checked>
-            <div class="sp-track"></div><div class="sp-thumb"></div>
-          </label>
         </div>
         <div class="home-tog-row mi-gated" id="home-mi-row">
           <div class="home-tog-lhs">
@@ -520,6 +518,8 @@
     </div>
     <!-- Guided Launch Tab -->
     <div class="gl-tab" id="gl-tab"></div>
+    <!-- Requirement Agent Tab (v9.16) -->
+    <div class="ra-tab" id="ra-tab"></div>
   </div>
 </div>
 </div><!-- end app-shell -->
@@ -630,6 +630,7 @@
 <script src="./scripts/session-store.js"></script>
 <script src="./scripts/live-sync.js"></script>
 <script src="./scripts/guided-launch.js"></script>
+<script src="./scripts/requirement-agent.js"></script>
 <script src="./scripts/home.js"></script>
 <script src="./scripts/api.js"></script>
 <script src="./scripts/demo-data.js"></script>

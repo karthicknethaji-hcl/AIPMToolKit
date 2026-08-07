@@ -48,6 +48,7 @@ pi-planning.js
 product-leak-analysis.js
 prompts.js
 prototype-canvas.js
+requirement-agent.js          ← v9.16; global, multi-conversation release-requirements agent, distinct from guided-launch.js
 session-store.js
 settings-page.js
 settings.js
@@ -80,6 +81,7 @@ utils.js
 20-team-management.css
 21-outcome-pulse.css
 22-guided-launch.css
+23-requirement-agent.css
 
 ## assets/
 prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/

@@ -893,6 +893,15 @@ function _ssApplySnapshotFields(s) {
   // no transformation, confirmed against both places that populate it.
   if (s.ddRows !== undefined && typeof window !== 'undefined') window._ddRows = s.ddRows;
   if (s.mmBannerCollapsed !== undefined) mmBannerCollapsed = s.mmBannerCollapsed;
+  // v9.16 — Requirement Agent. Unconditional restore (old sessions without
+  // it get harmless defaults, matching every other field's own convention
+  // above). requirement-agent.js's own raApplyRestoredSnapshot()-equivalent
+  // rendering is triggered by the caller (sessionStoreRestore(), below)
+  // once the DOM is ready — this function stays pure/global-only per its
+  // own documented contract.
+  if (s.raEnabled !== undefined) raEnabled = s.raEnabled;
+  if (s.raConversations !== undefined) raConversations = s.raConversations;
+  if (s.raLastOpenConversationId !== undefined) raLastOpenConversationId = s.raLastOpenConversationId;
   // Restore protoStore — unconditional, old sessions without it get empty {}
   protoStore = s.protoStore || {};
   // v8.147: decompression extracted to a shared, pure function — used here
@@ -1199,6 +1208,20 @@ async function sessionStoreRestore(sessionId) {
     // actually lands here via the switchTab(targetTab) call above.
     if (meta.intakeStatus && typeof glApplyRestoredSnapshot === 'function') {
       glApplyRestoredSnapshot(meta, s);
+    }
+
+    // v9.16 — Requirement Agent content restore. Same independent-of-
+    // targetTab reasoning as Guided Launch above: #ra-tab must be populated
+    // whenever raConversations exist, regardless of which tab the session
+    // actually lands on, so manually clicking the (now-revealed, per
+    // _ssRevealTabs above) Requirement Agent tab shows real content.
+    // raLastOpenConversationId is this feature's equivalent of a
+    // "glLastOpenConversationId" resume pointer — mirrors the one concrete
+    // precedent in this codebase for "which specific item was open last"
+    // (piDdPanelMetricKey, restored the same unconditional way in this same
+    // function) rather than always defaulting to the most-recent card.
+    if (s.raConversations && s.raConversations.length > 0 && typeof raApplyRestoredSnapshot === 'function') {
+      raApplyRestoredSnapshot(s);
     }
 
     // MI: re-render only if navigating to mi tab
@@ -1549,7 +1572,16 @@ function _sessionStoreBuildSnapshot(opts) {
     // only (see guided-launch.js's _glFormatVersion()). Default 1, matching
     // glVersionCount's own initial value for a session that never touched
     // Guided Launch.
-    glVersionCount: (typeof glVersionCount !== 'undefined') ? glVersionCount : 1
+    glVersionCount: (typeof glVersionCount !== 'undefined') ? glVersionCount : 1,
+    // v9.16 — Requirement Agent. raConversations lives entirely inside the
+    // ACTIVE session's own snapshot (unlike Guided Launch's dedicated
+    // mt_sessions row per conversation) — one conversation = one release
+    // scope, but many conversations share the one Capability Canvas/session
+    // they're both scoped to. raEnabled is the per-session toggle read by
+    // capability-canvas.js's _ccRaOn().
+    raEnabled: (typeof raEnabled !== 'undefined') ? raEnabled : false,
+    raConversations: (typeof raConversations !== 'undefined') ? raConversations : [],
+    raLastOpenConversationId: (typeof raLastOpenConversationId !== 'undefined') ? raLastOpenConversationId : null
   };
 }
 
@@ -1562,7 +1594,17 @@ function _ssComputeLastStage() {
   // read live globals directly, on the same one-session-live-at-a-time
   // invariant glResetState() (called from homeClearSession()) enforces for
   // every other field it checks below.
-  if (typeof glStatus !== 'undefined' && glStatus === 'active') return 'Requirement Agent';
+  // v9.17.03 — glStatus defaults to 'active' at module load (guided-launch.js
+  // line 27) regardless of whether the (now-hidden, tab-gl) Guided Launch
+  // flow was ever actually engaged, and it is never flipped away from
+  // 'active' unless that legacy flow is manually completed. Since tab-gl is
+  // display:none in current builds (see index.html's "NAMING RESOLVED"
+  // comment) this made EVERY session report "Guided Launch" as its stage,
+  // permanently — confirmed live (glStatus==='active' on a fresh demo
+  // session that never touched Guided Launch). Gate on real message content
+  // as well, so this branch only fires for legacy sessions that actually
+  // used the old chat.
+  if (typeof glStatus !== 'undefined' && glStatus === 'active' && typeof glMessages !== 'undefined' && glMessages && glMessages.length > 0) return 'Guided Launch';
   if (typeof piPlan !== 'undefined' && piPlan) return 'PI Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });
@@ -1581,6 +1623,16 @@ function _ssComputeLastStage() {
       return 'Capability Canvas';
     }
   }
+  // Requirement Agent sits between Discovery Map/Capability Canvas and
+  // Feature Canvas in the value chain (see requirement-agent.js's header
+  // comment). Checked here — after the Feature-Canvas-via-capStore check
+  // above (so a finalized RA conversation whose features already landed in
+  // capStore correctly reports 'Feature Canvas', the more advanced stage)
+  // but before the Discovery Map fallback below (so an in-progress RA
+  // conversation, which has no capStore entries yet if every touched
+  // capability is still "will be created", correctly reports 'Requirement
+  // Agent' instead of falling all the way back to 'Discovery Map').
+  if (typeof raConversations !== 'undefined' && raConversations && raConversations.length > 0) return 'Requirement Agent';
   if (typeof gData !== 'undefined' && gData) return 'Discovery Map';
   return 'Not started';
 }
@@ -1700,7 +1752,7 @@ function _ssSyncTabVisibility(s, meta) {
     var el=document.getElementById(id);
     if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
   });
-  ['tab-sc','tab-pi'].forEach(function(id){
+  ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
     var el=document.getElementById(id);
     if(el) el.classList.remove('revealed');
   });
@@ -1740,6 +1792,21 @@ function _ssRevealTabs(s, meta) {
   if (hasStories) {
     const tabSc = document.getElementById('tab-sc');
     if (tabSc) tabSc.classList.add('revealed');
+  }
+  // v9.16 — Requirement Agent. Content-truthiness gated via '.revealed',
+  // same family as tab-sc/tab-pi above (NOT the simpler style.display
+  // presence-only mechanism most other tabs use) — chosen over the spec's
+  // alternative option ("or once the tab has been opened at least once")
+  // because tab-sc's own precedent is exactly this: hasStories checks real
+  // content (scCanvas stories), not a "has this tab ever been opened"
+  // flag, and there is no existing "opened at least once" flag anywhere in
+  // this codebase for any tab to mirror instead. A conversation only ever
+  // exists in raConversations[] once the user has actually started one
+  // (raConversations.length>0), so pure content-truthiness already covers
+  // "the tab has real content to show" without needing a second signal.
+  if (s.raConversations && s.raConversations.length > 0) {
+    const tabRa = document.getElementById('tab-ra');
+    if (tabRa) tabRa.classList.add('revealed');
   }
   // Outcome Verification Loop (v9.10.00 feedback item 8, confirmed real
   // gap via code read): applyFeats() is never called during session

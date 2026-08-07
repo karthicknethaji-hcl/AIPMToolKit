@@ -3,6 +3,19 @@
 // Each entry: { metricName, stageLabel, stageId, capabilities:[{name,why,subCaps,features:[]}] }
 // capActiveMetricKey, capActiveCapIdx, capActiveSubCapIdx live in state.js
 
+// v9.17.01 — Requirement Agent read helper. raEnabled lives in state.js,
+// persisted per-session (session-store.js), and is now driven exclusively
+// by the Settings > Feature Modules "Requirement Agent" toggle (see
+// left-panel.js's applyFeats() — it syncs raEnabled=featRA and re-renders
+// CC on every settings save, so there is no in-CC control for this at all
+// anymore). When on: card checkboxes/bulk "Generate Features" selection are
+// hidden (see the 3 card-render blocks below and _ccActionBarHtml()) and the
+// right panel drops its own CTA entirely (see ccBuildFeatPanel()) — features
+// for a capability only ever arrive via a finalized Requirement Agent
+// conversation now, never a direct per-capability click. See
+// requirement-agent.js's raDefineRequirements().
+function _ccRaOn(){return typeof raEnabled!=='undefined'&&!!raEnabled;}
+
 // CC card filter state: null | 'no-features' | 'features-generated' | 'selected'
 let ccCapFilter=new Set();
 // CC collapsed metric groups
@@ -1204,7 +1217,7 @@ function ccRenderAllCaps(){
             <span class="cc-card-mlbl">${_acMetricLbl}</span>
             <div class="cc-card-actions">
               ${_canEditCcCard1?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-              <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard1?'':' cc-card-chk-disabled'}" ${_canEditCcCard1?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_acChkContent}</div>
+              ${_ccRaOn()?'':`<div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard1?'':' cc-card-chk-disabled'}" ${_canEditCcCard1?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_acChkContent}</div>`}
               ${_canEditCcCard1?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
             </div>
           </div>
@@ -1264,7 +1277,7 @@ function ccRenderAllCaps(){
               <span class="cc-card-mlbl" style="color:${miColor};">Market Intel</span>
               <div class="cc-card-actions">
                 ${_canEditCcCard2?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(metricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-                <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard2?'':' cc-card-chk-disabled'}" ${_canEditCcCard2?`onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})"`:''}>${_acChkContent}</div>
+                ${_ccRaOn()?'':`<div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard2?'':' cc-card-chk-disabled'}" ${_canEditCcCard2?`onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})"`:''}>${_acChkContent}</div>`}
                 ${_canEditCcCard2?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(metricKey)}',${ci})" title="Remove"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`:''}
               </div>
             </div>
@@ -1334,18 +1347,7 @@ function ccRenderAllCaps(){
         <div class="cc-legend-item"><i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</div>
       </div>
       <div style="flex:1;overflow-y:auto;">${html}</div>
-      <div class="cc-action-bar" id="cc-action-bar">
-        <div class="sc-action-left">
-          <label class="sc-select-all-toggle" id="cc-select-all-wrap">
-            <input type="checkbox" id="cc-select-all-chk" onchange="ccToggleSelectAll(this)" title="Select / deselect all">
-            <span id="cc-select-all-lbl">Select all</span>
-          </label>
-          <span class="sc-action-count" id="cc-action-info"></span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button class="cc-gen-sel-btn" id="cc-gen-sel-btn" onclick="ccGenerateFeaturesForSelected()" disabled><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>
-        </div>
-      </div>
+      ${_ccActionBarHtml()}
     </div>
     ${allCapsRp!==null?`<div class="cc-feat-panel" id="cc-feat-panel">${allCapsRp}</div>`:''}
   </div>`;
@@ -1480,7 +1482,7 @@ function ccRenderMainContent(){
         <span class="cc-card-mlbl">${_metricLbl}</span>
         <div class="cc-card-actions">
           ${_canEditCcCard3?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-          <div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}${_canEditCcCard3?'':' cc-card-chk-disabled'}" ${_canEditCcCard3?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_chkContent3}</div>
+          ${_ccRaOn()?'':`<div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}${_canEditCcCard3?'':' cc-card-chk-disabled'}" ${_canEditCcCard3?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_chkContent3}</div>`}
           ${_canEditCcCard3?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
         </div>
       </div>
@@ -1549,18 +1551,7 @@ function ccRenderMainContent(){
       </div>
       ${stageLabel||metricName?`<div class="cc-all-group-hdr" style="border-left:3px solid ${ccStageColor(entry.stageId||'')}"><span class="cc-all-stage-pill" style="background:${ccStageColor(entry.stageId||'')}">${e(stageLabel||'')}</span><span class="cc-all-metric-name">${e(metricName)}</span><span class="cc-all-metric-count">${caps.length} cap${caps.length!==1?'s':''}</span></div>`:''}
       <div class="cc-cap-cards-grid" id="cc-cap-cards-grid">${cardsHtml}</div>
-      <div class="cc-action-bar" id="cc-action-bar">
-        <div class="sc-action-left">
-          <label class="sc-select-all-toggle" id="cc-select-all-wrap">
-            <input type="checkbox" id="cc-select-all-chk" onchange="ccToggleSelectAll(this)" title="Select / deselect all">
-            <span id="cc-select-all-lbl">Select all</span>
-          </label>
-          <span class="sc-action-count" id="cc-action-info"></span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button class="cc-gen-sel-btn" id="cc-gen-sel-btn" onclick="ccGenerateFeaturesForSelected()" disabled><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>
-        </div>
-      </div>
+      ${_ccActionBarHtml()}
     </div>
     ${rp!==null?`<div class="cc-feat-panel" id="cc-feat-panel">${rp}</div>`:''}
     </div>`;
@@ -1585,6 +1576,16 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   const totalOnCanvas=scCanvas?scCanvas.length:0;
   let featHtml='';
   if(!features){
+    // v9.16 — RA-on: zero CTA, text only. Features for this capability only
+    // ever arrive via a finalized Requirement Agent conversation now — the
+    // per-capability "Generate Features" empty-state CTA below is an
+    // RA-off-only affordance.
+    if(_ccRaOn()){
+      featHtml=`<div class="cc-feat-panel-empty" style="flex:1;">
+        <i class="ti ti-layout-grid" style="font-size:24px;color:var(--label);margin-bottom:8px;" aria-hidden="true"></i>
+        <div style="font-size:12px;color:var(--t3);max-width:200px;line-height:1.5;">Features will be populated once Requirement Agent is finalized for a release covering this capability.</div>
+      </div>`;
+    } else {
     const _canEditCcEmptyGen=(typeof canEditSession!=='function')||canEditSession();
     featHtml=`<div class="cc-feat-panel-empty" style="flex:1;">
       <i class="ti ti-layout-grid" style="font-size:24px;color:var(--label);margin-bottom:8px;" aria-hidden="true"></i>
@@ -1592,6 +1593,7 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       <div style="font-size:11px;color:var(--t3);max-width:180px;line-height:1.4;margin-top:4px;margin-bottom:14px;">AI will generate a feature set for this capability.</div>
       ${_canEditCcEmptyGen?`<button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},'',null,{triggerEl:this})"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>`:''}
     </div>`;
+    }
   } else {
     const fromPlan=isPIFirst&&features.length>0&&features.every(f=>!f._aiAdded);
     const mixedPlan=isPIFirst&&features.some(f=>f._aiAdded)&&features.some(f=>!f._aiAdded);
@@ -1609,18 +1611,27 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';
       const isInSC=fid&&scCanvas&&scCanvas.find(x=>x.id===fid);
       const _canEditCcFeatItem=(typeof canEditSession!=='function')||canEditSession();
-      featHtml+=`<div class="cc-feat-item${isInSC?' cc-feat-item-insc':isSel?' cc-feat-item-sel':''}" ${_canEditCcFeatItem?`onclick="ccToggleFeatPanel(${capIdx},${fi})" style="cursor:pointer;"`:'style="cursor:default;"'}>
-        <div class="cc-feat-item-chk${isInSC?' done':isSel?' sel':''}${_canEditCcFeatItem?'':' cc-feat-item-chk-disabled'}" ${_canEditCcFeatItem?`onclick="event.stopPropagation();ccToggleFeatPanel(${capIdx},${fi})"`:''}>
+      // RA-on features are always pushed straight into scCanvas at Finalize
+      // (isInSC is always true for them), so the legacy checkbox-toggle /
+      // "Remove from Feature Canvas?" warn-strip behavior must be fully
+      // bypassed here — per spec, RA-generated features stay individually
+      // editable inline via the existing ccEditFeatName()/ccEditFeatWhy()
+      // functions, unchanged, with no confirmation dialog ever appearing.
+      const _raOnItem=(typeof _ccRaOn==='function')&&_ccRaOn();
+      const _rowClickable=_canEditCcFeatItem&&!_raOnItem;
+      const _canEditThisFeat=_canEditCcFeatItem&&(_raOnItem||!isInSC);
+      featHtml+=`<div class="cc-feat-item${isInSC?' cc-feat-item-insc':isSel?' cc-feat-item-sel':''}" ${_rowClickable?`onclick="ccToggleFeatPanel(${capIdx},${fi})" style="cursor:pointer;"`:'style="cursor:default;"'}>
+        <div class="cc-feat-item-chk${isInSC?' done':isSel?' sel':''}${_rowClickable?'':' cc-feat-item-chk-disabled'}" ${_rowClickable?`onclick="event.stopPropagation();ccToggleFeatPanel(${capIdx},${fi})"`:''}>
           ${isInSC||isSel?'<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}
         </div>
         <div style="flex:1;min-width:0;">
           <div class="cc-feat-name-row">
             <div class="cc-feat-name" id="cc-feat-name-${capIdx}-${fi}">${e(f.name)}</div>
-            ${!isInSC&&_canEditCcFeatItem?`<button class="cc-feat-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatName(${capIdx},${fi})" title="Edit feature name"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+            ${_canEditThisFeat?`<button class="cc-feat-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatName(${capIdx},${fi})" title="Edit feature name"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
           </div>
           <div class="cc-feat-why-row">
             <div class="cc-feat-why" id="cc-feat-why-${capIdx}-${fi}">${e(f.why||'')}</div>
-            ${!isInSC&&_canEditCcFeatItem?`<button class="cc-feat-edit-btn cc-feat-why-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatWhy(${capIdx},${fi})" title="Edit description"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
+            ${_canEditThisFeat?`<button class="cc-feat-edit-btn cc-feat-why-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();ccEditFeatWhy(${capIdx},${fi})" title="Edit description"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
           </div>
           ${(isInSC||f.outcomeHypothesis)?`<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
             ${isInSC?'<div class="cc-feat-insc-tag"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In Feature Canvas</div>':''}
@@ -1672,7 +1683,7 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   <div class="cc-feat-panel-scroll">
     ${featHtml}
   </div>
-  ${((typeof canEditSession!=='function')||canEditSession())?`<div class="cc-chat-bar" style="flex-shrink:0;">
+  ${(!_ccRaOn()&&((typeof canEditSession!=='function')||canEditSession()))?`<div class="cc-chat-bar" style="flex-shrink:0;">
     <div class="cc-chat-lbl">${features?(isPIFirst?'Add AI features':'Refine features'):'Generate features with context'}</div>
     <div class="cc-chat-row">
       <textarea class="cc-chat-input" id="cc-feat-refine-txt" rows="2" placeholder="${features?(isPIFirst?'e.g. Add a feature for guest checkout...':'e.g. Focus on mobile only, avoid enterprise features...'):'e.g. Focus on self-serve setup, avoid enterprise-only features...'}"></textarea>
@@ -1684,7 +1695,7 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       </div>
     </div>
   </div>`:''}
-  ${features?`<div class="cc-panel-footer-split">
+  ${(!_ccRaOn()&&features)?`<div class="cc-panel-footer-split">
     <div class="cc-panel-split-status">${statusTxt}</div>
     <div class="cc-panel-split-cta-wrap">
       <button class="cc-panel-split-cta" onclick="ccSendToStoryCanvas()" ${selectedCount===0?'disabled':''}>
@@ -3482,6 +3493,36 @@ function ccToggleCapSelect(metricKey,capIdx){
   ccUpdateActionBar();
 }
 
+// v9.16 — the cc-action-bar's content depends on the Requirement Agent
+// toggle: bulk-selection bar (today's behavior) when off, a single always-
+// enabled "Define Requirements" CTA in the SAME physical slot when on.
+// Kept as one shared function called from both card-grid render sites
+// (All Caps view + single-metric view) so the two can never drift apart on
+// this — they already shared identical markup before this change (verified
+// via grep, both blocks byte-identical).
+function _ccActionBarHtml(){
+  if(_ccRaOn()){
+    return `<div class="cc-action-bar" id="cc-action-bar">
+      <div class="sc-action-left"></div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="cc-gen-sel-btn" id="cc-define-req-btn" onclick="raDefineRequirements()"><i class="ti ti-clipboard-text" style="font-size:11px;" aria-hidden="true"></i> Define Requirements</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="cc-action-bar" id="cc-action-bar">
+    <div class="sc-action-left">
+      <label class="sc-select-all-toggle" id="cc-select-all-wrap">
+        <input type="checkbox" id="cc-select-all-chk" onchange="ccToggleSelectAll(this)" title="Select / deselect all">
+        <span id="cc-select-all-lbl">Select all</span>
+      </label>
+      <span class="sc-action-count" id="cc-action-info"></span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="cc-gen-sel-btn" id="cc-gen-sel-btn" onclick="ccGenerateFeaturesForSelected()" disabled><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>
+    </div>
+  </div>`;
+}
+
 function ccToggleSelectAll(chk){
   if(chk.checked){
     // Select all visible caps (scoped to capActiveMetricKey filter, if set)
@@ -3504,6 +3545,11 @@ function ccUpdateActionBar(){
   const _canEditCc=(typeof canEditSession!=='function')||canEditSession();
   bar.style.display=_canEditCc?'':'none';
   if(!_canEditCc)return;
+  // v9.16 — RA-on bar is the static "Define Requirements" CTA rendered by
+  // _ccActionBarHtml(): always enabled, never selection-dependent, so none
+  // of the selection-sync logic below applies (there is no #cc-select-all-chk
+  // / #cc-gen-sel-btn in this bar's markup at all).
+  if(_ccRaOn())return;
   const visibleKeys=new Set(ccGetVisibleCapKeys());
   const n=Array.from(ccSelectedCapIds).filter(k=>visibleKeys.has(k)).length;
   const total=visibleKeys.size;
