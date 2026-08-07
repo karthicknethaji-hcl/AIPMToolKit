@@ -57,8 +57,8 @@ function piRenderLeftPanel(){
   lp.innerHTML=`
     <div class="ph">
       <div class="ph-text">
-        <div class="ph-title">PI Planning</div>
-        <div class="ph-sub">Configure your PI, then generate.</div>
+        <div class="ph-title">Release Planning</div>
+        <div class="ph-sub">Configure your release, then generate.</div>
       </div>
       <button class="collapse-btn" id="pi-collapse-btn" onclick="piToggleLeftPanel()" title="Toggle panel">
         ${lp.classList.contains('pi-left-collapsed')
@@ -70,15 +70,15 @@ function piRenderLeftPanel(){
     <div class="pi-left-scroll">
       <div class="pi-section-lbl">From Story Canvas</div>
       <div class="pi-summary-strip">
-        ${(()=>{let n=0,p=0,feats=0;scCanvas.forEach(f=>{if(f.stories){const sel=f.stories.filter(st=>st._inSC&&!st._hiddenFromSC&&(st._inPIPlan||st._stagedForPI));if(sel.length){feats++;sel.forEach(st=>{n++;p+=(st.points||3);});}}});return feats>0?`<span>${feats} feature${feats!==1?'s':''} &middot; ${n} stor${n!==1?'ies':'y'} &middot; ~${p} pts</span>`:`<span style="color:var(--t3);font-size:10px;">No stories sent yet — go to Story Canvas to select stories for PI.</span>`})()}
+        ${(()=>{let n=0,p=0,feats=0;scCanvas.forEach(f=>{if(f.stories){const sel=f.stories.filter(st=>st._inSC&&!st._hiddenFromSC&&(st._inPIPlan||st._stagedForPI));if(sel.length){feats++;sel.forEach(st=>{n++;p+=(st.points||3);});}}});return feats>0?`<span>${feats} feature${feats!==1?'s':''} &middot; ${n} stor${n!==1?'ies':'y'} &middot; ~${p} pts</span>`:`<span style="color:var(--t3);font-size:10px;">No stories sent yet — go to Story Canvas to select stories for the release.</span>`})()}
       </div>
-      <div class="pi-section-lbl">PI Configuration</div>
+      <div class="pi-section-lbl">Release Configuration</div>
       <div class="fl">
-        <label>PI Name</label>
+        <label>Release Name</label>
         <input type="text" id="pi-name-input" value="${e(piName)}" maxlength="60" ${_canEditPi?'':'readonly'}>
       </div>
       <div class="fl">
-        <label>PI Start Date</label>
+        <label>Release Start Date</label>
         <input type="date" id="pi-start-date" class="pi-date-input" value="${e(startDate)}"
           ${_canEditPi?`onchange="piSetStartDate(this.value)"`:'readonly'}>
       </div>
@@ -115,7 +115,7 @@ function piRenderLeftPanel(){
     ${_canEditPi?`<div class="gen-wrap">
       <button class="gen-btn" id="pi-gen-btn" onclick="piGenerate()" ${piGetSquads().length===0?'disabled':''}>
         <i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i>
-        ${(piPlan&&Array.isArray(piPlan.sprints)&&piPlan.sprints.length>0)?'Regenerate PI Plan':'Generate PI Plan'}
+        ${(piPlan&&Array.isArray(piPlan.sprints)&&piPlan.sprints.length>0)?'Regenerate Release Plan':'Generate Release Plan'}
       </button>
     </div>`:''}`;
 }
@@ -196,7 +196,7 @@ function piRenderEmpty(){
   const trayHtml=selectedStories.length>0
     ?`<div class="pi-backlog-resize-handle"></div>
       <div class="pi-backlog-tray" id="pi-backlog-tray">
-        <div class="pi-backlog-hdr">Stories from Story Canvas (${selectedStories.length}) — configure your PI on the left, then Generate PI Plan</div>
+        <div class="pi-backlog-hdr">Stories from Story Canvas (${selectedStories.length}) — configure your release on the left, then Generate Release Plan</div>
         <div class="pi-backlog-cards">${selectedStories.map(s=>{
           const shortId=s.id?s.id.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';
           return`<div class="pi-backlog-card" title="${e(s.title)}"><span class="pi-card-id" style="display:block;margin-bottom:3px;">${e(shortId)}</span>${e((s.title||'').substring(0,55))}…</div>`;
@@ -212,8 +212,8 @@ function piRenderEmpty(){
     <div class="pi-main-content" id="pi-main-content">
       <div class="pi-empty" style="flex:1;">
         <div class="pi-empty-icon"><i class="ti ti-calendar-event" aria-hidden="true"></i></div>
-        <div class="pi-empty-title">PI Canvas</div>
-        <div class="pi-empty-sub">Configure your squads and sprint settings on the left, then click Generate PI Plan to sequence your backlog.</div>
+        <div class="pi-empty-title">Release Canvas</div>
+        <div class="pi-empty-sub">Configure your squads and sprint settings on the left, then click Generate Release Plan to sequence your backlog.</div>
       </div>
       ${trayHtml}
     </div>`;
@@ -404,7 +404,7 @@ async function piGenerate(){
     overlay.innerHTML=`<div class="modal" style="max-width:400px;;position:relative;">
     <button onclick="document.getElementById('pi-regen-overlay-1').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate PI Plan?</div>
+      <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate Release Plan?</div>
     </div>
       <div class="modal-body">This will reset all sprint assignments. Manual moves will be lost.</div>
       <div class="modal-footer">
@@ -507,7 +507,7 @@ async function piGenerate(){
   var piMainLoader=document.getElementById('pi-main');
   if(piMainLoader){piMainLoader.innerHTML=markGenAttempt(_attempt,`<div class="pi-empty">
     <div class="pi-empty-icon"><div class="cc-spin" style="width:32px;height:32px;border-width:3px;"></div></div>
-    <div class="pi-empty-title">Generating PI Plan…</div>
+    <div class="pi-empty-title">Generating Release Plan…</div>
     <div class="pi-empty-sub">AI is analysing dependencies, then sequencing across sprints and squads. This takes 2–4 minutes.</div>
   </div>`);}
   try{
@@ -521,7 +521,7 @@ async function piGenerate(){
       (typeof piInputs!=='undefined'&&piInputs.constraints)||'',
       _piDocCtx
     );
-    const _signal=startAiGen(`Your PI Plan is being scored and sequenced for ${selectedStories.length} stor${selectedStories.length!==1?'ies':'y'}. This can take 2–4 minutes. Leaving now discards it, you'll need to regenerate from scratch.`);
+    const _signal=startAiGen(`Your Release Plan is being scored and sequenced for ${selectedStories.length} stor${selectedStories.length!==1?'ies':'y'}. This can take 2–4 minutes. Leaving now discards it, you'll need to regenerate from scratch.`);
     // v8.98: token budget shrunk — AI now emits 4 semantic subscores + reasoning
     // + dependency edges only, no sequencing/score-arithmetic/tier output.
     const _piTok=Math.min(10000,Math.max(3000,selectedStories.length*120+1500));
@@ -728,7 +728,7 @@ async function piGenerate(){
     // #pi-main that a different, newer action now owns.
     var _errMainArea=getIfCurrentAttempt('pi-main',_attempt);
     if(_errMainArea)piRenderEmpty();
-    showToast('PI plan generation failed: '+err.message,'error');
+    showToast('Release plan generation failed: '+err.message,'error');
   }finally{
     if(btn){btn.disabled=piGetSquads().length===0;btn.innerHTML='<i class="ti ti-calendar-event" style="font-size:13px;" aria-hidden="true"></i> Regenerate';}
     endAiGen();
@@ -768,6 +768,77 @@ async function piGenerate(){
     // ever paused (e.g. the lock was rejected before the wipe even ran).
     if(typeof _lsResumeManualEditAfterFailedRegeneration==='function')_lsResumeManualEditAfterFailedRegeneration('pi');
   }
+}
+
+// §9.3 — standalone "Brief" filter (Option A, confirmed decision). PI Canvas
+// has never had an Origin-style filter to nest a "Requirement Agent" value
+// under (unlike CC/FC), so this is a flat list of finalized RQs, no
+// nesting/parent-child mechanic. VIEW-ONLY: narrows which story cards render
+// on the board/backlog — never touches piPlan.storyAssignments, sprint
+// capacity, or readiness-check logic, all of which read the underlying
+// data (piPlan.storyAssignments) directly, never the rendered DOM subset
+// (confirmed via piRenderBoard()'s capacity/warning computation, which
+// iterates Object.entries(piPlan.storyAssignments) unconditionally, before
+// any filter is applied to what's rendered).
+let piBriefFilter=new Set();
+function _piStoryPassesBriefFilter(story){
+  if(!piBriefFilter.size)return true;
+  const feat=scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===story.id));
+  return !!(feat&&feat.intakeBriefId&&piBriefFilter.has(feat.intakeBriefId));
+}
+function piToggleBriefFilter(convId){
+  if(piBriefFilter.has(convId))piBriefFilter.delete(convId);else piBriefFilter.add(convId);
+  const btn=document.getElementById('pi-brief-filter-btn');
+  if(btn)btn.classList.toggle('active',piBriefFilter.size>0);
+  piRenderBoard();
+}
+function piClearBriefFilter(){
+  piBriefFilter=new Set();
+  const btn=document.getElementById('pi-brief-filter-btn');
+  if(btn)btn.classList.remove('active');
+  piRenderBoard();
+}
+function piToggleBriefFilterDrop(evt){
+  if(evt)evt.stopPropagation();
+  const drop=document.getElementById('pi-brief-filter-drop');
+  if(!drop)return;
+  const isOpen=drop.classList.contains('open');
+  if(isOpen){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_piBriefFilterDropOutside);
+  } else {
+    drop.classList.add('open');
+    setTimeout(()=>document.addEventListener('mousedown',_piBriefFilterDropOutside),0);
+  }
+}
+function _piBriefFilterDropOutside(ev){
+  const drop=document.getElementById('pi-brief-filter-drop');
+  if(!drop){document.removeEventListener('mousedown',_piBriefFilterDropOutside);return;}
+  if(!drop.contains(ev.target)){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_piBriefFilterDropOutside);
+  }
+}
+// Flat popover HTML — one row per finalized RA conversation, no Origin
+// wrapper. Only rendered (button + popover) when at least one finalized
+// conversation exists — matches every other filter's "nothing to filter to
+// yet" convention in this app.
+function _piBriefFilterBtnHtml(){
+  const convs=(typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+  if(!convs.length)return'';
+  return `<div class="sc-export-wrap" style="position:relative;">
+    <button class="cc-tb-btn${piBriefFilter.size>0?' active':''}" id="pi-brief-filter-btn" onclick="piToggleBriefFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Brief <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
+    <div class="cc-export-drop" id="pi-brief-filter-drop">
+      <div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Requirement Briefs</div>
+      ${convs.map(function(c){
+        const cnt=(typeof scCanvas!=='undefined'?scCanvas.filter(f=>f.intakeBriefId===c.id).reduce((a,f)=>a+(f.stories?f.stories.length:0),0):0);
+        const checked=piBriefFilter.has(c.id);
+        return `<label class="fc-filter-row"><input type="checkbox" onchange="piToggleBriefFilter('${e(c.id)}')" ${checked?'checked':''}> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+      }).join('')}
+      <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+      <div style="padding:4px 12px 8px;"><button onclick="piClearBriefFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
+    </div>
+  </div>`;
 }
 
 function piGetSelectedStories(){
@@ -844,7 +915,7 @@ function piConfirmRegenerate(){
   overlay.innerHTML=`<div class="modal" style="max-width:400px;;position:relative;">
     <button onclick="document.getElementById('pi-regen-overlay-2').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate PI Plan?</div>
+      <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate Release Plan?</div>
     </div>
     <div class="modal-body">Regenerating will reset all sprint assignments including any manual moves. Story notes will be preserved.</div>
     <div class="modal-footer">
@@ -913,6 +984,7 @@ function piRenderBoard(){
       ${warnHtml}
     </div>
     <div class="pi-toolbar-r">
+      ${_piBriefFilterBtnHtml()}
       <button id="pi-export-btn" class="export-cta-btn" onclick="piExportDocx()"><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
     </div>
   </div>`;
@@ -943,7 +1015,7 @@ function piRenderBoard(){
       </div>
       <div class="pi-cap-bar">${barSegments}</div>
       <div class="pi-sprint-cards" id="pi-cards-${sprint.id}">
-        ${stories.map(s=>piRenderStoryCard(s,squadColorMap)).join('')}
+        ${stories.filter(_piStoryPassesBriefFilter).map(s=>piRenderStoryCard(s,squadColorMap)).join('')}
         <div class="pi-drop-zone" ondragover="piDragOver(event)" ondrop="piDrop(event,${sprint.id})">Drop here</div>
       </div>
     </div>`;
@@ -951,7 +1023,7 @@ function piRenderBoard(){
   boardHtml+='</div>';
 
   // Backlog tray
-  const backlogStories=piGetBacklogStories();
+  const backlogStories=piGetBacklogStories().filter(_piStoryPassesBriefFilter);
   const backlogHtml=`<div class="pi-backlog-resize-handle" id="pi-backlog-resize" onmousedown="piBacklogResizeStart(event)" title="Drag to resize"></div>
   <div class="pi-backlog-tray" id="pi-backlog-tray" ondragover="piDragOver(event)" ondrop="piDropToBacklog(event)">
     <div class="pi-backlog-hdr">Backlog tray (${backlogStories.length} stories)</div>
@@ -1668,7 +1740,7 @@ function piExportDocx(){
   if(typeof buildAndDownloadPIDocx==='function'){
     buildAndDownloadPIDocx();
   } else {
-    showToast('PI DOCX export module not loaded.','error');
+    showToast('Release Canvas export module not loaded.','error');
   }
 }
 

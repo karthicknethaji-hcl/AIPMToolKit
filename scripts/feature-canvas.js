@@ -633,6 +633,15 @@ function fcGetVisibleCanvas(){
       if(fcOriginFilter.has('origin-mi')&&_isMI)return true;
       if(fcOriginFilter.has('origin-diag')&&_isDiag)return true;
       if(fcOriginFilter.has('origin-kpi')&&_isKpi)return true;
+      // §9.1 — "Requirement Agent" origin value: RQ-agnostic (any
+      // intakeBriefId) if the parent alone is checked, else scoped to
+      // whichever RQs are individually checked (same tri-state model as CC).
+      const _wRa=fcOriginFilter.has('origin-ra')||Array.from(fcOriginFilter).some(t=>t.indexOf('origin-ra-rq:')===0);
+      if(_wRa&&f.intakeBriefId){
+        const checkedRqIds=Array.from(fcOriginFilter).filter(t=>t.indexOf('origin-ra-rq:')===0).map(t=>t.slice('origin-ra-rq:'.length));
+        if(checkedRqIds.length)return checkedRqIds.indexOf(f.intakeBriefId)>=0;
+        return fcOriginFilter.has('origin-ra');
+      }
       return false;
     });
   }
@@ -1014,6 +1023,7 @@ function fcToggleFilterDrop(evt){
     document.removeEventListener('mousedown',fcFilterDropOutside);
   } else {
     drop.classList.add('open');
+    _fcRenderOriginRaFilterSlot();
     setTimeout(()=>document.addEventListener('mousedown',fcFilterDropOutside),0);
   }
 }
@@ -1024,6 +1034,65 @@ function fcFilterDropOutside(e){
     drop.classList.remove('open');
     document.removeEventListener('mousedown',fcFilterDropOutside);
   }
+}
+// §9.1 — "Requirement Agent" nested Origin value + per-RQ sub-list. Same
+// tri-state parent/child model as Capability Canvas's §8.2 implementation
+// (ccToggleOriginRaParent()/ccToggleOriginRaChild() in capability-canvas.js)
+// — kept as its own copy here rather than shared code since FC's filter
+// markup is static HTML (index.html's #fc-filter-drop) with a JS-populated
+// slot, not a fully JS-generated popover like CC's.
+let fcOriginRaExpanded=false;
+function _fcFinalizedRaConvs(){
+  return (typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+}
+function _fcRenderOriginRaFilterSlot(){
+  const slot=document.getElementById('fc-filter-origin-ra-slot');
+  if(!slot)return;
+  const convs=_fcFinalizedRaConvs();
+  if(!convs.length){slot.innerHTML='';return;}
+  const checkedRqTokens=convs.filter(function(c){return fcOriginFilter.has('origin-ra-rq:'+c.id);});
+  const parentChecked=fcOriginFilter.has('origin-ra');
+  // QA issue #5 — always show the RQ sub-list, even with only one finalized
+  // RQ, matching Capability Canvas's identical fix (_ccOriginRaFilterHtml()).
+  const showSubList=fcOriginRaExpanded||parentChecked||checkedRqTokens.length>0;
+  const subListHtml=`<div id="fc-origin-ra-sublist" style="display:${showSubList?'block':'none'};padding-left:20px;border-left:1px dashed var(--divider);margin-left:20px;">`
+    +convs.map(function(c){
+      const cnt=(typeof scCanvas!=='undefined'?scCanvas.filter(f=>f.intakeBriefId===c.id).length:0);
+      const isChecked=fcOriginFilter.has('origin-ra-rq:'+c.id);
+      return `<label class="fc-filter-row" style="font-size:11px;" onclick="event.stopPropagation();"><input type="checkbox" ${isChecked?'checked':''} onchange="fcToggleOriginRaChild('${e(c.id)}')"> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+    }).join('')
+    +`</div>`;
+  slot.innerHTML=`<label class="fc-filter-row" id="fc-origin-ra-row" onclick="event.stopPropagation();fcToggleOriginRaExpand()"><input type="checkbox" id="fc-origin-ra-chk" ${parentChecked?'checked':''} onclick="event.stopPropagation();fcToggleOriginRaParent()"> <i class="ti ti-message-2" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Requirement Agent <i class="ti ti-chevron-${showSubList?'down':'right'}" style="font-size:9px;margin-left:auto;" aria-hidden="true"></i></label>`
+    +subListHtml;
+  const chk=document.getElementById('fc-origin-ra-chk');
+  if(chk)chk.indeterminate=checkedRqTokens.length>0&&checkedRqTokens.length<convs.length;
+}
+function fcToggleOriginRaParent(){
+  const convs=_fcFinalizedRaConvs();
+  if(fcOriginFilter.has('origin-ra')){
+    fcOriginFilter.delete('origin-ra');
+    convs.forEach(function(c){fcOriginFilter.delete('origin-ra-rq:'+c.id);});
+  } else {
+    fcOriginFilter.add('origin-ra');
+    convs.forEach(function(c){fcOriginFilter.add('origin-ra-rq:'+c.id);});
+    fcOriginRaExpanded=true;
+  }
+  fcRenderCanvas();
+  _fcRenderOriginRaFilterSlot();
+}
+function fcToggleOriginRaChild(convId){
+  const tok='origin-ra-rq:'+convId;
+  if(fcOriginFilter.has(tok))fcOriginFilter.delete(tok);else fcOriginFilter.add(tok);
+  const convs=_fcFinalizedRaConvs();
+  const checkedCount=convs.filter(function(c){return fcOriginFilter.has('origin-ra-rq:'+c.id);}).length;
+  if(checkedCount>0&&checkedCount===convs.length)fcOriginFilter.add('origin-ra');
+  else fcOriginFilter.delete('origin-ra');
+  fcRenderCanvas();
+  _fcRenderOriginRaFilterSlot();
+}
+function fcToggleOriginRaExpand(){
+  fcOriginRaExpanded=!fcOriginRaExpanded;
+  _fcRenderOriginRaFilterSlot();
 }
 function fcSetOriginFilter(val){
   if(fcOriginFilter.has(val)){fcOriginFilter.delete(val);}
@@ -1072,6 +1141,8 @@ function fcClearFilter(){
     const el=document.getElementById(id);
     if(el)el.checked=false;
   });
+  fcOriginRaExpanded=false;
+  _fcRenderOriginRaFilterSlot();
   scSelectedIds.clear(); // selection is filter-scoped — same fix as scSetCapFilter/fcSetStoriesFilter
   const btn=document.getElementById('fc-filter-btn');
   if(btn)btn.classList.remove('active');
@@ -2305,7 +2376,20 @@ function scBuildStoryPrompt(ctx,features,refinement){
     }
     return block;
   };
-  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})\n  Why: ${f.why}${_scHypBlock(f)}`).join('\n');
+  // §10 — story generation's PRIMARY source becomes the intake brief when
+  // this feature carries a non-null intakeBriefId (RA-created), with the
+  // feature's own name/why as secondary/grounding context - reversing the
+  // pre-redesign priority order. If intakeBriefId is null (manually-created
+  // feature, or RA-off), behavior is completely unchanged. Targeted
+  // extraction via requirement-agent.js's _raGetCapabilityBriefExcerpt() -
+  // never the entire liveDraftMd blob.
+  const _scBriefBlock=f=>{
+    if(!f.intakeBriefId||typeof _raFindConv!=='function'||typeof _raGetCapabilityBriefExcerpt!=='function')return'';
+    const conv=_raFindConv(f.intakeBriefId);
+    const excerpt=conv?_raGetCapabilityBriefExcerpt(conv,f.cap):'';
+    return excerpt?`\n  RELEASE REQUIREMENTS BRIEF (PRIMARY source - ground the stories in this, using the feature name/why below only as secondary/supporting context):\n  ${excerpt.split('\n').join('\n  ')}`:'';
+  };
+  const featList=features.map(f=>`- Feature: "${f.name}" (Capability: ${f.cap}, Metric: ${f.metric}, Stage: ${f.stage})${_scBriefBlock(f)}\n  Why: ${f.why}${_scHypBlock(f)}`).join('\n');
   const _scDocText=(ctx&&ctx.docContext)?ctx.docContext:'';
   const _scHasDoc=String(_scDocText).trim().length>0;
   const _scEnrichment=_scHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction():'';

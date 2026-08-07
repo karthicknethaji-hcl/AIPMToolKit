@@ -1,21 +1,24 @@
-// REQUIREMENT AGENT (ra) — v9.16
+// REQUIREMENT AGENT (ra) — Discovery-First Entry Point redesign
 // Global, session-scoped, MULTI-conversation requirements agent — distinct
-// from and downstream of Discovery Map + Capability Canvas (context only)
-// and from the pre-existing "Guided Launch" chat (rebranded to the tab
-// label "Requirement Agent" in a prior v9.16 commit on this same file tree —
-// see index.html's #tab-gl comment; that is a copy-only rename of an
-// unrelated, single-conversation, pre-Discovery-Map intake flow and is NOT
-// this module). One conversation here = one release scope, symmetric across
+// from the pre-existing "Guided Launch" chat (rebranded to the tab label
+// "Requirement Agent" in a prior v9.16 commit on this same file tree — see
+// index.html's #tab-gl comment; that is a copy-only rename of an unrelated,
+// single-conversation, pre-Discovery-Map intake flow and is NOT this
+// module). One conversation here = one release scope, symmetric across
 // every capability it touches from turn one. Unlike Guided Launch (one
 // mt_sessions row per conversation), every Requirement Agent conversation
 // lives inside the snapshot of the ONE already-active session — see
 // state.js's raConversations[] and session-store.js's
 // _sessionStoreBuildSnapshot()/_ssApplySnapshotFields().
 //
-// Value chain: Discovery Map + Capability Canvas (context) -> Requirement
-// Agent (this file) -> Finalize Brief (atomic: lock content, assign next RQ
-// number, generate features for every touched capability, navigate to
-// Feature Canvas) -> Feature Canvas -> Story Canvas -> PI Canvas.
+// Value chain (Discovery-First Entry Point redesign): Discovery Map ->
+// "Define Requirements" CTA (RA on only) -> Requirement Agent (this file,
+// Pass 1 greenfield / Pass 2 iterative) -> Finalize Brief (atomic: lock
+// content, assign next RQ number, CREATE capabilities only — no feature
+// generation here, see raRunFinalizeSequence()) -> Capability Canvas
+// (auto-populated, PM clicks "Generate Features" per capability as today,
+// grounded in the intake brief) -> Feature Canvas -> Story Canvas -> PI
+// Canvas. RA is no longer entered from Capability Canvas at all.
 //
 // Chat primitives (.gl-msg-row/.gl-avatar/.gl-bubble/_glFormatChatText) are
 // reused verbatim from guided-launch.js, per this build's explicit
@@ -26,7 +29,17 @@
 // call site in home.js's homeClearSession())
 // ══════════════════════════════════════════════════════════════════════════
 function raResetState(){
-  raEnabled=false;
+  // Confirmed pre-existing bug (predates the Discovery-First redesign):
+  // this used to hardcode raEnabled=false unconditionally, so every
+  // session relaunch after the first one in a browser tab reset raEnabled
+  // to false with nothing to resync it from appSettings.featRA before
+  // Discovery Map's own CTA render (kpi-tree.js's renderDiagnosticActionBar())
+  // ran — showing "Continue to Capability Canvas" instead of "Define
+  // Requirements" even when the Requirement Agent feature module is on.
+  // raEnabled reflects the global Settings toggle, not per-session state,
+  // so a session reset must resync it from the authoritative source
+  // (appSettings.featRA) rather than hardcode a default.
+  raEnabled=(typeof appSettings!=='undefined'&&appSettings)?!!appSettings.featRA:false;
   raConversations=[];
   raLastOpenConversationId=null;
   raActiveConversationId=null;
@@ -76,28 +89,131 @@ function _raDedupeQuestions(arr){
 // touchedCapabilityKeys stays permanently empty and raRunFinalizeSequence()
 // has nothing to iterate over (confirmed root cause of Finalize being a
 // silent no-op — capStore/scCanvas never receive any writes).
+//
+// Bucketing fix (QA issue #10): a "will be created" tag now optionally
+// carries "— under: <Metric/Process Area Name>" — the specific EXISTING
+// Discovery Map metric/process area this capability belongs under, or (if
+// none genuinely fits) a specific, real proposed name for a new one —
+// never a generic placeholder. Finalize resolves this name against the
+// real Discovery Map tree itself (see _raResolveExistingMetricBucket()) —
+// the model doesn't need to self-classify existing-vs-new correctly, it
+// only needs to name the target; Finalize's own lookup decides.
+// QA issue #1 — also captures the descriptive bullet text under each
+// capability's sub-heading (the "what changes for that capability in this
+// release" list _raSectionContentRules() already requires the model to
+// write), as `description`. Used at Finalize time as the new capability's
+// `.why` field instead of a generic "Created by Requirement Agent for this
+// release." placeholder.
 function _raParseTouchedCapabilities(md){
   var lines=(md||'').split('\n');
   var inSection=false;
   var out=[];
   var seen={};
+  var current=null;
+  var descLines=[];
+  function _flushDesc(){
+    if(current&&descLines.length)current.description=descLines.join(' ').replace(/\s+/g,' ').trim();
+    descLines=[];
+  }
   for(var i=0;i<lines.length;i++){
     var line=lines[i];
     if(/^##\s+Capabilities Touched\s*$/i.test(line)){inSection=true;continue;}
     if(inSection&&/^##\s+/.test(line)){break;} // next top-level "## " section ends it
     if(!inSection)continue;
-    var m=line.match(/^#{2,6}\s*\**\s*(.+?)\s*\**\s*\((existing|will be created)\)\s*$/i);
+    var m=line.match(/^#{2,6}\s*\**\s*(.+?)\s*\**\s*\((existing|will be created)(?:\s*[—-]\s*under:\s*(.+?))?\)\s*$/i);
     if(m){
+      _flushDesc();
       var name=m[1].trim().replace(/^\**|\**$/g,'').trim();
-      if(!name)continue;
+      if(!name){current=null;continue;}
       var isNew=/will be created/i.test(m[2]);
       var dedupeKey=name.toLowerCase();
-      if(seen[dedupeKey])continue;
+      if(seen[dedupeKey]){current=null;continue;}
       seen[dedupeKey]=true;
-      out.push({key:name,name:name,isNew:isNew});
+      current={key:name,name:name,isNew:isNew,bucketMetricName:m[3]?m[3].trim():null,description:null};
+      out.push(current);
+      continue;
+    }
+    var bullet=line.match(/^\s*[-*]\s+(.+)$/);
+    if(bullet&&current&&descLines.length<2){ // first 1-2 bullets are enough for a concise .why
+      descLines.push(bullet[1].trim());
+    }
+  }
+  _flushDesc();
+  return out;
+}
+// Parse the Live Draft's "## Recommended Features" section into per-
+// capability feature detail: {name, isNew, narrative}. Extends the same
+// exact-copy tagging convention _raParseTouchedCapabilities() already keys
+// off ("(existing)"/"(will be created)" on capability sub-headings) down to
+// the feature level — each feature bullet is tagged "(new feature)" or
+// "(existing feature)", followed by a colon and the requirement narrative
+// the PM actually described (specific behaviors, edge cases, operational
+// definitions), never just a restatement of the feature name. Without this,
+// the brief only ever captures a table of contents, never the substance
+// needed to ground feature-generation (buildRAFeatureGenPrompt(), §6.5) or
+// story-generation (scBuildStoryPrompt(), §10) once Finalize creates the
+// capability shell but no features.
+function _raParseFeatureNarratives(md){
+  var lines=(md||'').split('\n');
+  var inSection=false;
+  var currentCap=null;
+  var out={}; // capName.toLowerCase() -> [{name,isNew,narrative}]
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    if(/^##\s+Recommended Features\s*$/i.test(line)){inSection=true;continue;}
+    if(inSection&&/^##\s+/.test(line)){break;}
+    if(!inSection)continue;
+    var capHead=line.match(/^#{2,6}\s*\**\s*(.+?)\s*\**\s*$/);
+    if(/^#{3,6}\s/.test(line)&&capHead){
+      currentCap=capHead[1].trim().replace(/^\**|\**$/g,'').trim();
+      if(currentCap&&!out[currentCap.toLowerCase()])out[currentCap.toLowerCase()]=[];
+      continue;
+    }
+    if(!currentCap)continue;
+    var fm=line.match(/^-\s*\**\s*(.+?)\s*\**\s*\((new|existing)\s+feature\)\s*:\s*(.*)$/i);
+    if(fm){
+      out[currentCap.toLowerCase()].push({name:fm[1].trim(),isNew:/^new$/i.test(fm[2]),narrative:fm[3].trim()});
     }
   }
   return out;
+}
+// Return the requirement-narrative detail this conversation's brief
+// captured for a single capability — used as the targeted, per-capability
+// extraction §6.5 and §10 both require instead of passing the entire
+// liveDraftMd blob into a generation prompt. Includes the capability's
+// feature list (name/new-or-existing/narrative) plus the release-level
+// Objectives & Success Criteria section (shared across all capabilities
+// this brief touches — there is no per-capability split for that section).
+function _raGetCapabilityBriefExcerpt(conv,capName){
+  if(!conv||!conv.liveDraftMd||!capName)return'';
+  var md=conv.liveDraftMd;
+  var feats=(_raParseFeatureNarratives(md)[capName.toLowerCase()])||[];
+  var parts=[];
+  if(feats.length){
+    parts.push('Feature detail captured for "'+capName+'" during this release\'s Requirement Agent conversation:\n'+feats.map(function(f){
+      return '- '+f.name+' ('+(f.isNew?'new':'existing')+')'+(f.narrative?(': '+f.narrative):'');
+    }).join('\n'));
+  }
+  var objectives=_raExtractSection(md,'Objectives & Success Criteria');
+  if(objectives)parts.push('Release objectives & success criteria:\n'+objectives);
+  return parts.join('\n\n');
+}
+// Extract one "## <headingText>" section's body (everything up to the next
+// "## " heading) from a liveDraftMd blob. Small shared helper for the
+// targeted-extraction requirement in §6.5/§10 — never used to pass the
+// whole document, only a single named section.
+function _raExtractSection(md,headingText){
+  var lines=(md||'').split('\n');
+  var re=new RegExp('^##\\s+'+headingText.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*$','i');
+  var inSection=false;
+  var out=[];
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    if(re.test(line)){inSection=true;continue;}
+    if(inSection&&/^##\s+/.test(line))break;
+    if(inSection)out.push(line);
+  }
+  return out.join('\n').trim();
 }
 function _raUid(){
   return 'ra_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8);
@@ -162,9 +278,12 @@ function raOnTabEnter(){
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Entry from Capability Canvas — "Define Requirements" CTA
+// Entry from Discovery Map — "Define Requirements" CTA (RA on only; see
+// kpi-tree.js's renderDiagnosticActionBar()). Replaces the pre-redesign
+// raDefineRequirements(), which was entered from Capability Canvas — RA no
+// longer has any Capability-Canvas-side entry point.
 // ══════════════════════════════════════════════════════════════════════════
-function raDefineRequirements(){
+function raEnterFromDiscoveryMap(){
   // Resume the PM's most recent Draft conversation if one exists (most
   // recent by updatedAt among status==='draft'), else create a new one.
   var drafts=raConversations.filter(function(c){return c.status==='draft';});
@@ -310,7 +429,13 @@ function raRenderCenter(){
       :'<div class="ra-chat-input-wrap"><div class="ra-chat-input-row">'
         +'<textarea class="ra-chat-input" id="ra-chat-input" rows="1" placeholder="Type your response..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();raSendMessage();}"></textarea>'
         +'<button class="ra-chat-send" id="ra-send-btn" onclick="raSendMessage()" title="Send"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>'
-      +'</div></div>');
+      +'</div>'
+      +'<div class="gl-upload-chip" id="ra-upload-chip" onclick="if(!raBusy)document.getElementById(\'ra-file-input\').click()" title="Click to select a file to upload">'
+        +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
+        +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix"> to add context anytime</span>'
+      +'</div>'
+      +'<input type="file" id="ra-file-input" accept=".docx,.pdf,.txt,.xlsx,.csv" style="display:none;" onchange="raHandleUpload(this)">'
+      +'</div>');
   raRenderChatHistory();
   raRenderLiveDraft();
   if(!conv.messages||!conv.messages.length){
@@ -354,6 +479,8 @@ function _raSetBusy(busy){
   raBusy=busy;
   var sendBtn=document.getElementById('ra-send-btn');
   var input=document.getElementById('ra-chat-input');
+  var uploadChip=document.getElementById('ra-upload-chip');
+  if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',busy);
   if(sendBtn)sendBtn.disabled=busy;
   if(input)input.disabled=busy;
 }
@@ -388,7 +515,8 @@ function raNewConversation(){
     openQuestions:[],
     liveDraftMd:'',
     draftVersion:0,
-    generatedFeatureIds:[]
+    generatedFeatureIds:[], // retained for backward compat with pre-redesign finalized conversations — stays empty going forward, Finalize no longer generates features (§7)
+    createdCapabilityKeys:[] // NEW — capStore key(s) of every capability this conversation's Finalize created (new capabilities only, not pre-existing ones it touched)
   };
   raConversations.push(conv);
   raActiveConversationId=conv.id;
@@ -415,7 +543,8 @@ async function raRunOpeningTurn(conv){
   // raRunFinalizeSequence() below.
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is drafting the opening summary. Leaving now discards it, you\'ll need to start over.'):null;
   try{
-    var built=buildRequirementAgentOpeningPrompt(typeof sessionContext!=='undefined'?sessionContext:{},_raFirstName());
+    var _raDocCtx1=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
+    var built=buildRequirementAgentDMOpeningPrompt(typeof sessionContext!=='undefined'?sessionContext:{},_raFirstName(),_raDocCtx1);
     var raw=await _raCallModel(built.sys,built.usr,_signal);
     var parsed=_raParseJSON(raw);
     _raHideTyping();
@@ -429,10 +558,14 @@ async function raRunOpeningTurn(conv){
     conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
     conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
     raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.');
-    // Derive title from the product name if still default
+    // QA issue #7 — use the AI's own contextual suggestedTitle if still on
+    // the default placeholder (never overwrite a conversation the user has
+    // already renamed). Falls back to the old boilerplate only if the model
+    // omitted the field entirely — never leaves the title un-set.
     if(conv.title==='New Conversation'){
-      var pp=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.productProfile)||{};
-      conv.title=(pp.productName?pp.productName+' — ':'')+'Release requirements';
+      var _pp=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.productProfile)||{};
+      var _suggested=(parsed.suggestedTitle||'').trim();
+      conv.title=_suggested||((_pp.productName?_pp.productName+' — ':'')+'Release requirements');
     }
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
@@ -461,12 +594,18 @@ async function raSendMessage(){
   await _raRunTurn(conv,text);
 }
 
-async function _raRunTurn(conv,userMessage){
+// uploadedDocText/uploadedDocName (optional) — a document dropped via the
+// mid-chat upload chip (raHandleUpload()), ephemeral by design: matches
+// Guided Launch's existing convention exactly (see guided-launch.js's
+// _glRunRevisionTurn()) — the raw text is never persisted, only whatever
+// the model merges into liveDraftMd survives a refresh.
+async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
   _raSetBusy(true);
   _raShowTyping();
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is updating the draft. Leaving now discards this update, you\'ll need to resend your message.'):null;
   try{
-    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage);
+    var _raDocCtx2=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
+    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName);
     var raw=await _raCallModel(built.sys,built.usr,_signal);
     var parsed=_raParseJSON(raw);
     _raHideTyping();
@@ -497,6 +636,44 @@ async function _raRunTurn(conv,userMessage){
   }
 }
 
+// ── Mid-chat upload ──
+// Extracts text client-side (extractTextFromFile, shared with Home's
+// session docs and Guided Launch's own mid-chat upload — see utils.js)
+// then feeds it into the SAME turn call so the model summarizes/merges it
+// into the Live Draft. Ephemeral by design, matching Guided Launch's
+// exact convention — the raw extracted text is never persisted, only the
+// AI's resulting chatReply/liveDraftMd survives a refresh.
+async function raHandleUpload(inputEl){
+  var conv=_raActiveConv();
+  var file=inputEl.files&&inputEl.files[0];
+  inputEl.value='';
+  if(!file||!conv||raBusy||conv.status!=='draft')return;
+
+  raAppendMessage(conv,'user','Uploaded: '+file.name);
+  _raSetBusy(true);
+  _raShowTyping();
+  try{
+    var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
+    var text=await extractFn(file);
+    if(!text||!text.trim()){
+      _raHideTyping();
+      _raSetBusy(false);
+      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text — try a different file, or tell me about it directly in chat.');
+      return;
+    }
+    _raHideTyping();
+    _raSetBusy(false);
+    await _raRunTurn(conv,null,text,file.name);
+  }catch(err){
+    _raHideTyping();
+    _raSetBusy(false);
+    var msg=(err&&err.message==='PASSWORD_PROTECTED')
+      ?file.name+' is password-protected — remove the password and re-upload.'
+      :'Could not read '+file.name+'.';
+    raAppendMessage(conv,'agent',msg);
+  }
+}
+
 // ── Live draft (right panel) ──
 function raRenderLiveDraft(){
   var right=document.getElementById('ra-right');
@@ -504,15 +681,68 @@ function raRenderLiveDraft(){
   if(!right||!conv)return;
   var unresolvedCount=(conv.openQuestions||[]).filter(function(q){return!q.resolved;}).length;
   var verLabel=(conv.draftVersion>0)?(' · v0.'+(String(conv.draftVersion).length<2?('0'+conv.draftVersion):conv.draftVersion)):'';
+  // §7 — Finalize is disabled until the conversation actually has a draft:
+  // liveDraftMd is only populated once the opening turn completes (see
+  // raRunOpeningTurn()/_raRunTurn()), so an empty/still-loading conversation
+  // has nothing to finalize yet. Confirmed gap: previously Finalize was
+  // clickable on a brand-new, empty conversation with zero effect other
+  // than an unnecessary RPC/save round-trip.
+  var hasDraftContent=!!(conv.liveDraftMd&&conv.liveDraftMd.trim().length>0);
   right.innerHTML=
-    '<div class="ra-md-hdr"><div class="ra-md-hdr-eyebrow">Live Draft</div><div class="ra-md-hdr-title">'+e(conv.title||'Untitled conversation')+'<span class="ra-md-hdr-ver">'+verLabel+'</span></div></div>'
+    // QA issue #6 — the conversation title already shows in the left-panel
+    // card and the center chat header; repeating it here again added no
+    // information, just noise. Right panel now only needs "Live Draft" +
+    // version badge.
+    '<div class="ra-md-hdr"><div class="ra-md-hdr-eyebrow">Live Draft</div><div class="ra-md-hdr-title">Requirements Brief<span class="ra-md-hdr-ver">'+verLabel+'</span></div></div>'
     +'<div class="ra-md-body" id="ra-md-body">'+_raMdToHtml(conv.liveDraftMd)+'</div>'
     +(conv.status==='finalized'
       ?'<div class="ra-md-footer"><div class="ra-status-badge ra-status-final">Finalized'+(conv.rqNumber?(' · '+e(conv.rqNumber)):'')+'</div></div>'
-      :'<div class="ra-md-footer">'
-        +'<button class="ra-finalize-btn" id="ra-finalize-btn" onclick="raFinalizeClick()"><i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> Finalize</button>'
-        +'<div class="ra-footer-note">Generates the features and opens Feature Canvas.</div>'
-      +'</div>');
+      :'<div class="ra-md-footer"><div class="ra-footer-row">'
+        +'<div class="ra-footer-note">Creates the capabilities and opens Capability Canvas.</div>'
+        +'<button class="ra-finalize-btn'+(hasDraftContent?'':' ra-finalize-btn-disabled')+'" id="ra-finalize-btn" '+(hasDraftContent?'onclick="raFinalizeClick()"':'disabled title="Start the conversation to build a draft before finalizing"')+'><i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> Finalize</button>'
+      +'</div></div>');
+  _raEnhanceLiveDraftDom();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Live Draft New/Existing tagging (§11) — post-processes the rendered
+// #ra-md-body DOM (rather than the markdown->HTML step itself) so
+// _raMdToHtml() stays the same shared, generic renderer guided-launch.js
+// uses. Applies identically in Pass 1 and Pass 2 — no conditional
+// suppression based on pass number, per explicit confirmation in the spec.
+//   - Capability-level: "(existing)"/"(will be created)" heading suffix ->
+//     right-aligned NEW/EXISTING pill.
+//   - Feature-level: "(new feature)"/"(existing feature): narrative" bullet
+//     -> inline "(new)" suffix (existing features get no suffix, matching
+//     the spec's "never re-list existing features as if newly proposed")
+//     plus a click-to-expand requirement narrative, since always-visible
+//     narrative text would make the panel very long for capabilities with
+//     several features.
+// ══════════════════════════════════════════════════════════════════════════
+function _raEnhanceLiveDraftDom(){
+  var body=document.getElementById('ra-md-body');
+  if(!body)return;
+  // Capability sub-headings — h3 elements tagged "(existing)"/"(will be created)".
+  Array.prototype.slice.call(body.querySelectorAll('h3')).forEach(function(h){
+    var m=h.textContent.match(/^(.*?)\s*\((existing|will be created)\)\s*$/i);
+    if(!m)return;
+    var isNew=/will be created/i.test(m[2]);
+    h.innerHTML='<span class="ra-cap-tag-row"><span class="ra-cap-tag-name">'+e(m[1].trim())+'</span>'
+      +'<span class="ra-tag-pill '+(isNew?'ra-tag-new':'ra-tag-existing')+'">'+(isNew?'NEW':'EXISTING')+'</span></span>';
+  });
+  // Feature bullets — li elements tagged "(new feature)"/"(existing feature): narrative".
+  var uid=0;
+  Array.prototype.slice.call(body.querySelectorAll('li')).forEach(function(li){
+    var m=li.textContent.match(/^(.*?)\s*\((new|existing)\s+feature\)\s*:\s*(.*)$/i);
+    if(!m)return;
+    var isNew=/^new$/i.test(m[2]);
+    var narrative=m[3].trim();
+    var toggleId='ra-narr-'+(uid++);
+    li.innerHTML='<span class="ra-feat-line">'+e(m[1].trim())+(isNew?' <span class="ra-feat-new-suffix">(new)</span>':'')
+      +(narrative?' <button type="button" class="ra-feat-narr-toggle" onclick="var b=document.getElementById(\''+toggleId+'\');b.style.display=b.style.display===\'block\'?\'none\':\'block\';this.textContent=b.style.display===\'block\'?\'less\':\'more\';">more</button>':'')
+      +'</span>'
+      +(narrative?'<div class="ra-feat-narrative" id="'+toggleId+'" style="display:none;">'+e(narrative)+'</div>':'');
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -521,7 +751,17 @@ function raRenderLiveDraft(){
 function raFinalizeClick(){
   var conv=_raActiveConv();
   if(!conv||conv.status==='finalized'||raBusy)return;
+  // §9 — Finalize would create zero capabilities. Confirmed gap: previously
+  // nothing checked this, so Finalize would silently "succeed" while
+  // creating nothing. Surfaced explicitly, distinct from the unresolved-
+  // questions warning below (a conversation can have real content and zero
+  // unresolved questions, yet still touch no NEW capabilities at all).
+  var newCapCount=(conv.touchedCapabilityKeys||[]).filter(function(t){return t.isNew;}).length;
   var unresolved=(conv.openQuestions||[]).filter(function(q){return!q.resolved;});
+  if(newCapCount===0){
+    raShowZeroCapabilityModal(conv,unresolved.length);
+    return;
+  }
   if(!unresolved.length){
     raRunFinalizeSequence(conv,false);
     return;
@@ -553,6 +793,45 @@ function raShowAssumptionModal(conv,n){
       +'<div style="padding:10px 20px 16px;display:flex;justify-content:flex-end;gap:6px;">'
         +'<button style="background:none;color:var(--t2);border:1px solid var(--divider);border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;" onclick="raReviewQuestions(\''+conv.id+'\',\''+overlayId+'\')">Review Questions</button>'
         +'<button style="background:#BA7517;color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;" onclick="raFinalizeWithAssumptions(\''+conv.id+'\',\''+overlayId+'\')">Finalize with Assumptions</button>'
+      +'</div>'
+    +'</div>';
+  document.body.appendChild(overlay);
+  trapFocus(overlay);
+  var _esc=function(ev){
+    if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}
+  };
+  document.addEventListener('keydown',_esc,true);
+}
+
+// §9 — zero-new-capabilities Finalize warning. Same Type-1 Warn shape as
+// raShowAssumptionModal() (DESIGN_SYSTEM.md §8), distinct copy: warns that
+// Finalizing now creates nothing. If unresolved open questions ALSO exist,
+// "Finalize Anyway" runs with assumptions so the PM never has to click
+// through two separate warnings in a row.
+function raShowZeroCapabilityModal(conv,unresolvedCount){
+  var overlayId='ra-zerocap-overlay';
+  var existing=document.getElementById(overlayId);
+  if(existing)existing.remove();
+  var overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.id=overlayId;
+  overlay.innerHTML=
+    '<div class="modal" style="max-width:400px;position:relative;">'
+      +'<button onclick="document.getElementById(\''+overlayId+'\').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close">'
+        +'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'
+      +'</button>'
+      +'<div style="padding:20px 52px 20px 20px;display:flex;align-items:flex-start;gap:12px;">'
+        +'<div style="width:30px;height:30px;border-radius:7px;background:#FAEEDA;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;">'
+          +'<i class="ti ti-alert-triangle" style="font-size:15px;color:#BA7517;" aria-hidden="true"></i>'
+        +'</div>'
+        +'<div style="flex:1;min-width:0;">'
+          +'<div style="font-size:13px;font-weight:500;color:var(--t1);line-height:1.35;margin-bottom:6px;">No capabilities will be created</div>'
+          +'<div style="font-size:11px;color:var(--t3);line-height:1.6;">This conversation hasn\'t identified any new capabilities yet. Finalizing now will lock the brief but won\'t create anything in Capability Canvas.</div>'
+        +'</div>'
+      +'</div>'
+      +'<div style="padding:10px 20px 16px;display:flex;justify-content:flex-end;gap:6px;">'
+        +'<button style="background:none;color:var(--t2);border:1px solid var(--divider);border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;" onclick="document.getElementById(\''+overlayId+'\').remove()">Keep Drafting</button>'
+        +'<button style="background:#BA7517;color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:700;font-family:var(--font);cursor:pointer;" onclick="raFinalizeWithAssumptions(\''+conv.id+'\',\''+overlayId+'\')">Finalize Anyway</button>'
       +'</div>'
     +'</div>';
   document.body.appendChild(overlay);
@@ -601,42 +880,139 @@ async function raFinalizeWithAssumptions(convId,overlayId){
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Finalize sequence (atomic) — the one integration function per spec:
+// Capability bucketing (QA issue #10) — resolve a new capability's target
+// metric/process area against the REAL Discovery Map tree first, only
+// falling back to a Custom Value Stage bucket when no existing metric
+// genuinely fits. Confirmed root cause of the pre-fix behavior: every RA-
+// created capability landed in the generic Custom Value Stage bucket
+// unconditionally, with no attempt at matching — contradicting this
+// redesign's own §1 value-chain diagram ("correctly bucketed under their
+// metric/process area").
+// ══════════════════════════════════════════════════════════════════════════
+
+// Exact (case-insensitive, trimmed) name match against every metric/
+// process area already in gData.stages[].l1_metrics[] — the same tree
+// Discovery Map itself renders from, so a match here is guaranteed to be
+// a REAL existing metric, not a guess. Creates the capStore entry for that
+// metric on first use if it doesn't exist yet (a metric can exist in
+// gData without ever having a capStore entry, e.g. no capabilities
+// generated for it yet).
+function _raResolveExistingMetricBucket(bucketMetricName){
+  if(!bucketMetricName||typeof gData==='undefined'||!gData||!Array.isArray(gData.stages))return null;
+  var needle=bucketMetricName.trim().toLowerCase();
+  var found=null;
+  gData.stages.forEach(function(st){
+    if(found)return;
+    (st.l1_metrics||[]).forEach(function(m){
+      if(found)return;
+      if(m&&m.name&&m.name.trim().toLowerCase()===needle){
+        var mk=(typeof ccMetricKey==='function')?ccMetricKey(st.id,m.name):(st.id+'||'+m.name);
+        found={metricKey:mk,stageId:st.id,stageLabel:st.label,metricName:m.name};
+      }
+    });
+  });
+  // Fallback within this same "existing" match: the AI can reasonably name
+  // a whole value chain STAGE rather than one specific metric/process area
+  // under it, when a capability is genuinely cross-cutting (spans several
+  // process areas within that stage). Confirmed live: without this, such a
+  // capability fell through to the custom-bucket path and got a NEW bucket
+  // that happened to share the stage's exact name — confusing, and not the
+  // "correctly bucketed under an existing value chain stage" outcome this
+  // fix is for. Resolve a stage-label match to that stage's FIRST listed
+  // metric/process area, deterministically.
+  if(!found){
+    gData.stages.forEach(function(st){
+      if(found)return;
+      if(st&&st.label&&st.label.trim().toLowerCase()===needle&&(st.l1_metrics||[]).length){
+        var m0=st.l1_metrics[0];
+        var mk0=(typeof ccMetricKey==='function')?ccMetricKey(st.id,m0.name):(st.id+'||'+m0.name);
+        found={metricKey:mk0,stageId:st.id,stageLabel:st.label,metricName:m0.name};
+      }
+    });
+  }
+  if(found&&typeof capStore!=='undefined'&&!capStore[found.metricKey]){
+    capStore[found.metricKey]={metricName:found.metricName,stageLabel:found.stageLabel,stageId:found.stageId,capabilities:[]};
+  }
+  return found;
+}
+// Fallback — no existing Discovery Map metric fits. Mints a NEW, distinctly-
+// named Custom Value Stage bucket for this specific proposed name (its own
+// bucketId, its own l1_metrics entry) — deliberately NOT the shared
+// "_isDefaultCustomMetric" catch-all bucket (getOrCreateCurrentDefaultPiBucket()),
+// since that bucket exists for genuinely anonymous manual adds with no name
+// proposal, and reusing it here would reproduce QA issue #11 (every
+// RA-created custom-area capability showing the same generic label). Also
+// writes the new l1_metrics entry into gData directly (not just capStore),
+// so Discovery Map and the left nav reflect the real name immediately
+// rather than waiting on the next syncPiStageFromCapStore() pass (QA
+// issues #12/#13).
+function _raResolveOrCreateCapabilityBucket(bucketMetricName){
+  var piKey=(typeof ccPIKey==='function')?ccPIKey(bucketMetricName):('pi||'+bucketMetricName.toLowerCase().replace(/[^a-z0-9]+/g,'_'));
+  if(typeof capStore!=='undefined'&&capStore[piKey]){
+    return {metricKey:piKey,stageLabel:capStore[piKey].stageLabel,metricName:capStore[piKey].metricName};
+  }
+  var piStageLabel=(typeof getPiStageLabel==='function')?getPiStageLabel(gData):'Custom Value Stage';
+  var newBucketId=(typeof makeBucketId==='function')?makeBucketId():('bkt_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8));
+  if(typeof gData!=='undefined'&&gData){
+    if(!Array.isArray(gData.stages))gData.stages=[];
+    var piStage=gData.stages.filter(function(s){return s&&s.id==='pi';})[0];
+    if(!piStage){
+      piStage={id:'pi',label:piStageLabel,description:'Capabilities that don\'t map to an existing Discovery Map metric or process area.',l1_metrics:[]};
+      gData.stages.push(piStage);
+    }
+    if(!Array.isArray(piStage.l1_metrics))piStage.l1_metrics=[];
+    piStage.l1_metrics.push({name:bucketMetricName,why:'Proposed by Requirement Agent — no existing Discovery Map metric or process area fit this capability.',bucketId:newBucketId});
+  }
+  if(typeof capStore!=='undefined'){
+    capStore[piKey]={metricName:bucketMetricName,stageLabel:piStageLabel,stageId:'pi',bucketId:newBucketId,_piFirst:true,capabilities:[]};
+  }
+  return {metricKey:piKey,stageLabel:piStageLabel,metricName:bucketMetricName};
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Finalize sequence (atomic) — Discovery-First Entry Point redesign.
+// Finalize now CREATES CAPABILITIES ONLY — it never generates features (that
+// remains a manual, per-capability action on Capability Canvas, unchanged
+// trigger/button, see ccGenerateFeaturesForCapClick()).
 //   1. Resolve open questions with assumptions if needed (logged in
-//      liveDraftMd, persisted — not transient chat-only).
-//   2. For every isNew:true touched capability, create/find the capStore
-//      entry — mirrors capability-canvas.js's ccDoAddCap() manual-add
-//      pattern EXACTLY (bucket/metric resolution via _bucketId/
-//      getOrCreateCurrentDefaultPiBucket(), same capStore shape), kept in
-//      the SAME conditional block as the capability's _piStage lookup — the
-//      documented v9.05 split-brain bug (capStore write and _piStage
-//      creation done in two separate conditionals) is explicitly NOT
-//      reintroduced here.
-//   3. Generate features for every touched capability (existing + newly
-//      created), sourced from liveDraftMd via buildRAFeatureGenPrompt().
-//   4. Call ra_next_seq BEFORE generation completes, so the finalized
-//      conversation and its generated features end up with a MATCHING
-//      rqNumber, no partial state.
-//   5. Tag every generated feature with intakeBriefId + rqNumber.
-//   6. Save per AI_EDITING_RULES.md's live-sync contract: capture
+//      liveDraftMd, persisted — not transient chat-only). UNCHANGED.
+//   2. For every isNew:true touched capability, resolve its target metric/
+//      process area against the REAL Discovery Map tree first (§10 —
+//      _raResolveExistingMetricBucket()), only falling back to a
+//      distinctly-named Custom Value Stage bucket when no existing metric
+//      fits (_raResolveOrCreateCapabilityBucket()) — never the generic
+//      shared default bucket. A name match against a capability already
+//      owned by a DIFFERENT conversation is treated as a distinct entity,
+//      never silently reused (§14/§15/§16 provenance fix). Existing
+//      (non-new) touched capabilities are left alone — nothing to create,
+//      no generation to source them for anymore. Reconciles capStore into
+//      gData via syncPiStageFromCapStore() synchronously right after, so
+//      Capability Canvas/Discovery Map/left-nav can't drift (§12/§13).
+//   3. Call ra_next_seq — this already fires at the correct point in the
+//      sequence (after capability creation, confirmed via code research),
+//      so no reordering was needed. NEW: immediately stamp intakeBriefId +
+//      rqNumber onto every capability object created in step 2 — a
+//      straightforward additive loop, not a resequencing.
+//   4. Populate conv.createdCapabilityKeys with every created capability's
+//      capStore key — this is what Capability Canvas's Origin-filter
+//      "Requirement Agent" nested RQ sub-list reads from (§8.2).
+//   5. Save per AI_EDITING_RULES.md's live-sync contract: capture
 //      _activeSessionId into a local var BEFORE any async work -> mutate ->
-//      sessionStoreSave() -> emit live-sync event ONLY on success. This is
-//      NOT modeled on ccSaveFeatName()/ccSaveFeatWhy() (confirmed violators
-//      of this exact contract, pre-existing debt) — built independently,
-//      correctly, from the rule itself.
-//   7. Navigate to Feature Canvas automatically.
+//      sessionStoreSave() -> emit live-sync event ONLY on success.
+//   6. Navigate to Capability Canvas automatically (CHANGED from Feature
+//      Canvas) — CC auto-selects the first populated metric on arrival, see
+//      capability-canvas.js's ccSelectFirstPopulatedMetric() (§8.1).
 // ══════════════════════════════════════════════════════════════════════════
 async function raRunFinalizeSequence(conv,withAssumptions){
   if(!conv||raBusy)return;
   raBusy=true;
   var btn=document.getElementById('ra-finalize-btn');
   if(btn){btn.disabled=true;btn.textContent='Finalizing...';}
-  // v9.17.03 (Item 3) — single guard for the whole atomic sequence (mirrors
-  // pi-planning.js's single long-running startAiGen for its multi-call PI
-  // scoring operation) since this can fire several sequential feature-gen
-  // calls, one per touched capability, and none of them should be
-  // interruptible by an unguarded tab switch.
-  var _finalizeSignal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is finalizing this brief and generating features. Leaving now will leave the brief partially finalized.'):null;
+  // Single guard for the whole atomic sequence — capability creation is a
+  // synchronous data write (no network call except ra_next_seq), but the
+  // save/emit tail still needs the same interruption guard every other
+  // long-running operation in this codebase uses.
+  var _finalizeSignal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is finalizing this brief. Leaving now will leave the brief partially finalized.'):null;
 
   // Capture session identity BEFORE any async work — never re-read
   // _activeSessionId inside a later callback, per AI_EDITING_RULES.md.
@@ -656,50 +1032,66 @@ async function raRunFinalizeSequence(conv,withAssumptions){
       }
     }
 
-    // Step 2 — resolve/create capStore entries for isNew capabilities.
+    // Step 2 — create capStore entries for isNew:true touched capabilities
+    // only. Existing (non-new) touched capabilities need no action here —
+    // there is no feature generation left to source them for.
     var touched=conv.touchedCapabilityKeys||[];
-    var _ctx=(typeof getFullProductCtx==='function')?getFullProductCtx():{};
-    _ctx.docContext='';
-    var nsm=(typeof gData!=='undefined'&&gData)?gData.nsm.metric:'';
-    var resolvedTargets=[]; // [{metricKey, capIdx, capName}]
+    var newCapRefs=[]; // [{metricKey, capIdx, cap}] — capabilities THIS conversation's Finalize actually created
 
     touched.forEach(function(t){
-      var parts=(t.key||'').split('||');
-      var metricKeyGuess=t.key;
-      var capNameGuess=parts.length>1?parts[1]:t.key;
-      if(t.isNew){
-        // Mirror ccDoAddCap()'s manual-add-to-Custom-Value-Stage pattern
-        // EXACTLY — capStore write + _piStage creation in the SAME
-        // conditional block (v9.05 split-brain bug, not reintroduced).
-        var piKey=(typeof ccPIKey==='function')?ccPIKey(capNameGuess):('pi||'+capNameGuess.toLowerCase().replace(/[^a-z0-9]+/g,'_'));
-        var _bucketId=(typeof getOrCreateCurrentDefaultPiBucket==='function'&&typeof gData!=='undefined'&&typeof capStore!=='undefined')
-          ?getOrCreateCurrentDefaultPiBucket(gData,capStore):null;
-        if(typeof capStore!=='undefined'){
-          if(!capStore[piKey]){
-            capStore[piKey]={metricName:capNameGuess,stageLabel:(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage'),stageId:'pi',bucketId:_bucketId,_piFirst:true,capabilities:[{name:capNameGuess,why:'Created by Requirement Agent for this release.',subCaps:null,features:[],_manual:true}]};
-          } else if(!capStore[piKey].capabilities.some(function(c){return c.name===capNameGuess;})){
-            capStore[piKey].capabilities.push({name:capNameGuess,why:'Created by Requirement Agent for this release.',subCaps:null,features:[],_manual:true});
-          }
-        }
-        var newCapIdx=capStore[piKey].capabilities.findIndex(function(c){return c.name===capNameGuess;});
-        resolvedTargets.push({metricKey:piKey,capIdx:newCapIdx,capName:capNameGuess});
+      if(!t.isNew)return;
+      var capNameGuess=t.name||t.key;
+      var bucketMetricName=(t.bucketMetricName||'').trim();
+
+      // §10 — resolve against a REAL existing Discovery Map metric/process
+      // area first; only fall back to a (distinctly-named) Custom Value
+      // Stage bucket when no existing metric fits. If the model somehow
+      // returned no bucket annotation at all (malformed response), fall
+      // back to proposing the capability's own name as the bucket name —
+      // still better than the old silent generic-label behavior.
+      var target=_raResolveExistingMetricBucket(bucketMetricName)
+        ||_raResolveOrCreateCapabilityBucket(bucketMetricName||capNameGuess);
+      if(!target||typeof capStore==='undefined')return;
+      var entry=capStore[target.metricKey];
+      if(!entry)return;
+
+      // §14/§15/§16 — RQ provenance fix: a name match against a capability
+      // already OWNED by a DIFFERENT conversation is a different entity,
+      // not a reuse — the pre-fix code matched by name alone and silently
+      // overwrote that other conversation's intakeBriefId/rqNumber.
+      var existingIdx=entry.capabilities.findIndex(function(c){return c.name===capNameGuess;});
+      var existingCap=existingIdx>=0?entry.capabilities[existingIdx]:null;
+      var ownedByOther=!!(existingCap&&existingCap.intakeBriefId&&existingCap.intakeBriefId!==conv.id);
+      var capObj;
+      if(existingCap&&!ownedByOther){
+        capObj=existingCap; // same conversation touching it again, or not yet owned by anyone — safe to reuse
       } else {
-        // Existing capability — find it by exact name across capStore.
-        var foundKey=null,foundIdx=-1;
-        if(typeof capStore!=='undefined'){
-          Object.keys(capStore).some(function(mk){
-            var idx=(capStore[mk].capabilities||[]).findIndex(function(c){return c.name===capNameGuess;});
-            if(idx>=0){foundKey=mk;foundIdx=idx;return true;}
-            return false;
-          });
-        }
-        if(foundKey)resolvedTargets.push({metricKey:foundKey,capIdx:foundIdx,capName:capNameGuess});
+        // QA issue #1 — use the actual descriptive bullet(s) the model wrote
+        // under this capability's own sub-heading (t.description, parsed by
+        // _raParseTouchedCapabilities()) as .why, falling back to a generic
+        // placeholder only if the model genuinely wrote nothing (shouldn't
+        // happen per the section-content rules, but never leave .why empty).
+        capObj={name:capNameGuess,why:t.description||'Created by Requirement Agent for this release.',subCaps:null,features:[],_manual:true};
+        entry.capabilities.push(capObj);
       }
+      newCapRefs.push({metricKey:target.metricKey,capIdx:entry.capabilities.indexOf(capObj),cap:capObj});
     });
 
-    // Step 3+4 — get the RQ number FIRST (so a generation failure never
-    // leaves a mismatched rqNumber between the conversation and its
-    // features), then generate features for every resolved target.
+    // §12/§13 — reconcile capStore's bucket metric names into Discovery
+    // Map's own tree immediately, synchronously, regardless of whether a
+    // session save happens below. Confirmed root cause of the pre-fix
+    // "CC shows one name, DM/left-nav show another until refresh" bug:
+    // this sync previously only ran as an indirect side effect of
+    // sessionStoreSave(), which never fires at all for sessions with no
+    // active saveSessionId (demo/local).
+    if(typeof syncPiStageFromCapStore==='function'&&typeof gData!=='undefined'&&typeof capStore!=='undefined'){
+      syncPiStageFromCapStore(gData,capStore);
+    }
+
+    // Step 3 — assign the RQ number. Confirmed via code research: this
+    // already fires after capability creation (step 2), which is exactly
+    // the ordering needed to stamp intakeBriefId/rqNumber onto the newly
+    // created capabilities below — no reorder required.
     var rqLabel=null;
     if(saveSessionId){
       try{
@@ -722,93 +1114,25 @@ async function raRunFinalizeSequence(conv,withAssumptions){
       rqLabel=_raRqLabel(_maxExisting+1);
     }
 
-    var generatedFeatureIds=[];
-    for(var i=0;i<resolvedTargets.length;i++){
-      var tgt=resolvedTargets[i];
-      var entry=capStore[tgt.metricKey];
-      var cap=entry&&entry.capabilities[tgt.capIdx];
-      if(!entry||!cap)continue;
-      try{
-        var promptBuilt=buildRAFeatureGenPrompt(_ctx,nsm,entry.stageLabel,entry.metricName,cap.name,conv.liveDraftMd);
-        var featTxt=await callAPI(
-          'You are a senior product strategist. Specific, actionable, product-native. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
-          promptBuilt,3000,_finalizeSignal,null,'requirement-agent',null,{session_id:saveSessionId}
-        );
-        // NOTE: deliberately NOT using the global parseJSON() helper here —
-        // that function is hard-coded to Discovery Map "tree" validation
-        // (api.js's isValidTree() requires nsm/stages) and returns null for
-        // every other JSON shape, including this {features:[...]} response.
-        // Using it silently discarded every generated feature (confirmed via
-        // live network trace: the model returned valid {features:[...]}
-        // JSON, but parseJSON()->isValidTree() rejected it and repairJSON()
-        // could never produce a tree-shaped result either, so rawFeats was
-        // always []). Mirrors capability-canvas.js's own feature-gen parsing
-        // (ccGenerateFeaturesForCap(), ~line 3233) instead: plain JSON.parse
-        // with a brace-slice fallback for stray preamble/fence text.
-        var parsedFeat=null;
-        var _cleanFeatTxt=(featTxt||'').replace(/```json|```/g,'').trim();
-        try{ parsedFeat=JSON.parse(_cleanFeatTxt); }
-        catch(pe){
-          var _s=_cleanFeatTxt.indexOf('{'),_l=_cleanFeatTxt.lastIndexOf('}');
-          if(_s>=0&&_l>_s){ try{ parsedFeat=JSON.parse(_cleanFeatTxt.substring(_s,_l+1)); }catch(pe2){ parsedFeat=null; } }
-        }
-        var rawFeats=(parsedFeat&&parsedFeat.features)||[];
-        // Normalize to the SAME shape ccGenerateFeatures() gives every
-        // manually-generated feature (capability-canvas.js ~line 1796) —
-        // metric/stage/cap/selected/outcomeHypothesis — then tag with
-        // intakeBriefId+rqNumber (denormalized, both stored, per spec).
-        // Without this normalization, capStore's featStore entries are
-        // missing the fields ccSendToStoryCanvas() (and this function's own
-        // scCanvas push below) require to build a Feature Canvas row.
-        var newFeats=rawFeats.map(function(f){
-          return {name:f.name,why:f.why,selected:false,
-            metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null,
-            outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null,
-            intakeBriefId:conv.id,rqNumber:rqLabel};
-        });
-        if(!cap.featStore)cap.featStore={};
-        cap.featStore.top=(cap.featStore.top||[]).concat(newFeats);
-        newFeats.forEach(function(f){generatedFeatureIds.push(tgt.metricKey+'|'+tgt.capIdx+'|'+f.name);});
+    // Stamp intakeBriefId + rqNumber onto every capability created in step
+    // 2 — additive only, no feature generation, no scCanvas push (§5.2,§7).
+    newCapRefs.forEach(function(ref){
+      ref.cap.intakeBriefId=conv.id;
+      ref.cap.rqNumber=rqLabel;
+    });
+    conv.createdCapabilityKeys=newCapRefs.map(function(ref){return ref.metricKey+'|'+ref.capIdx;});
 
-        // Push into scCanvas — Feature Canvas reads from scCanvas, NOT from
-        // capStore directly (confirmed via capability-canvas.js's
-        // ccSendToStoryCanvas(), the only existing capStore->scCanvas
-        // pipe). Finalize must replicate that push itself since RA's
-        // finalize is not routed through the manual "Send to Feature
-        // Canvas" button — writing only to capStore left Feature Canvas
-        // permanently empty after Finalize (root cause of the reported
-        // empty-state bug).
-        if(typeof scCanvas!=='undefined'&&typeof scMakeFeatureId==='function'){
-          var _curPiLbl2=(typeof getPiStageLabel==='function')?getPiStageLabel(gData):'Custom Value Stage';
-          newFeats.forEach(function(f){
-            var fid=scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name);
-            if(!scCanvas.find(function(x){return x.id===fid;})){
-              var metricPath=(typeof scGetMetricPath==='function')?scGetMetricPath(f.metric):f.metric;
-              scCanvas.push({id:fid,metric:f.metric,metricPath:metricPath,stage:f.stage,
-                cap:f.cap+(f.subCap?' › '+f.subCap:''),name:f.name,why:f.why,stories:null,
-                origin:(f.stage===_curPiLbl2||f.stage==='PI Plan')?'pi':'kpi',
-                outcomeHypothesis:(f.outcomeHypothesis&&typeof cloneOutcomeHypothesis==='function')?cloneOutcomeHypothesis(f.outcomeHypothesis):null,
-                intakeBriefId:f.intakeBriefId,rqNumber:f.rqNumber});
-            }
-          });
-        }
-      }catch(genErr){
-        console.warn('[requirement-agent] feature generation failed for',tgt.capName,genErr);
-      }
-    }
-
-    // Mirror ccSendToStoryCanvas()'s post-send signals so Feature Canvas's
-    // tab badge/pending indicator reflect the newly pushed scCanvas rows.
-    if(typeof fcUpdateTabBadge==='function')fcUpdateTabBadge();
-    if(typeof markTabPending==='function')markTabPending('fc');
+    // Signal Capability Canvas's tab badge/pending indicator — mirrors the
+    // existing markTabPending() convention used elsewhere for "new content
+    // arrived on a tab you're not currently viewing."
+    if(typeof markTabPending==='function')markTabPending('cc');
 
     // Mark conversation finalized as part of the SAME save.
     conv.status='finalized';
     conv.rqNumber=rqLabel;
-    conv.generatedFeatureIds=generatedFeatureIds;
     conv.updatedAt=new Date().toISOString();
 
-    // Step 6 — persist per the live-sync save/emit contract.
+    // Step 5 — persist per the live-sync save/emit contract.
     var saved=false;
     if(saveSessionId&&typeof sessionStoreSave==='function'){
       try{
@@ -825,6 +1149,7 @@ async function raRunFinalizeSequence(conv,withAssumptions){
       showToast('Could not save the finalized brief. Please try again.','warn');
       conv.status='draft'; // revert — do not leave a mismatched finalized-but-unsaved state
       conv.rqNumber=null;
+      conv.createdCapabilityKeys=[];
       raBusy=false;
       if(btn){btn.disabled=false;btn.textContent='Finalize';}
       raRenderLiveDraft();
@@ -833,7 +1158,7 @@ async function raRunFinalizeSequence(conv,withAssumptions){
 
     if(wasSharedSession&&typeof _lsEmitContentEvent==='function'){
       try{
-        _lsEmitContentEvent(saveSessionId,'cc','features_generated',null,null);
+        _lsEmitContentEvent(saveSessionId,'cc','capabilities_generated',null,null);
       }catch(emitErr){
         console.warn('Event emission failed (save already succeeded):',emitErr);
       }
@@ -845,21 +1170,22 @@ async function raRunFinalizeSequence(conv,withAssumptions){
     // End the nav-in-flight guard BEFORE this function's own automatic
     // navigation below — switchTab() itself checks aiGenInFlight.active via
     // blockIfGenerating(), so leaving the guard up here would make Finalize's
-    // own "navigate to Feature Canvas automatically" step (Step 7) trip its
-    // own "Hold on, don't lose this" confirmation on itself, forcing the PM
-    // to click "Leave anyway" just to reach the page Finalize is supposed to
-    // land them on automatically. Confirmed live: without this reordering,
-    // the auto-navigate silently stalled behind a self-triggered guard modal.
+    // own auto-navigate step trip its own "Hold on, don't lose this"
+    // confirmation on itself. Same ordering requirement as the pre-redesign
+    // switchTab('fc') call site — re-verified to still hold for 'cc'.
     raBusy=false;
     if(typeof endAiGen==='function')endAiGen();
     if(btn){btn.disabled=false;btn.textContent='Finalize';}
 
-    // Step 7 — navigate to Feature Canvas automatically, no intermediate
-    // "continue" link.
-    var tabFc=document.getElementById('tab-fc');
-    if(tabFc)tabFc.classList.remove('data-home-hidden');
-    if(tabFc)tabFc.style.display='';
-    switchTab('fc');
+    // Step 6 — navigate to Capability Canvas automatically, no intermediate
+    // "continue" link. Capability creation (step 2) is already complete and
+    // saved by this point, so CC's arrival auto-select-first-metric helper
+    // finds real data the instant it runs.
+    var tabCc=document.getElementById('tab-cc');
+    if(tabCc)tabCc.classList.remove('data-home-hidden');
+    if(tabCc)tabCc.style.display='';
+    switchTab('cc');
+    if(typeof ccSelectFirstPopulatedMetric==='function')ccSelectFirstPopulatedMetric();
   } finally {
     raBusy=false;
     if(typeof endAiGen==='function')endAiGen();

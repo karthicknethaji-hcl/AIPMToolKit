@@ -106,19 +106,23 @@
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
     <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
+    <!-- Requirement Agent redesign (Discovery-First Entry Point) — tab-gl
+      above is the pre-existing Guided Launch pre-Discovery-Map intake chat
+      (a v9.16 commit briefly mislabeled it "Requirement Agent"; reverted).
+      This tab-ra is the real, functionally distinct, global, multi-
+      conversation release-requirements agent, and is the sole owner of the
+      "Requirement Agent" name going forward. It now sits PRE-Capability-
+      Canvas (immediately after Discovery Map) since it triggers from
+      Discovery Map's "Define Requirements" CTA and its own Finalize creates
+      capabilities into Capability Canvas, rather than being entered FROM
+      Capability Canvas as in the prior design. -->
+    <button class="tab-btn tab-gated" id="tab-ra" onclick="switchTab('ra')"><i class="ti ti-clipboard-text"></i> Requirement Agent<span class="tab-pending-dot" id="tab-ra-dot"></span></button>
     <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
-    <!-- v9.16 — NAMING RESOLVED: tab-gl above is the pre-existing Guided
-      Launch pre-Discovery-Map intake chat (a v9.16 commit briefly mislabeled
-      it "Requirement Agent"; reverted). This tab-ra is the real, functionally
-      distinct, global, post-Capability-Canvas multi-conversation
-      release-requirements agent per this build's own spec, and is the sole
-      owner of the "Requirement Agent" name going forward. -->
-    <button class="tab-btn tab-gated" id="tab-ra" onclick="switchTab('ra')"><i class="ti ti-clipboard-text"></i> Requirement Agent<span class="tab-pending-dot" id="tab-ra-dot"></span></button>
     <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Experiment Canvas</button>
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
-    <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> PI Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> Release Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
     <button class="tab-btn" id="tab-op" onclick="switchTab('op')" style="display:none;"><i class="ti ti-activity"></i> Outcome Pulse</button>
     <div class="home-tab-lock" id="home-tab-lock"><i class="ti ti-lock" style="font-size:9px;" aria-hidden="true"></i><span>Tabs unlock after you launch a session</span></div>
   </div></div>
@@ -404,6 +408,7 @@
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-custom" onchange="fcSetOriginFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-mi" onchange="fcSetOriginFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label>
                       <label class="fc-filter-row"><input type="checkbox" id="fc-filter-origin-diag" onchange="fcSetOriginFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>
+                      <div id="fc-filter-origin-ra-slot"></div>
                       <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
                       <div style="padding:4px 12px 8px;"><button onclick="fcClearFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
                     </div>

@@ -383,11 +383,20 @@ async function generateConfirmed(extra){
     if(typeof renderDDEmpty==='function'&&document.getElementById('dd-out'))renderDDEmpty();
     if(btn)btn.disabled=false;
     renderDiagnosticActionBar();
-    // Reveal Capability Canvas tab now that Discovery Map results exist
-    const ccTabEl=document.getElementById('tab-cc');
-    if(ccTabEl) ccTabEl.style.display='';
-    // Signal new/updated content in Capability Canvas (cleared on first visit)
-    if(typeof markTabPending==='function')markTabPending('cc');
+    // Reveal Capability Canvas tab now that Discovery Map results exist —
+    // RA-off only. When Requirement Agent is on, CC is no longer the direct
+    // next step from Discovery Map (the DM CTA routes to RA instead, see
+    // above) — CC stays hidden until RA's own Finalize reveals it
+    // (raRunFinalizeSequence(), requirement-agent.js). Revealing it here
+    // unconditionally regardless of raEnabled was a confirmed regression:
+    // it let CC become visible immediately after DM finished generating,
+    // before the PM had even opened Requirement Agent.
+    if(!(typeof raEnabled!=='undefined'&&raEnabled)){
+      const ccTabEl=document.getElementById('tab-cc');
+      if(ccTabEl) ccTabEl.style.display='';
+      // Signal new/updated content in Capability Canvas (cleared on first visit)
+      if(typeof markTabPending==='function')markTabPending('cc');
+    }
     // Reveal MI tab if THIS SESSION chose MI at launch — Phase 5 fix
     // (v8.118): previously checked ONLY the global featMI setting, which
     // meant a session that itself chose "no MI" could still have the tab
@@ -653,7 +662,15 @@ function renderDiagnosticActionBar(){
   const refineLbl='Refine Discovery Map';  // v8.38 — always DM regardless of approach
   const refinePlaceholder=isCap?'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Real-Time Inventory Visibility to Live Stock Sync, focus more on returns handling, split Fulfillment into two stages...':'e.g. Remove the Forecasting stage, add a Carrier Management stage, rename Promise Accuracy to Delivery Commitment, focus more on exception handling, split Fulfillment into two stages...';
   const barHint=isCap?`Discovery Map ready &middot; ${metricCount} process area${metricCount!==1?'s':''} &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`:`Discovery Map ready &middot; ${metricCount} metrics &middot; ${stageCount} stage${stageCount!==1?'s':''} ${modelName?'&middot; '+e(modelName):''}`;
-  const continueCta=`<button class="diag-bar-cta" onclick="revealAndSwitchTab('cc')"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Continue to Capability Canvas</button>`;
+  // Requirement Agent redesign (Discovery-First Entry Point) — when RA is
+  // on, this CTA is relabeled and rerouted to Requirement Agent instead of
+  // Capability Canvas (RA is now entered from Discovery Map, not from CC —
+  // see requirement-agent.js's raEnterFromDiscoveryMap()). Same position/
+  // visual weight either way. RA-off: completely unchanged.
+  const _dmRaOn=typeof raEnabled!=='undefined'&&!!raEnabled;
+  const continueCta=_dmRaOn
+    ?`<button class="diag-bar-cta" onclick="raEnterFromDiscoveryMap()"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Define Requirements</button>`
+    :`<button class="diag-bar-cta" onclick="revealAndSwitchTab('cc')"><i class="ti ti-arrow-right" style="font-size:12px;" aria-hidden="true"></i> Continue to Capability Canvas</button>`;
   bar.innerHTML=`
     <div class="diag-refine-expand" id="diag-refine-expand" style="display:none;">
       <div class="diag-refine-lbl">${refineLbl}</div>

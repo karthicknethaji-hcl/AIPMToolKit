@@ -244,14 +244,14 @@
 .sc-refine-send:hover{background:var(--purple-deep);}
 .sc-refine-send:disabled{opacity:0.4;cursor:not-allowed;}
 /* ── Capability breadcrumb on feature card ── */
-.sc-cap-breadcrumb{font-size:9px;color:var(--t2);line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;position:relative;background:var(--card);border:1px solid var(--divider);border-radius:4px;padding:3px 7px;display:block;max-width:100%;}
+.sc-cap-breadcrumb{font-size:9px;color:var(--t2);line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px;position:relative;background:var(--card);border:1px solid var(--divider);border-radius:4px;padding:3px 7px;display:block;max-width:100%;min-width:0;}
 .sc-bc-sep{color:var(--label);margin:0 3px;font-size:8px;}
 /* Custom tooltip on hover */
 .sc-cap-breadcrumb[data-tooltip]{cursor:default;}
 .sc-cap-breadcrumb[data-tooltip]::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 5px);left:0;background:var(--navy);color:#fff;font-size:10px;line-height:1.4;padding:6px 9px;border-radius:5px;white-space:pre-wrap;max-width:240px;word-break:break-word;z-index:100;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 2px 8px rgba(0,0,0,0.18);}
 .sc-cap-breadcrumb[data-tooltip]:hover::after{opacity:1;}
 /* ── Metric breadcrumb on feature card (single line, above cap breadcrumb) ── */
-.sc-metric-breadcrumb{font-size:8px;color:var(--label);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;position:relative;}
+.sc-metric-breadcrumb{font-size:8px;color:var(--label);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;position:relative;min-width:0;}
 .sc-metric-breadcrumb[data-tooltip]::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 5px);left:0;background:var(--navy);color:#fff;font-size:10px;line-height:1.4;padding:6px 9px;border-radius:5px;white-space:pre-wrap;max-width:240px;word-break:break-word;z-index:100;pointer-events:none;opacity:0;transition:opacity 0.15s;box-shadow:0 2px 8px rgba(0,0,0,0.18);}
 .sc-metric-breadcrumb[data-tooltip]:hover::after{opacity:1;}
 /* ── Evidence chip on metric group header ── */

@@ -67,8 +67,10 @@
 - `buildMIFeaturePrompt()` — MI feature generation per capability. Count: `_spRange(3, appSettings.maxFeatures)` — unified with CC path.
 - `buildMIDocxPrompt()` — MI DOCX narrative
 - `buildPICapPrompt()` — PI-first capability generation (path B). Sub-caps: conditional on `appSettings.includeSubCaps`.
-- `buildPIStoryPrompt()` — PI-first story generation. Stories: `_spRange(2, appSettings.maxStories)`. Velocity: maps `appSettings.teamVelocity`. Scenarios: `_spRange(1, appSettings.maxACs)`.
 - `buildPIGeneratePrompt()` — PI sprint assignment generation
+- `buildRequirementAgentDMOpeningPrompt()` — Requirement Agent's Discovery-Map-triggered opening turn; one function, branches internally on whether `capStore` has any entries (Pass 1 greenfield / Pass 2 iterative). See "Requirement Agent module" below.
+- `buildRequirementAgentTurnPrompt()` — Requirement Agent's per-turn prompt; carries `capStore` + prior finalized briefs through every turn, semantic (never string-match) new-vs-existing classification.
+- `buildRAFeatureGenPrompt()` — thin wrapper around `buildCapFeaturesPrompt()` used by CC's "Generate Features" CTA when a capability's `intakeBriefId` is non-null; targeted per-capability brief extraction (name + requirement narrative + objectives), never the full `liveDraftMd` blob.
 
 `scripts/settings.js` — API key handling: `checkKey()`, `toggleKeyVis()`. `checkKey()` validates the key format (v9.14: provider-aware via `isValidApiKeyFormat(k, provider)` and `_PROVIDER_KEY_PATTERNS` — a `null` pattern means unverified, soft-accepted rather than false-flagged), updates `#api-dot` in header, persists to sessionStorage under `_byokKey()`'s company+provider-scoped slot, and calls `spRefreshKeyStatus()` to update the settings page key status pill when settings is open. `updateFeatLock()` is retired (body empty) — kept as shell to avoid call-site errors.
 
@@ -153,7 +155,17 @@
 - **Export:** `ccToggleExportDrop()`, `ccExportFull()`, `ccExportFinalised()`, `ccDownloadDOCX()`, `ccBuildDOCX()`
 - **Exit:** `ccExitNavigator()`
 
-`scripts/pi-planning.js` — PI Canvas tab. Receives stories from Story Canvas via `scPushStoriesToPI()`.
+`scripts/requirement-agent.js` (`styles/23-requirement-agent.css`) — Requirement Agent (RA): global, session-scoped, MULTI-conversation requirements agent, distinct from the pre-existing Guided Launch chat (see `index.html`'s `#tab-gl` comment — a copy-only tab-label rename, unrelated module). **Discovery-First Entry Point redesign** — RA now triggers from Discovery Map's "Define Requirements" CTA (RA on only, see `kpi-tree.js`'s `renderDiagnosticActionBar()`), not from Capability Canvas; Finalize creates capabilities only (no feature generation); PM lands on Capability Canvas, not Feature Canvas. `#tab-ra` sits between `#tab-mm` and `#tab-mi` in the tab row (pre-Capability-Canvas), reflecting this.
+- **Entry:** `raEnterFromDiscoveryMap()` — resumes the most recent Draft conversation or creates a new one, called from Discovery Map only
+- **Left panel (conversation list, unchanged mechanics):** `raRenderConvList()` (sorts by `updatedAt` descending, all filter-chip states), `raNewConversation()`, `raOpenConversation()`, `raRenameConversation()`
+- **Chat:** `raRunOpeningTurn()` (Pass 1/Pass 2 branch via `buildRequirementAgentDMOpeningPrompt()`, see `prompts.js`), `raSendMessage()`/`_raRunTurn()` (via `buildRequirementAgentTurnPrompt()`)
+- **Live Draft parsing:** `_raParseTouchedCapabilities()` — capability-level `(existing)`/`(will be created)` exact-copy tagging, the only source of truth for `conv.touchedCapabilityKeys`. `_raParseFeatureNarratives()` — extends the same convention to per-feature `(new feature)`/`(existing feature): narrative` tagging under `## Recommended Features`. `_raGetCapabilityBriefExcerpt()`/`_raExtractSection()` — targeted per-capability extraction (name + narrative + objectives), used by `buildRAFeatureGenPrompt()` (CC's "Generate Features" CTA) and `scBuildStoryPrompt()` (feature-canvas.js), never the full `liveDraftMd` blob.
+- **Live Draft render:** `raRenderLiveDraft()`, `_raEnhanceLiveDraftDom()` — post-processes the rendered markdown DOM into NEW/EXISTING pills (capability level) and inline `(new)` suffix + click-to-expand narrative (feature level)
+- **Finalize (atomic, capabilities only):** `raRunFinalizeSequence()` — resolves open questions -> creates capStore entries for `isNew:true` touched capabilities (mirrors `ccDoAddCap()`) -> calls `ra_next_seq()` -> stamps `intakeBriefId`/`rqNumber` onto every created capability -> populates `conv.createdCapabilityKeys` -> persists (live-sync `capabilities_generated` event) -> `switchTab('cc')` + `ccSelectFirstPopulatedMetric()` (capability-canvas.js). Feature generation is explicitly NOT part of Finalize — it remains CC's manual, per-capability "Generate Features" action, grounded in the brief when `intakeBriefId` is non-null.
+- **Data shape (`snapshot.raConversations[]`):** adds `createdCapabilityKeys[]` (new). `capStore` capability entries gain `intakeBriefId`/`rqNumber` (forward-only, `null`/`undefined` for anything predating this build).
+- **Origin filter integration:** Capability Canvas and Feature Canvas nest a "Requirement Agent" value + per-RQ sub-list into their existing Origin filter (`ccToggleOriginRaParent()`/`ccToggleOriginRaChild()` in `capability-canvas.js`, `fcToggleOriginRaParent()`/`fcToggleOriginRaChild()` in `feature-canvas.js`) — genuinely new tri-state parent/child checkbox logic, no prior precedent in this codebase. Story Canvas and Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (neither has an Origin filter to nest under) get a standalone flat "Brief" filter instead (`_newScBriefFilterHtml()` in `story-canvas-new.js`, `_piBriefFilterBtnHtml()` in `pi-planning.js`) — a deliberate, accepted divergence from CC/FC's nested shape, not an inconsistency to fix later.
+
+`scripts/pi-planning.js` — Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) tab. Receives stories from Story Canvas via `scPushStoriesToPI()`.
 - **Tab lifecycle:** `piOnTabEnter()`
 - **Staleness detection:** `piCheckStaleness()`, `piComputeHash()`, `piShowStaleBanner()`, `piHideStaleBanner()` (`piSyncNewStories()` still exists in the file but has zero call sites — confirmed dead code during v9.08's build, not wired into any execution path; do not assume it runs on tab entry)
 - **Left panel:** `piRenderLeftPanel()`, `piRenderSquadRows()`, `piGetSquads()`, `piCalcCapacity()`, `piAddSquad()`, `piRemoveSquad()`, `piUpdateSquad()`, `piToggleLeftPanel()`
@@ -204,7 +216,7 @@
 
 `scripts/export-xlsx.js` — `downloadXLSX()`, `doXLSX()` — Metrics Definition XLSX download
 
-`scripts/export-pi-docx.js` — `buildAndDownloadPIDocx()` — PI Canvas DOCX download (called by `piExportDocx()`)
+`scripts/export-pi-docx.js` — `buildAndDownloadPIDocx()` — Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) DOCX download (called by `piExportDocx()`)
 
 `scripts/api.js` — `switchTab()`, `revealAndSwitchTab()`, `callAPI()`, `parseJSON()`, `isValidTree()`, `showLoad()`, `hideLoad()`. `switchTab()` manages all 6 tabs (mm, cc, pi, mi, la, sc): tab button active states, content area show/hide, left-panel visibility, tab entry hooks (`ccOnTabEnter`, `piOnTabEnter`, `miRenderEmpty`/`miRenderScreen`, `laRenderAnalysis`, `scRenderCapNav`/`scRenderCanvas`). `callAPI()` routes to `/api/anthropic` proxy on Netlify, falls back to direct Anthropic call locally. Model string reads from `appSettings.model` with fallback to `claude-sonnet-4-6`. **Generation lock:** `withGenerationLock(fn)` — wraps a caller's ENTIRE generate→parse→apply→save workflow, not just `callAPI()` (a narrower scope releases the lock before a caller's own `sessionStoreSave()` runs). Skips locking entirely for private sessions. `_acquireGenerationLock()`/`_releaseGenerationLock()` — thin wrappers around the `acquire_generation_lock`/`release_generation_lock` Postgres RPCs (`current_app_user()`-based, defined on `mt_sessions`). `_startLockHeartbeat()` — single-flight (not raw `setInterval`) refresh loop, ~22s interval, waits for any in-flight tick before allowing release to proceed (closes a ghost-lock race). `_localGenerationLocks` (Set) — same-tab/same-browser duplicate-generation guard, claimed synchronously before the async DB acquire call starts (claiming it only after the acquire resolves reopens the same race). `_GENERATION_LOCK_HANDLE_BRAND`/`_assertGenerationLockHandle()` — a branded lock-handle marker so an inner "requires a real lock handle" function (see `capability-canvas.js`'s `ccGenerateFeaturesForCap`/`_ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE` pair) can't be silently bypassed by a future caller passing a bogus object — vanilla JS has no enforced module privacy, so this turns an accidental unlocked call into a loud, immediate error. Callers use `lock.throwIfLost()` checkpoints immediately before any save, not just after their whole workflow returns (a post-hoc-only check is too late if the save already ran). Explicitly deferred: server-side lock enforcement, live re-fetch of `is_shared` pre-acquire, operation-token-based locking, `acquire_generation_lock()`'s own access-check/update non-atomicity. **v9.08:** `acquire_generation_lock()` now also checks `share_mode` server-side (rejects a view-only collaborator's acquire attempt with `reason: 'no_access'`, distinct from `reason: 'held'`) — `withGenerationLock()`'s rejection branch has a dedicated toast for this case. `release_generation_lock()` now also clears `active_user_name` on release (previously left stale, a ghost-holder display bug found during v9.08's adversarial review).
 
@@ -319,7 +331,7 @@
 | SC layout, cards, filter, nav | `styles/08-feature-canvas.css`, `scripts/feature-canvas.js` |
 | SC left panel (capability tree nav) | `scripts/feature-canvas.js` (scRenderCapNav) |
 | SC right panel (story panel) | `scripts/feature-canvas.js` (scOpenPanel, scRenderPanel, scRenderLineage) |
-| SC story generation prompt | `scripts/prompts.js` (buildPIStoryPrompt — used for both paths), `scripts/feature-canvas.js` (scBuildStoryPrompt) |
+| SC story generation prompt | `scripts/feature-canvas.js` (scBuildStoryPrompt — the ONLY story-generation function; grounds in the intake brief as primary source when a feature's `intakeBriefId` is non-null, feature name/why as secondary, per Requirement Agent redesign §10) |
 | SC story editing (title, statement, AC) | `scripts/feature-canvas.js` (scEditStoryTitle, scEditStoryStmt, scEditStoryAC) |
 | SC metric linking | `scripts/feature-canvas.js` (scShowLinkMetricModal, scConfirmLinkMetric) |
 | SC PI selection checkboxes, "Send to PI →" | `scripts/feature-canvas.js` (scTogglePiStory, scPanelSendToPI) |
@@ -329,7 +341,7 @@
 | SC batch modal | `scripts/feature-canvas.js` (scShowBatchModal, scModalProceed) |
 | SC export DOCX | `scripts/export-docx.js` (scDownloadStoriesDOCX, scBuildDOCX) |
 | SC PI planned badges | `scripts/feature-canvas.js` (scApplyPIPlannedBadges, scClearPIPlannedBadges) |
-| **PI Canvas** | |
+| **Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename)** | |
 | PI layout, board, squads, sprint config | `scripts/pi-planning.js`, `styles/14-pi-planning.css` |
 | PI tab entry | `scripts/pi-planning.js` (piOnTabEnter) |
 | PI generation (sprint assignment) | `scripts/pi-planning.js` (piGenerate), `scripts/prompts.js` (buildPIGeneratePrompt) |
@@ -401,8 +413,8 @@
 |---|---|---|---|
 | Caps → Story Canvas (KPI path) | `capability-canvas.js` | `ccSendToStoryCanvas()` | `scCanvas[]` |
 | Caps → Story Canvas (PI-first path) | `capability-canvas.js` | `ccSendToStoryCanvas()` | `scCanvas[]` (origin: 'pi') |
-| Stories → PI Canvas (panel) | `feature-canvas.js` | `scPanelSendToPI()` | `piPlan.backlog[]` |
-| Stories → PI Canvas (card nudge) | `feature-canvas.js` | `scPushStoriesToPI()` | `piPlan.backlog[]` |
+| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (panel) | `feature-canvas.js` | `scPanelSendToPI()` | `piPlan.backlog[]` |
+| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (card nudge) | `feature-canvas.js` | `scPushStoriesToPI()` | `piPlan.backlog[]` |
 | Market signals → Story Canvas | `market-intelligence.js` | `miSendToCanvas()` | `scCanvas[]` (origin: 'mi') |
 | Diagnostics → Story Canvas | `product-leak-analysis.js` | `laSendToStoryCanvas()` | `scCanvas[]` (origin: 'diagnostic') |
 | KPI tree regen → Evidence preserved | `diagnostic-view.js` | `dvMergeEvidenceOnRegen()` | `diagnosticSessions[]` |

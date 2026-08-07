@@ -3,23 +3,127 @@
 // Each entry: { metricName, stageLabel, stageId, capabilities:[{name,why,subCaps,features:[]}] }
 // capActiveMetricKey, capActiveCapIdx, capActiveSubCapIdx live in state.js
 
-// v9.17.01 — Requirement Agent read helper. raEnabled lives in state.js,
-// persisted per-session (session-store.js), and is now driven exclusively
-// by the Settings > Feature Modules "Requirement Agent" toggle (see
-// left-panel.js's applyFeats() — it syncs raEnabled=featRA and re-renders
-// CC on every settings save, so there is no in-CC control for this at all
-// anymore). When on: card checkboxes/bulk "Generate Features" selection are
-// hidden (see the 3 card-render blocks below and _ccActionBarHtml()) and the
-// right panel drops its own CTA entirely (see ccBuildFeatPanel()) — features
-// for a capability only ever arrive via a finalized Requirement Agent
-// conversation now, never a direct per-capability click. See
-// requirement-agent.js's raDefineRequirements().
-function _ccRaOn(){return typeof raEnabled!=='undefined'&&!!raEnabled;}
+// Requirement Agent redesign (Discovery-First Entry Point) — RA no longer
+// triggers from Capability Canvas at all (it triggers from Discovery Map
+// instead, see kpi-tree.js's continueCta). Capability Canvas's own card
+// checkboxes, bulk "Generate Features" bar, and per-capability "Generate
+// Features" CTA now behave identically regardless of raEnabled — there is
+// no RA-on suppression branch left in this file. raEnabled itself is
+// retained as a global (still gates Discovery Map's CTA relabel/reroute)
+// but is no longer read anywhere in this file.
 
 // CC card filter state: null | 'no-features' | 'features-generated' | 'selected'
 let ccCapFilter=new Set();
 // CC collapsed metric groups
 let ccCollapsedGroups=new Set();
+// §8.2 — view-only expand/collapse state for the "Requirement Agent" Origin
+// sub-list (chevron/label click only, never touches ccCapFilter membership).
+let ccOriginRaExpanded=false;
+
+// ══════════════════════════════════════════════════════════════════════════
+// Origin filter — "Requirement Agent" nested value (§8.2). Extends the
+// existing Origin filter (origin-kpi/origin-doc/origin-custom/origin-mi/
+// origin-diag, all Set-membership tokens on ccCapFilter) with a sixth value
+// plus a nested per-RQ sub-list — a genuinely new tri-state parent/child
+// checkbox pattern for this codebase (confirmed via code research: no
+// existing precedent, the only other indeterminate-checkbox usage in this
+// app is flat "select-all" master checkboxes, an unrelated mechanism).
+// Filter membership keys off conv.intakeBriefId directly (§5.2) — this
+// sidesteps the whole "how is origin stored for capabilities" question
+// entirely (confirmed: Capability Canvas has no stored origin field on
+// capabilities at all; manually-added ones carry a `_manual:true` boolean
+// instead, "Custom plan" being a derived display label, not a stored value).
+// ══════════════════════════════════════════════════════════════════════════
+function _ccFinalizedRaConvs(){
+  return (typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+}
+// Shared HTML for the popover's "Requirement Agent" row + nested RQ
+// sub-list — used verbatim at both card-grid render sites (All Caps view +
+// single-metric view) so they can never drift apart on this, same
+// convention _ccActionBarHtml() already established.
+function _ccOriginRaFilterHtml(){
+  const convs=_ccFinalizedRaConvs();
+  if(!convs.length)return''; // no finalized RQs yet — nothing to filter to
+  const checkedRqTokens=convs.filter(function(c){return ccCapFilter.has('origin-ra-rq:'+c.id);});
+  const parentChecked=ccCapFilter.has('origin-ra');
+  // QA issue #5 — always show the RQ sub-list, even with only one finalized
+  // RQ, for a uniform experience regardless of count (previously suppressed
+  // at exactly 1 RQ, per the original prototype's State C — reversed per
+  // explicit feedback).
+  const showSubList=ccOriginRaExpanded||parentChecked||checkedRqTokens.length>0;
+  const subListHtml=`<div class="cc-origin-ra-sublist" id="cc-origin-ra-sublist" style="display:${showSubList?'block':'none'};padding-left:20px;border-left:1px dashed var(--divider);margin-left:20px;">`
+    +convs.map(function(c){
+      const cnt=(c.createdCapabilityKeys||[]).length;
+      const isChecked=ccCapFilter.has('origin-ra-rq:'+c.id);
+      return `<label class="fc-filter-row" style="font-size:11px;" onclick="event.stopPropagation();"><input type="checkbox" ${isChecked?'checked':''} onchange="ccToggleOriginRaChild('${e(c.id)}')"> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+    }).join('')
+    +`</div>`;
+  return `<label class="fc-filter-row" id="cc-origin-ra-row" onclick="event.stopPropagation();ccToggleOriginRaExpand()"><input type="checkbox" id="cc-origin-ra-chk" ${parentChecked?'checked':''} onclick="event.stopPropagation();ccToggleOriginRaParent()"> <i class="ti ti-message-2" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Requirement Agent <i class="ti ti-chevron-${showSubList?'down':'right'}" style="font-size:9px;margin-left:auto;" aria-hidden="true"></i></label>`
+    +subListHtml;
+}
+function ccToggleOriginRaParent(){
+  const dropWasOpen=(function(){const d=document.getElementById('cc-cap-filter-drop');return d&&d.classList.contains('open');})();
+  const convs=_ccFinalizedRaConvs();
+  if(ccCapFilter.has('origin-ra')){
+    ccCapFilter.delete('origin-ra');
+    convs.forEach(function(c){ccCapFilter.delete('origin-ra-rq:'+c.id);});
+  } else {
+    ccCapFilter.add('origin-ra');
+    convs.forEach(function(c){ccCapFilter.add('origin-ra-rq:'+c.id);});
+    ccOriginRaExpanded=true;
+  }
+  ccSelectedCapIds.clear();
+  _ccRerenderCcAfterFilterChange(dropWasOpen);
+}
+function ccToggleOriginRaChild(convId){
+  const dropWasOpen=(function(){const d=document.getElementById('cc-cap-filter-drop');return d&&d.classList.contains('open');})();
+  const tok='origin-ra-rq:'+convId;
+  if(ccCapFilter.has(tok))ccCapFilter.delete(tok);else ccCapFilter.add(tok);
+  const convs=_ccFinalizedRaConvs();
+  const checkedCount=convs.filter(function(c){return ccCapFilter.has('origin-ra-rq:'+c.id);}).length;
+  if(checkedCount===0||checkedCount<convs.length)ccCapFilter.delete('origin-ra'); // 0 checked -> fully unchecked; partial -> indeterminate (both: parent token absent)
+  else ccCapFilter.add('origin-ra'); // every RQ checked -> parent fully checked
+  ccSelectedCapIds.clear();
+  _ccRerenderCcAfterFilterChange(dropWasOpen);
+}
+function ccToggleOriginRaExpand(){
+  ccOriginRaExpanded=!ccOriginRaExpanded;
+  _ccRerenderCcAfterFilterChange(true);
+}
+function _ccRerenderCcAfterFilterChange(dropWasOpen){
+  if(capActiveMetricKey===null)ccRenderAllCaps();
+  else ccRenderMainContent();
+  if(dropWasOpen){
+    const d=document.getElementById('cc-cap-filter-drop');
+    if(d){
+      d.classList.add('open');
+      document.removeEventListener('mousedown',_ccFilterDropOutside);
+      setTimeout(()=>document.addEventListener('mousedown',_ccFilterDropOutside),0);
+    }
+  }
+  _ccApplyOriginRaIndeterminate();
+}
+// input.indeterminate can only be set via the DOM property, never an HTML
+// attribute — applied as a small post-render step, same reasoning as every
+// other indeterminate checkbox in this codebase (e.g. ccUpdateActionBar()'s
+// "select all" checkbox).
+function _ccApplyOriginRaIndeterminate(){
+  const chk=document.getElementById('cc-origin-ra-chk');
+  if(!chk)return;
+  const convs=_ccFinalizedRaConvs();
+  const checkedCount=convs.filter(function(c){return ccCapFilter.has('origin-ra-rq:'+c.id);}).length;
+  chk.indeterminate=checkedCount>0&&checkedCount<convs.length;
+}
+// Whether a capability matches the "Requirement Agent" origin filter as
+// currently configured — RQ-agnostic (any intakeBriefId) if the parent is
+// checked with no specific RQ narrowing, else scoped to whichever RQs are
+// individually checked.
+function _ccCapMatchesOriginRa(cap){
+  if(!cap||!cap.intakeBriefId)return false;
+  const checkedRqIds=Array.from(ccCapFilter).filter(function(t){return t.indexOf('origin-ra-rq:')===0;}).map(function(t){return t.slice('origin-ra-rq:'.length);});
+  if(checkedRqIds.length)return checkedRqIds.indexOf(cap.intakeBriefId)>=0;
+  return ccCapFilter.has('origin-ra'); // parent checked alone, no RQ narrowing (or single-RQ product) — RQ-agnostic
+}
 
 function ccSetCapFilter(val){
   // Capture dropdown open state before re-render destroys the DOM
@@ -39,6 +143,7 @@ function ccSetCapFilter(val){
       setTimeout(()=>document.addEventListener('mousedown',_ccFilterDropOutside),0);
     }
   }
+  _ccApplyOriginRaIndeterminate();
 }
 
 function ccToggleGroup(metricKey){
@@ -157,6 +262,24 @@ function ccGetAllL1Metrics(){
     }
   });
   return out;
+}
+
+// Requirement Agent redesign (Discovery-First Entry Point, §8.1) — called
+// right after switchTab('cc') at the end of raRunFinalizeSequence(), since
+// switchTab() itself takes no target-metric parameter. Auto-selects the
+// first populated metric (value chain stage order, then metric order within
+// stage — same ordering ccGetAllL1Metrics() already produces) instead of
+// leaving the PM on CC's generic "select a metric" empty state. No-op if no
+// metric has any capabilities yet.
+function ccSelectFirstPopulatedMetric(){
+  var metrics=ccGetAllL1Metrics();
+  for(var i=0;i<metrics.length;i++){
+    var entry=capStore[metrics[i].metricKey];
+    if(entry&&entry.capabilities&&entry.capabilities.length){
+      ccMNSelectMetric(metrics[i].metricKey);
+      return;
+    }
+  }
 }
 
 function ccCountGenerated(){
@@ -1217,7 +1340,7 @@ function ccRenderAllCaps(){
             <span class="cc-card-mlbl">${_acMetricLbl}</span>
             <div class="cc-card-actions">
               ${_canEditCcCard1?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-              ${_ccRaOn()?'':`<div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard1?'':' cc-card-chk-disabled'}" ${_canEditCcCard1?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_acChkContent}</div>`}
+              <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard1?'':' cc-card-chk-disabled'}" ${_canEditCcCard1?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_acChkContent}</div>
               ${_canEditCcCard1?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
             </div>
           </div>
@@ -1277,7 +1400,7 @@ function ccRenderAllCaps(){
               <span class="cc-card-mlbl" style="color:${miColor};">Market Intel</span>
               <div class="cc-card-actions">
                 ${_canEditCcCard2?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(metricKey)}',${ci})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-                ${_ccRaOn()?'':`<div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard2?'':' cc-card-chk-disabled'}" ${_canEditCcCard2?`onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})"`:''}>${_acChkContent}</div>`}
+                <div class="cc-card-chk${_acChkSel?' cc-card-chk-sel':''}${_canEditCcCard2?'':' cc-card-chk-disabled'}" ${_canEditCcCard2?`onclick="event.stopPropagation();ccToggleCapSelect('${e(metricKey)}',${ci})"`:''}>${_acChkContent}</div>
                 ${_canEditCcCard2?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(metricKey)}',${ci})" title="Remove"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>`:''}
               </div>
             </div>
@@ -1328,7 +1451,7 @@ function ccRenderAllCaps(){
           ${(ccCapFilter.size>0)?`<span id="cc-filter-badge" style="display:inline-flex;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;"><i class="ti ti-filter" style="font-size:9px;"></i> ${ccCapFilter.size} filter${ccCapFilter.size!==1?'s':''} <span onclick="ccSetCapFilter(null)" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span></span>`:''}
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
-          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
+          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>${_ccOriginRaFilterHtml()}<div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
           <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
           ${ccAddCapBtnHTML('cc-tb-btn-add')}
         </div>
@@ -1482,7 +1605,7 @@ function ccRenderMainContent(){
         <span class="cc-card-mlbl">${_metricLbl}</span>
         <div class="cc-card-actions">
           ${_canEditCcCard3?`<button class="cc-card-pencil" onclick="event.stopPropagation();ccShowEditCapModal('${e(_cardKey)}',${_cardIdx})" title="Edit capability" aria-label="Edit capability"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
-          ${_ccRaOn()?'':`<div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}${_canEditCcCard3?'':' cc-card-chk-disabled'}" ${_canEditCcCard3?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_chkContent3}</div>`}
+          <div class="cc-card-chk${_chkSel3?' cc-card-chk-sel':''}${_canEditCcCard3?'':' cc-card-chk-disabled'}" ${_canEditCcCard3?`onclick="event.stopPropagation();ccToggleCapSelect('${e(_cardKey)}',${_cardIdx})"`:''}>${_chkContent3}</div>
           ${_canEditCcCard3?`<button class="cc-card-remove" onclick="event.stopPropagation();ccRemoveCapability('${e(_cardKey)}',${_cardIdx})" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>`:''}
         </div>
       </div>
@@ -1531,7 +1654,7 @@ function ccRenderMainContent(){
           ${(ccCapFilter.size>0)?`<span id="cc-filter-badge" style="display:inline-flex;font-size:9px;font-weight:700;background:var(--card-purple);color:var(--purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 8px;align-items:center;gap:5px;"><i class="ti ti-filter" style="font-size:9px;"></i> ${ccCapFilter.size} filter${ccCapFilter.size!==1?'s':''} <span onclick="ccSetCapFilter(null)" style="cursor:pointer;color:var(--t3);margin-left:2px;" title="Clear filter">&#x2715;</span></span>`:''}
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
-          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label><div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
+          <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>${_ccOriginRaFilterHtml()}<div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
           <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
           ${ccAddCapBtnHTML('cc-tb-btn-add')}
         </div>
@@ -1576,16 +1699,6 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   const totalOnCanvas=scCanvas?scCanvas.length:0;
   let featHtml='';
   if(!features){
-    // v9.16 — RA-on: zero CTA, text only. Features for this capability only
-    // ever arrive via a finalized Requirement Agent conversation now — the
-    // per-capability "Generate Features" empty-state CTA below is an
-    // RA-off-only affordance.
-    if(_ccRaOn()){
-      featHtml=`<div class="cc-feat-panel-empty" style="flex:1;">
-        <i class="ti ti-layout-grid" style="font-size:24px;color:var(--label);margin-bottom:8px;" aria-hidden="true"></i>
-        <div style="font-size:12px;color:var(--t3);max-width:200px;line-height:1.5;">Features will be populated once Requirement Agent is finalized for a release covering this capability.</div>
-      </div>`;
-    } else {
     const _canEditCcEmptyGen=(typeof canEditSession!=='function')||canEditSession();
     featHtml=`<div class="cc-feat-panel-empty" style="flex:1;">
       <i class="ti ti-layout-grid" style="font-size:24px;color:var(--label);margin-bottom:8px;" aria-hidden="true"></i>
@@ -1593,7 +1706,6 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       <div style="font-size:11px;color:var(--t3);max-width:180px;line-height:1.4;margin-top:4px;margin-bottom:14px;">AI will generate a feature set for this capability.</div>
       ${_canEditCcEmptyGen?`<button class="gen-btn" style="font-size:11px;padding:8px 14px;width:auto;" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},'',null,{triggerEl:this})"><i class="ti ti-sparkles" style="font-size:11px;" aria-hidden="true"></i> Generate Features</button>`:''}
     </div>`;
-    }
   } else {
     const fromPlan=isPIFirst&&features.length>0&&features.every(f=>!f._aiAdded);
     const mixedPlan=isPIFirst&&features.some(f=>f._aiAdded)&&features.some(f=>!f._aiAdded);
@@ -1611,15 +1723,8 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       const fid=typeof scMakeFeatureId==='function'?scMakeFeatureId(f.metric,f.cap+(f.subCap?'/'+f.subCap:''),f.name):'';
       const isInSC=fid&&scCanvas&&scCanvas.find(x=>x.id===fid);
       const _canEditCcFeatItem=(typeof canEditSession!=='function')||canEditSession();
-      // RA-on features are always pushed straight into scCanvas at Finalize
-      // (isInSC is always true for them), so the legacy checkbox-toggle /
-      // "Remove from Feature Canvas?" warn-strip behavior must be fully
-      // bypassed here — per spec, RA-generated features stay individually
-      // editable inline via the existing ccEditFeatName()/ccEditFeatWhy()
-      // functions, unchanged, with no confirmation dialog ever appearing.
-      const _raOnItem=(typeof _ccRaOn==='function')&&_ccRaOn();
-      const _rowClickable=_canEditCcFeatItem&&!_raOnItem;
-      const _canEditThisFeat=_canEditCcFeatItem&&(_raOnItem||!isInSC);
+      const _rowClickable=_canEditCcFeatItem;
+      const _canEditThisFeat=_canEditCcFeatItem&&!isInSC;
       featHtml+=`<div class="cc-feat-item${isInSC?' cc-feat-item-insc':isSel?' cc-feat-item-sel':''}" ${_rowClickable?`onclick="ccToggleFeatPanel(${capIdx},${fi})" style="cursor:pointer;"`:'style="cursor:default;"'}>
         <div class="cc-feat-item-chk${isInSC?' done':isSel?' sel':''}${_rowClickable?'':' cc-feat-item-chk-disabled'}" ${_rowClickable?`onclick="event.stopPropagation();ccToggleFeatPanel(${capIdx},${fi})"`:''}>
           ${isInSC||isSel?'<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}
@@ -1683,7 +1788,7 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
   <div class="cc-feat-panel-scroll">
     ${featHtml}
   </div>
-  ${(!_ccRaOn()&&((typeof canEditSession!=='function')||canEditSession()))?`<div class="cc-chat-bar" style="flex-shrink:0;">
+  ${((typeof canEditSession!=='function')||canEditSession())?`<div class="cc-chat-bar" style="flex-shrink:0;">
     <div class="cc-chat-lbl">${features?(isPIFirst?'Add AI features':'Refine features'):'Generate features with context'}</div>
     <div class="cc-chat-row">
       <textarea class="cc-chat-input" id="cc-feat-refine-txt" rows="2" placeholder="${features?(isPIFirst?'e.g. Add a feature for guest checkout...':'e.g. Focus on mobile only, avoid enterprise features...'):'e.g. Focus on self-serve setup, avoid enterprise-only features...'}"></textarea>
@@ -1695,7 +1800,7 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       </div>
     </div>
   </div>`:''}
-  ${(!_ccRaOn()&&features)?`<div class="cc-panel-footer-split">
+  ${features?`<div class="cc-panel-footer-split">
     <div class="cc-panel-split-status">${statusTxt}</div>
     <div class="cc-panel-split-cta-wrap">
       <button class="cc-panel-split-cta" onclick="ccSendToStoryCanvas()" ${selectedCount===0?'disabled':''}>
@@ -1781,9 +1886,19 @@ async function ccGenerateFeatures(refinement){
     }
     const _capOrSubName=isSubCap?subCapName:cap.name;
     const _signal=startAiGen(`Features for "${_capOrSubName}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`);
+    // §6.5 — if this capability has a non-null intakeBriefId (RA-created),
+    // ground feature generation in that conversation's brief content for
+    // THIS capability specifically, as the primary driver. Sub-capabilities
+    // never carry intakeBriefId (RA only creates top-level capabilities), so
+    // this only ever applies when !isSubCap. If intakeBriefId is null
+    // (manually-created capability, or RA-off), behavior is completely
+    // unchanged - falls through to the existing name+description-only prompt.
+    const _capFeatPrompt=(!isSubCap&&cap.intakeBriefId)
+      ?buildRAFeatureGenPrompt(_ctxFC1,nsm,entry.stageLabel,entry.metricName,cap.name,cap.intakeBriefId,refinement)
+      :buildCapFeaturesPrompt(_ctxFC1,nsm,entry.stageLabel,entry.metricName,cap.name,subCapName,refinement);
     const txt=await callAPI(
       'You are a senior product strategist. Specific, actionable, product-native. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
-      buildCapFeaturesPrompt(_ctxFC1,nsm,entry.stageLabel,entry.metricName,cap.name,subCapName,refinement),
+      _capFeatPrompt,
       2000,
       _signal,
       null,
@@ -1802,9 +1917,17 @@ async function ccGenerateFeatures(refinement){
     // missing/malformed f.hypothesis by returning null — a broken
     // hypothesis sub-object never fails the whole feature-generation
     // response (verified requirement, spec §6.5 Finding J).
+    // QA issue #4 — carry the parent capability's RA provenance down onto
+    // each newly generated feature. Confirmed regression: this was never
+    // set here, silently breaking the Origin/Brief filters (which key off
+    // feature.intakeBriefId) for every feature generated from an RA-created
+    // capability. null for manually-created capabilities/sub-caps, exactly
+    // as before.
     cap.featStore[featKey]=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,
       metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:subCapName,
-      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null}));
+      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null,
+      intakeBriefId:(!isSubCap&&cap.intakeBriefId)?cap.intakeBriefId:null,
+      rqNumber:(!isSubCap&&cap.rqNumber)?cap.rqNumber:null}));
     // Only re-render the main area / clear the refine input if this
     // attempt still owns the feature panel — otherwise the user has since
     // navigated to a different capability and this stale success should
@@ -1928,7 +2051,11 @@ function ccSendToStoryCanvas(){
         // scCanvas entry must never share a reference with capStore's own
         // copy, since a later regeneration on the SAME capability could
         // still mutate/replace capStore's copy independently.
-        outcomeHypothesis:(f.outcomeHypothesis&&typeof cloneOutcomeHypothesis==='function')?cloneOutcomeHypothesis(f.outcomeHypothesis):null});
+        outcomeHypothesis:(f.outcomeHypothesis&&typeof cloneOutcomeHypothesis==='function')?cloneOutcomeHypothesis(f.outcomeHypothesis):null,
+        // QA issue #4 — carry RA provenance through to Feature Canvas, same
+        // fields capStore's own copy now carries (fixed at the feature-
+        // generation call sites above).
+        intakeBriefId:f.intakeBriefId||null,rqNumber:f.rqNumber||null});
     }
   });
   fcUpdateTabBadge();
@@ -3220,9 +3347,14 @@ async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,cap
   try{
     const _signal=startAiGen(`Features for "${cap.name}" are being generated. Leaving now discards them, you'll need to regenerate from scratch.`);
     ccSetGenAllBtnDisabled(true);
+    // §6.5 — same intakeBriefId branch as the single-capability generation
+    // path above: ground in the RA brief when present, unchanged otherwise.
+    const _capFeatPrompt2=cap.intakeBriefId
+      ?buildRAFeatureGenPrompt(_ctxFC2,nsm,entry.stageLabel,entry.metricName,cap.name,cap.intakeBriefId,refinement)
+      :buildCapFeaturesPrompt(_ctxFC2,nsm,entry.stageLabel,entry.metricName,cap.name,null,refinement);
     const txt=await callAPI(
       'You are a senior product strategist. Specific, actionable, product-native. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
-      buildCapFeaturesPrompt(_ctxFC2,nsm,entry.stageLabel,entry.metricName,cap.name,null,refinement),
+      _capFeatPrompt2,
       2000,
       _signal,
       modelOverride,
@@ -3233,8 +3365,11 @@ async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,cap
     try{parsed=JSON.parse(clean);}catch(pe){const s=clean.indexOf('{');const l=clean.lastIndexOf('}');if(s>=0&&l>s){try{parsed=JSON.parse(clean.substring(s,l+1));}catch(pe2){throw new Error('Could not parse features.');}}}
     if(!parsed||!parsed.features)throw new Error('No features returned.');
     if(!cap.featStore)cap.featStore={};
+    // QA issue #4 — same RA-provenance carry-through as the single-capability
+    // generation path above (ccGenerateFeaturesForCapClick).
     const newFeats=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null,
-      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null}));
+      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null,
+      intakeBriefId:cap.intakeBriefId||null,rqNumber:cap.rqNumber||null}));
     if(isPIFirst&&cap.featStore[featKey]&&cap.featStore[featKey].length>0){
       // Path B: ADD to existing features, don't replace
       cap.featStore[featKey]=[...cap.featStore[featKey],...newFeats];
@@ -3493,22 +3628,14 @@ function ccToggleCapSelect(metricKey,capIdx){
   ccUpdateActionBar();
 }
 
-// v9.16 — the cc-action-bar's content depends on the Requirement Agent
-// toggle: bulk-selection bar (today's behavior) when off, a single always-
-// enabled "Define Requirements" CTA in the SAME physical slot when on.
 // Kept as one shared function called from both card-grid render sites
 // (All Caps view + single-metric view) so the two can never drift apart on
 // this — they already shared identical markup before this change (verified
-// via grep, both blocks byte-identical).
+// via grep, both blocks byte-identical). No longer branches on Requirement
+// Agent — RA no longer triggers from Capability Canvas at all (see
+// kpi-tree.js's Discovery Map CTA), so this bar always shows the bulk-
+// selection controls.
 function _ccActionBarHtml(){
-  if(_ccRaOn()){
-    return `<div class="cc-action-bar" id="cc-action-bar">
-      <div class="sc-action-left"></div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="cc-gen-sel-btn" id="cc-define-req-btn" onclick="raDefineRequirements()"><i class="ti ti-clipboard-text" style="font-size:11px;" aria-hidden="true"></i> Define Requirements</button>
-      </div>
-    </div>`;
-  }
   return `<div class="cc-action-bar" id="cc-action-bar">
     <div class="sc-action-left">
       <label class="sc-select-all-toggle" id="cc-select-all-wrap">
@@ -3545,11 +3672,6 @@ function ccUpdateActionBar(){
   const _canEditCc=(typeof canEditSession!=='function')||canEditSession();
   bar.style.display=_canEditCc?'':'none';
   if(!_canEditCc)return;
-  // v9.16 — RA-on bar is the static "Define Requirements" CTA rendered by
-  // _ccActionBarHtml(): always enabled, never selection-dependent, so none
-  // of the selection-sync logic below applies (there is no #cc-select-all-chk
-  // / #cc-gen-sel-btn in this bar's markup at all).
-  if(_ccRaOn())return;
   const visibleKeys=new Set(ccGetVisibleCapKeys());
   const n=Array.from(ccSelectedCapIds).filter(k=>visibleKeys.has(k)).length;
   const total=visibleKeys.size;
@@ -3600,7 +3722,8 @@ function _ccKpiCapPassesFilter(cap,entry,metricKey){
   const _wOriginCustom=ccCapFilter.has('origin-custom');
   const _wOriginMi=ccCapFilter.has('origin-mi');
   const _wOriginDiag=ccCapFilter.has('origin-diag');
-  const _hasOriginFilter=_wOriginKpi||_wOriginDoc||_wOriginCustom||_wOriginMi||_wOriginDiag;
+  const _wOriginRa=ccCapFilter.has('origin-ra')||Array.from(ccCapFilter).some(function(t){return t.indexOf('origin-ra-rq:')===0;});
+  const _hasOriginFilter=_wOriginKpi||_wOriginDoc||_wOriginCustom||_wOriginMi||_wOriginDiag||_wOriginRa;
   if(_hasOriginFilter){
     const _isDoc=!!(entry&&entry._docGrounded);
     const _isCustom=!!(cap._manual||(entry&&entry._piFirst));
@@ -3612,12 +3735,18 @@ function _ccKpiCapPassesFilter(cap,entry,metricKey){
     if(_wOriginMi&&_isMI)return true;
     if(_wOriginDiag&&_isDiag)return true;
     if(_wOriginKpi&&_isKpi)return true;
+    if(_wOriginRa&&_ccCapMatchesOriginRa(cap))return true;
     return false;
   }
   return true;
 }
-// _ccPiCapPassesFilter: PI caps bypass origin filter — features filter only
+// _ccPiCapPassesFilter: PI caps bypass the 5 pre-existing origin values —
+// features filter always applies; the new "Requirement Agent" origin value
+// (§8.2/§9) applies here too, since RA-created capabilities live in pi||
+// capStore entries and render through this path, not _ccKpiCapPassesFilter.
 function _ccPiCapPassesFilter(cap){
+  const _wOriginRa=ccCapFilter.has('origin-ra')||Array.from(ccCapFilter).some(function(t){return t.indexOf('origin-ra-rq:')===0;});
+  if(_wOriginRa&&!_ccCapMatchesOriginRa(cap))return false;
   if(!ccCapFilter.size)return true;
   const hasFeat=!!(cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0);
   const _wWith=ccCapFilter.has('with-features');

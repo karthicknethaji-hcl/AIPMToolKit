@@ -41,8 +41,16 @@ function applyFeats(){
   if(featDiag&&productLeakAnalysis&&productLeakAnalysis.length>0){
     if(laTabEl)laTabEl.style.display='';
   }
-  // Restore bottom bar CTA if on mm tab, KPI tree exists, and bar isn't already there
-  if(featDiag&&gData&&curTab==='mm'&&!document.getElementById('diag-action-bar')){
+  // Restore/refresh bottom bar CTA if on mm tab and KPI tree exists. Always
+  // re-renders (renderDiagnosticActionBar() removes+rebuilds fresh, so this
+  // is safe/idempotent) rather than skipping when the bar already exists —
+  // the CTA's label/route depends on the live raEnabled value (see
+  // kpi-tree.js's _dmRaOn), so a settings save that flips raEnabled while
+  // Discovery Map is already on screen must force a real re-render here,
+  // not silently leave the bar showing its pre-toggle CTA (confirmed
+  // regression: the old "!document.getElementById(...)" guard blocked
+  // exactly this case).
+  if(featDiag&&gData&&curTab==='mm'){
     renderDiagnosticActionBar();
   }
   // Market Intelligence: hide/show tab and mi-gated elements
@@ -64,33 +72,33 @@ function applyFeats(){
       piTabEl.classList.add('revealed');
     }
   }
-  // Outcome Verification Loop (v9.10.00 feedback item 8): Outcome Pulse
-  // reveals only once BOTH the feature flag is on AND a Discovery Map has
-  // been generated (gData exists) — corrected from the original Phase C
-  // build, which reasoned this should reveal purely on the feature flag
-  // since the tab is "meaningful to view even with zero hypotheses
-  // logged." That reasoning didn't account for gData itself being absent
-  // pre-generation — without a Discovery Map, Outcome Breakdown has no
-  // value-chain stages to derive rows from at all, so the tab would show
-  // an empty/broken screen, not a legitimately-empty one. Matches PI's
-  // existing "only reveal once real data exists" pattern rather than
-  // Market Intelligence's "reveal purely on flag" pattern.
+  // Outcome Verification Loop (v9.10.00 feedback item 8, revised): Outcome
+  // Pulse reveals only once the feature flag is on, a Discovery Map has
+  // been generated (gData exists), AND at least one feature exists in
+  // Feature Canvas (scCanvas.length>0) — without a Discovery Map, Outcome
+  // Breakdown has no value-chain stages to derive rows from; without any
+  // features, there is nothing yet to attach an outcome hypothesis to, so
+  // the tab would show a legitimately-empty-looking but functionally
+  // useless screen. Matches PI's existing "only reveal once real data
+  // exists" pattern rather than Market Intelligence's "reveal purely on
+  // flag" pattern.
   const opTabEl=document.getElementById('tab-op');
   if(opTabEl){
-    if(!featOutcomePulse||typeof gData==='undefined'||!gData){
+    const _hasFcContent=typeof scCanvas!=='undefined'&&Array.isArray(scCanvas)&&scCanvas.length>0;
+    if(!featOutcomePulse||typeof gData==='undefined'||!gData||!_hasFcContent){
       opTabEl.style.display='none';
       if(curTab==='op')switchTab('mm');
     } else {
       opTabEl.style.display='';
     }
   }
-  // v9.17.01 — Requirement Agent's Capability Canvas "Define Requirements"
-  // mode. There is no toolbar switch in CC anymore (that was the wrong
-  // location, flagged and removed) — this Settings > Feature Modules
-  // toggle is now the single, immediate-effect control for it, matching
-  // every other module toggle's pattern. raEnabled (state.js) stays the
-  // per-session value _ccRaOn() actually reads; syncing it here on every
-  // settings save is what makes the toggle take effect without a reload.
+  // Requirement Agent redesign (Discovery-First Entry Point) — raEnabled now
+  // only gates Discovery Map's "Define Requirements" CTA relabel/reroute
+  // (kpi-tree.js's renderDiagnosticActionBar()); Capability Canvas no longer
+  // reads raEnabled at all. Settings > Feature Modules remains the single,
+  // immediate-effect control for the toggle, matching every other module
+  // toggle's pattern; syncing it here on every settings save is what makes
+  // it take effect without a reload.
   if(typeof raEnabled!=='undefined' && raEnabled!==featRA){
     raEnabled=featRA;
     if(typeof capActiveMetricKey!=='undefined'){

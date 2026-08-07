@@ -938,7 +938,7 @@ function _spDesc(n) {
   }[n]||'';
 }
 function _spTabLabel() {
-  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'PI Canvas',mi:'Market Intelligence',la:'Experiment Canvas'};
+  const labels = {home:'Home',mm:'Discovery Map',cc:'Capability Canvas',sc:'Story Canvas',pi:'Release Canvas',mi:'Market Intelligence',la:'Experiment Canvas'};
   return labels[curTab] || 'App';
 }
 

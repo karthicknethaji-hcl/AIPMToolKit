@@ -51,12 +51,12 @@ const appSettings={
   // instruction otherwise — this is a genuinely new tab, not a fix to
   // existing behavior.
   featOutcomePulse:true,
-  // v9.17.01 — Requirement Agent's Capability Canvas "Define Requirements"
-  // mode (raEnabled — see capability-canvas.js's _ccRaOn()). Default ON,
-  // matching the product decision made for this flag under its earlier
-  // (now-removed) name in v9.16. Not to be confused with the unrelated,
-  // now-reverted Guided Launch naming collision — this flag exists solely
-  // for the real, global Requirement Agent feature (requirement-agent.js).
+  // Requirement Agent's Discovery Map "Define Requirements" mode (raEnabled
+  // — gates the DM CTA relabel/reroute, kpi-tree.js). Default ON, matching
+  // the product decision made for this flag under its earlier name in v9.16.
+  // Not to be confused with the unrelated, now-reverted Guided Launch naming
+  // collision — this flag exists solely for the real, global Requirement
+  // Agent feature (requirement-agent.js).
   featRA:true,
   // Section 3 — Output Depth (wired into prompts in v6.76)
   maxCaps:4,

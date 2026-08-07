@@ -893,13 +893,22 @@ function _ssApplySnapshotFields(s) {
   // no transformation, confirmed against both places that populate it.
   if (s.ddRows !== undefined && typeof window !== 'undefined') window._ddRows = s.ddRows;
   if (s.mmBannerCollapsed !== undefined) mmBannerCollapsed = s.mmBannerCollapsed;
-  // v9.16 — Requirement Agent. Unconditional restore (old sessions without
-  // it get harmless defaults, matching every other field's own convention
-  // above). requirement-agent.js's own raApplyRestoredSnapshot()-equivalent
-  // rendering is triggered by the caller (sessionStoreRestore(), below)
-  // once the DOM is ready — this function stays pure/global-only per its
-  // own documented contract.
-  if (s.raEnabled !== undefined) raEnabled = s.raEnabled;
+  // v9.16 — Requirement Agent. Confirmed bug (surfaced by the Discovery-
+  // First redesign, where DM is now RA's primary trigger point): raEnabled
+  // reflects the GLOBAL, company-wide Settings > Feature Modules toggle
+  // (appSettings.featRA), not genuine per-session state — but this restore
+  // used to trust the session's own PERSISTED snapshot value unconditionally,
+  // which could be stale (e.g. saved back when the company had RA off,
+  // then the toggle was switched on — resuming that old session would
+  // still show RA off, contradicting the current, authoritative setting).
+  // The live appSettings.featRA value now always wins when available;
+  // the persisted snapshot value is only a fallback for the (rare) case
+  // appSettings hasn't loaded yet at restore time.
+  if (typeof appSettings !== 'undefined' && appSettings && typeof appSettings.featRA !== 'undefined') {
+    raEnabled = !!appSettings.featRA;
+  } else if (s.raEnabled !== undefined) {
+    raEnabled = s.raEnabled;
+  }
   if (s.raConversations !== undefined) raConversations = s.raConversations;
   if (s.raLastOpenConversationId !== undefined) raLastOpenConversationId = s.raLastOpenConversationId;
   // Restore protoStore — unconditional, old sessions without it get empty {}
@@ -1573,12 +1582,12 @@ function _sessionStoreBuildSnapshot(opts) {
     // glVersionCount's own initial value for a session that never touched
     // Guided Launch.
     glVersionCount: (typeof glVersionCount !== 'undefined') ? glVersionCount : 1,
-    // v9.16 — Requirement Agent. raConversations lives entirely inside the
-    // ACTIVE session's own snapshot (unlike Guided Launch's dedicated
-    // mt_sessions row per conversation) — one conversation = one release
-    // scope, but many conversations share the one Capability Canvas/session
-    // they're both scoped to. raEnabled is the per-session toggle read by
-    // capability-canvas.js's _ccRaOn().
+    // Requirement Agent. raConversations lives entirely inside the ACTIVE
+    // session's own snapshot (unlike Guided Launch's dedicated mt_sessions
+    // row per conversation) — one conversation = one release scope, but many
+    // conversations share the one Capability Canvas/session they're both
+    // scoped to. raEnabled is the per-session toggle that gates Discovery
+    // Map's "Define Requirements" CTA relabel/reroute (kpi-tree.js).
     raEnabled: (typeof raEnabled !== 'undefined') ? raEnabled : false,
     raConversations: (typeof raConversations !== 'undefined') ? raConversations : [],
     raLastOpenConversationId: (typeof raLastOpenConversationId !== 'undefined') ? raLastOpenConversationId : null
@@ -1605,7 +1614,7 @@ function _ssComputeLastStage() {
   // as well, so this branch only fires for legacy sessions that actually
   // used the old chat.
   if (typeof glStatus !== 'undefined' && glStatus === 'active' && typeof glMessages !== 'undefined' && glMessages && glMessages.length > 0) return 'Guided Launch';
-  if (typeof piPlan !== 'undefined' && piPlan) return 'PI Canvas';
+  if (typeof piPlan !== 'undefined' && piPlan) return 'Release Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });
     if (hasStories) return 'Story Canvas';
@@ -1820,7 +1829,10 @@ function _ssRevealTabs(s, meta) {
   // the same combined condition now enforced in applyFeats(): feature
   // flag on AND a Discovery Map (s.gData) present in the resumed
   // snapshot.
-  if (s.gData && typeof appSettings !== 'undefined' && appSettings && appSettings.featOutcomePulse) {
+  // Revised: also require at least one Feature Canvas feature (s.scCanvas)
+  // to exist before revealing — matches the same combined condition now
+  // enforced in applyFeats() (left-panel.js).
+  if (s.gData && typeof appSettings !== 'undefined' && appSettings && appSettings.featOutcomePulse && Array.isArray(s.scCanvas) && s.scCanvas.length > 0) {
     const tabOp = document.getElementById('tab-op');
     if (tabOp) tabOp.style.display = '';
   }

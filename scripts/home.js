@@ -1469,7 +1469,7 @@ function _homeRenderSessionCard(sess, isLastActive){
 
 function _homeGetStagePill(stage){
   const map={
-    'PI Canvas':    ['home-sess-pill-stage-pi','ti-calendar-event'],
+    'Release Canvas':    ['home-sess-pill-stage-pi','ti-calendar-event'],
     'Story Canvas': ['home-sess-pill-stage-sc','ti-list-details'],
     'Feature Canvas':['home-sess-pill-stage-fc','ti-writing'],
     'Capability Canvas':['home-sess-pill-stage-cc','ti-layers-subtract'],

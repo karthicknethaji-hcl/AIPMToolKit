@@ -424,7 +424,11 @@ var _DOC_CANVAS_ROUTING={
   fc:  ['prd','rfp','research','feedback','backlog'],
   sc:  ['prd','rfp','backlog','feedback'],
   pi:  ['prd','rfp','roadmap','strategy','backlog','feedback'],
-  mi:  ['research','feedback','strategy','other']
+  mi:  ['research','feedback','strategy','other'],
+  // Requirement Agent synthesizes broadly across product context (it's the
+  // pre-capability planning stage) — union of DM's and CC's allowed types
+  // plus backlog, since RA's brief also captures feature-level detail.
+  ra:  ['prd','rfp','research','feedback','roadmap','strategy','backlog','other']
 };
 var _MAX_DOC_BLOCKS=3;
 

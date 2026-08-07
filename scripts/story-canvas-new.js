@@ -4,7 +4,7 @@
 // scPiSelectedIds and scStoryIdCounter are global — declared in story-canvas.js
 
 // ── State ──
-let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[]};
 let newScCollapsedGroups=new Set();
 let newScPanelStoryId=null;
 let newScPanelFeatId=null;
@@ -115,6 +115,7 @@ function newScBuildLayout(){
                   ${newScBuildFilterPanel()}
                 </div>
               </div>
+              ${_newScBriefFilterBtnHtml()}
               <div style="position:relative;">
                 <button class="export-cta-btn" id="nsc-export-btn" onclick="newScExportAll()" disabled><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
               </div>
@@ -212,6 +213,65 @@ function newScBuildFilterPanel(){
     ${['Yes','No'].map(d=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('dependencies','${e(d)}')" ${newScFilter.dependencies===d?'checked':''}> ${d}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 4px 4px;"></div>
     <div style="padding:4px 12px 8px;"><button onclick="newScClearFilters()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>`;
+}
+
+// §9.2 — standalone "Brief" filter (flat list of finalized RQs, no Origin
+// wrapper/nesting) — Story Canvas has no pre-existing Origin filter to nest
+// a "Requirement Agent" value under. Its own toolbar button + popover, NOT
+// folded into the "Filter" dropdown above — matches PI Canvas's §9.3
+// pattern exactly (confirmed gap: an earlier pass nested this inside
+// newScBuildFilterPanel(), which was inconsistent with PI's separate
+// button and with the approved prototype). Filters read the story's
+// PARENT FEATURE's intakeBriefId (no new field on story objects, §5.3).
+function _newScBriefFilterBtnHtml(){
+  const convs=(typeof raConversations!=='undefined'?raConversations:[]).filter(function(c){return c.status==='finalized';});
+  if(!convs.length)return'';
+  return `<div style="position:relative;">
+    <button class="cc-tb-btn${newScFilter.briefRq.length>0?' active':''}" id="nsc-brief-filter-btn" onclick="newScToggleBriefFilterDrop(event)"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Brief <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
+    <div class="cc-export-drop" id="nsc-brief-filter-drop">
+      <div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Requirement Briefs</div>
+      ${convs.map(function(c){
+        const cnt=(typeof scCanvas!=='undefined'?scCanvas.filter(f=>f.intakeBriefId===c.id).reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC).length:0),0):0);
+        const checked=newScFilter.briefRq.includes(c.id);
+        return `<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('briefRq','${e(c.id)}');newScUpdateBriefFilterBtn();" ${checked?'checked':''}> ${e(c.rqNumber||'')} &mdash; ${e(c.title||'Untitled')} <span style="margin-left:auto;font-size:9px;color:var(--t3);">${cnt}</span></label>`;
+      }).join('')}
+      <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+      <div style="padding:4px 12px 8px;"><button onclick="newScClearBriefFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
+    </div>
+  </div>`;
+}
+function newScToggleBriefFilterDrop(evt){
+  if(evt)evt.stopPropagation();
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(!drop)return;
+  const isOpen=drop.classList.contains('open');
+  if(isOpen){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_newScBriefFilterDropOutside);
+  } else {
+    drop.classList.add('open');
+    setTimeout(()=>document.addEventListener('mousedown',_newScBriefFilterDropOutside),0);
+  }
+}
+function _newScBriefFilterDropOutside(ev){
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(!drop){document.removeEventListener('mousedown',_newScBriefFilterDropOutside);return;}
+  if(!drop.contains(ev.target)){
+    drop.classList.remove('open');
+    document.removeEventListener('mousedown',_newScBriefFilterDropOutside);
+  }
+}
+function newScUpdateBriefFilterBtn(){
+  const btn=document.getElementById('nsc-brief-filter-btn');
+  if(btn)btn.classList.toggle('active',newScFilter.briefRq.length>0);
+}
+function newScClearBriefFilter(){
+  newScFilter.briefRq=[];
+  const drop=document.getElementById('nsc-brief-filter-drop');
+  if(drop)drop.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked=false);
+  newScUpdateBriefFilterBtn();
+  newScUpdateFilterBadge();
+  newScRenderMain();
 }
 
 // ── Left nav ──
@@ -609,7 +669,7 @@ async function newScSendToPI(){
     if(typeof fcUpdateTabBadge==='function')fcUpdateTabBadge();
     if(typeof fcRenderCanvas==='function')fcRenderCanvas();
   }
-  showToast(`${piCount} stor${piCount!==1?'ies':'y'} added to PI Canvas.`,'success');
+  showToast(`${piCount} stor${piCount!==1?'ies':'y'} added to Release Canvas.`,'success');
   // v9.01-diag fix: this save is now AWAITED before the function returns.
   // Previously fire-and-forget — if the user navigated to Home quickly
   // after Send to PI, homeClearSession()'s own (also unawaited) save
@@ -663,7 +723,7 @@ function newScToggleFilter_v(section,value){
     if(idx>=0)arr.splice(idx,1);
     else arr.push(value);
   }
-  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies;
+  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies||newScFilter.briefRq.length;
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.toggle('active',!!hasFilter);
   newScUpdateFilterBadge();
@@ -684,7 +744,7 @@ function newScUpdateFilterBadge(){
 }
 
 function newScClearFilters(){
-  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[]};
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.remove('active');
   const drop=document.getElementById('nsc-filter-drop');
@@ -694,6 +754,7 @@ function newScClearFilters(){
     document.removeEventListener('mousedown',_newScFilterOutside);
   }
   newScUpdateFilterBadge();
+  newScUpdateBriefFilterBtn();
   newScRenderMain();
 }
 
@@ -717,6 +778,10 @@ function newScApplyFilter(stories,feat){
   }
   if(newScFilter.dependencies==='Yes')result=result.filter(s=>s.dependencies&&s.dependencies.length>0);
   if(newScFilter.dependencies==='No')result=result.filter(s=>!s.dependencies||s.dependencies.length===0);
+  // §9.2 — Brief filter reads the PARENT FEATURE's intakeBriefId (no new
+  // field on story objects) — one added condition, same cost profile as
+  // every other filter check in this function, not a new filtering pass.
+  if(newScFilter.briefRq.length)result=feat&&newScFilter.briefRq.includes(feat.intakeBriefId)?result:[];
   return result;
 }
 
@@ -1026,8 +1091,8 @@ function newScHideRemoveConfirm(){
 function newScConfirmRemoveFromPI(storyId,featId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   showConfirm(
-    'Remove from PI plan?',
-    'This story will be deselected and removed from your PI Canvas backlog.',
+    'Remove from Release plan?',
+    'This story will be deselected and removed from your Release Canvas backlog.',
     ()=>{
       const feat=scCanvas.find(f=>f.id===featId);
       if(!feat||!feat.stories)return;
@@ -1098,7 +1163,7 @@ function newScDeleteStoryById(storyId,featId){
   if(!st)return;
   const isInPI=!!st._inPIPlan;
   const warningMsg=isInPI
-    ?'This story is selected for PI. Removing it will also remove it from your PI Canvas.'
+    ?'This story is selected for the release. Removing it will also remove it from your Release Canvas.'
     :'This action cannot be undone.';
   showConfirm(
     `Remove "${st.title||st.id}"?`,
