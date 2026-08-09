@@ -49,12 +49,57 @@ function raResetState(){
 // ══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ══════════════════════════════════════════════════════════════════════════
+// Escapes literal control characters (newline/CR/tab) but ONLY while inside
+// a JSON string value - tracks quote/escape state char-by-char so it never
+// touches real structural whitespace between tokens. Confirmed root cause
+// of the recurring "I couldn't process that update" failures: liveDraftMd
+// is multi-line markdown, and the model occasionally emits a literal
+// newline inside that JSON string value instead of an escaped "\n", which
+// JSON.parse rejects outright ("Bad control character in string literal").
+// A no-op on already-valid JSON (including strings with real backslashes
+// or escaped quotes) - verified against both known-good and known-bad
+// samples before use here.
+function _raSanitizeJsonControlChars(s){
+  var out='',inStr=false,esc=false;
+  for(var i=0;i<s.length;i++){
+    var ch=s[i];
+    if(esc){out+=ch;esc=false;continue;}
+    if(ch==='\\'){out+=ch;if(inStr)esc=true;continue;}
+    if(ch==='"'){inStr=!inStr;out+=ch;continue;}
+    if(inStr){
+      if(ch==='\n'){out+='\\n';continue;}
+      if(ch==='\r'){out+='\\r';continue;}
+      if(ch==='\t'){out+='\\t';continue;}
+    }
+    out+=ch;
+  }
+  return out;
+}
 function _raParseJSON(txt){
   var clean=(txt||'').replace(/```json|```/g,'').trim();
   try{ return JSON.parse(clean); }catch(e){}
   var first=clean.indexOf('{'), last=clean.lastIndexOf('}');
   if(first>=0&&last>first){
-    try{ return JSON.parse(clean.slice(first,last+1)); }catch(e2){}
+    var sliced=clean.slice(first,last+1);
+    try{ return JSON.parse(sliced); }catch(e2){}
+    // Trailing comma right before the JSON blob's own final closing brace -
+    // scoped to only the last few characters, never a global replace, so
+    // it can't touch a comma sitting inside liveDraftMd's markdown prose.
+    var trimmedEnd=sliced.replace(/,\s*\}\s*$/,'}');
+    if(trimmedEnd!==sliced){
+      try{ return JSON.parse(trimmedEnd); }catch(e3){}
+    }
+    // Last resort — repair unescaped control characters inside string
+    // values (see _raSanitizeJsonControlChars comment above), then retry
+    // both the plain slice and the trailing-comma-trimmed variant.
+    var sanitized=_raSanitizeJsonControlChars(sliced);
+    if(sanitized!==sliced){
+      try{ return JSON.parse(sanitized); }catch(e4){}
+      var sanitizedTrimmed=sanitized.replace(/,\s*\}\s*$/,'}');
+      if(sanitizedTrimmed!==sanitized){
+        try{ return JSON.parse(sanitizedTrimmed); }catch(e5){}
+      }
+    }
   }
   return null;
 }
@@ -304,6 +349,7 @@ function raEnterFromDiscoveryMap(){
 // ══════════════════════════════════════════════════════════════════════════
 var raFilterState='all'; // 'all' | 'draft' | 'finalized' — left-panel filter chips, view-scoped only, not persisted
 var raPanelOpen=true;    // left panel expand/collapse state — view-scoped only, mirrors guided-launch.js's glPanelOpen (not persisted)
+var raRightPanelOpen=true; // Live Draft panel expand/collapse — view-scoped only, mirrors guided-launch.js's glMdOpen (not persisted)
 
 // Left panel — the real global .left/.ph/.collapse-btn structure (copied
 // from index.html's #left-panel, same convention guided-launch.js's
@@ -316,7 +362,7 @@ function raRenderShell(){
   root.innerHTML=
     '<div class="left ra-left'+(raPanelOpen?'':' collapsed')+'" id="ra-left">'
       +'<div class="ph">'
-        +'<div class="ph-text"><div class="ph-title">Requirement Agent</div><div class="ph-sub">One conversation = one release scope</div></div>'
+        +'<div class="ph-text"><div class="ph-title">Requirement Agent</div><div class="ph-sub">Pin down what you\'re building.</div></div>'
         +'<button class="collapse-btn" onclick="raTogglePanel()" title="Toggle panel">'
           +'<svg id="icon-ra-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:'+(raPanelOpen?'block':'none')+'"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>'
           +'<svg id="icon-ra-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:'+(raPanelOpen?'none':'block')+'"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>'
@@ -329,10 +375,25 @@ function raRenderShell(){
       +'</div>'
     +'</div>'
     +'<div class="ra-center" id="ra-center"></div>'
-    +'<div class="ra-right" id="ra-right"></div>';
+    +'<div class="ra-md-collapsed-rail'+(raRightPanelOpen?'':' show')+'" id="ra-collapsed-rail" onclick="raOpenRightPanel()" title="Reopen Live Draft">'
+      +'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>'
+      +'<div class="ra-md-collapsed-label">LIVE DRAFT</div>'
+    +'</div>'
+    +'<div class="ra-right" id="ra-right" style="display:'+(raRightPanelOpen?'flex':'none')+';"></div>';
   raRenderFilterChips();
   raRenderConvList();
   raRenderCenter();
+}
+
+function raCollapseRightPanel(){
+  raRightPanelOpen=false;
+  var right=document.getElementById('ra-right'); if(right)right.style.display='none';
+  var rail=document.getElementById('ra-collapsed-rail'); if(rail)rail.classList.add('show');
+}
+function raOpenRightPanel(){
+  raRightPanelOpen=true;
+  var right=document.getElementById('ra-right'); if(right)right.style.display='flex';
+  var rail=document.getElementById('ra-collapsed-rail'); if(rail)rail.classList.remove('show');
 }
 
 function raTogglePanel(){
@@ -372,7 +433,31 @@ function raRenderConvList(){
   list.innerHTML=items.map(function(c){
     var isActive=c.id===raActiveConversationId;
     var capCount=(c.touchedCapabilityKeys||[]).length;
-    var featCount=(c.generatedFeatureIds||[]).length;
+    // generatedFeatureIds is permanently empty post-v9.18 (Finalize no
+    // longer generates features — see raNewConversation()'s field comment),
+    // so the count is now derived from the real, live source of truth:
+    // Capability Canvas's own featStore.top for every capability this
+    // conversation's Finalize created. Tolerant of stale/missing keys —
+    // a capability referenced here could since have been deleted/reindexed
+    // elsewhere in Capability Canvas.
+    var featCount=(c.createdCapabilityKeys||[]).reduce(function(sum,key){
+      if(typeof capStore==='undefined')return sum;
+      // metricKey itself is stageId+'||'+metricName (ccMetricKey()) or
+      // 'pi||'+capName (ccPIKey()) — already pipe-delimited — so this
+      // composite key can't be split on every '|'. capIdx is always the
+      // last segment and always a plain integer (never free text), so
+      // lastIndexOf isolates it correctly regardless of what characters
+      // appear in the metric/capability name. Mirrors the same
+      // lastIndexOf-based parsing capability-canvas.js already uses for
+      // this exact key shape.
+      var keyStr=String(key);
+      var sep=keyStr.lastIndexOf('|');
+      var metricKey=sep>=0?keyStr.slice(0,sep):keyStr;
+      var capIdx=sep>=0?parseInt(keyStr.slice(sep+1),10):NaN;
+      var entry=capStore[metricKey];
+      var cap=entry&&entry.capabilities&&entry.capabilities[capIdx];
+      return sum+((cap&&cap.featStore&&cap.featStore.top)?cap.featStore.top.length:0);
+    },0);
     var summary=c.status==='finalized'
       ?(capCount+' capabilit'+(capCount!==1?'ies':'y')+' · '+featCount+' feature'+(featCount!==1?'s':'')+' · finalized '+_raRelTime(c.updatedAt))
       :('Updated '+_raRelTime(c.updatedAt)+' · not yet finalized');
@@ -402,7 +487,7 @@ function raSaveRename(id){
   var input=document.getElementById('ra-rename-input-'+id);
   if(!conv||!input)return;
   var val=input.value.trim();
-  if(val)conv.title=val;
+  if(val){conv.title=val;conv.titleIsPlaceholder=false;}
   conv.updatedAt=new Date().toISOString();
   raRenderConvList();
   _raPersist();
@@ -421,8 +506,12 @@ function raRenderCenter(){
     right.innerHTML='';
     return;
   }
+  // Reverted to the v9.16 Guided Launch format per QA: static category
+  // eyebrow + a fixed, friendly status line - the conversation's own
+  // contextualized title now lives in the Live Draft banner (raRenderLiveDraft())
+  // instead, so it isn't lost by dropping it from here.
   center.innerHTML=
-    '<div class="ra-chat-hdr"><div class="ra-chat-hdr-eyebrow">'+(conv.status==='finalized'?('Finalized '+(conv.rqNumber?e(conv.rqNumber):'')):'Drafting')+'</div><div class="ra-chat-hdr-title">'+e(conv.title||'Untitled conversation')+'</div></div>'
+    '<div class="ra-chat-hdr"><div class="ra-chat-hdr-eyebrow">Requirement Agent</div><div class="ra-chat-hdr-title">'+(conv.status==='finalized'?('Finalized'+(conv.rqNumber?(' — '+e(conv.rqNumber)):'')):'Drafting requirements together')+'</div></div>'
     +'<div class="ra-chat-body" id="ra-chat-body"></div>'
     +(conv.status==='finalized'
       ?'<div class="ra-chat-input-wrap"><div class="ra-finalized-note">This conversation is finalized — chat is closed.</div></div>'
@@ -498,7 +587,15 @@ function _raHideTyping(){
 
 async function _raCallModel(sys,usr,signal){
   var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
-  return await callAPI(sys,usr,3000,signal||null,null,'requirement-agent',null,extra);
+  // Confirmed root cause of the recurring "I couldn't process that update"
+  // failures: captured a live raw response that was cut off mid-string at
+  // ~13.7k characters with no closing braces - not malformed JSON, a
+  // genuinely truncated one, because a large recommended-capability-set
+  // liveDraftMd (several capabilities x features x markdown) exceeds the
+  // previous 3000-token cap before the model finishes. Raised to 8000,
+  // matching the token budget already used elsewhere in this codebase for
+  // similarly large structured generations (metrics-definition.js).
+  return await callAPI(sys,usr,8000,signal||null,null,'requirement-agent',null,extra);
 }
 
 // ── New conversation ──
@@ -516,7 +613,8 @@ function raNewConversation(){
     liveDraftMd:'',
     draftVersion:0,
     generatedFeatureIds:[], // retained for backward compat with pre-redesign finalized conversations — stays empty going forward, Finalize no longer generates features (§7)
-    createdCapabilityKeys:[] // NEW — capStore key(s) of every capability this conversation's Finalize created (new capabilities only, not pre-existing ones it touched)
+    createdCapabilityKeys:[], // NEW — capStore key(s) of every capability this conversation's Finalize created (new capabilities only, not pre-existing ones it touched)
+    titleIsPlaceholder:true // cleared once a real, model-suggested title is applied — lets later turns keep retitling a still-generic conversation without ever overwriting a title the PM set themselves (rename or a genuinely specific suggestedTitle)
   };
   raConversations.push(conv);
   raActiveConversationId=conv.id;
@@ -561,11 +659,14 @@ async function raRunOpeningTurn(conv){
     // QA issue #7 — use the AI's own contextual suggestedTitle if still on
     // the default placeholder (never overwrite a conversation the user has
     // already renamed). Falls back to the old boilerplate only if the model
-    // omitted the field entirely — never leaves the title un-set.
-    if(conv.title==='New Conversation'){
-      var _pp=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.productProfile)||{};
+    // omitted the field entirely — never leaves the title un-set. Only a
+    // genuine model suggestion clears titleIsPlaceholder — the boilerplate
+    // fallback keeps it true so a later turn (see _raRunTurn()) can still
+    // retitle once the conversation gets more specific.
+    if(conv.titleIsPlaceholder){
       var _suggested=(parsed.suggestedTitle||'').trim();
-      conv.title=_suggested||((_pp.productName?_pp.productName+' — ':'')+'Release requirements');
+      if(_suggested){conv.title=_suggested;conv.titleIsPlaceholder=false;}
+      else conv.title='Release requirements'; // product-name-free fallback — titleIsPlaceholder stays true so a later turn can still replace this
     }
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
@@ -620,6 +721,15 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var existingResolved={};
     (conv.openQuestions||[]).forEach(function(q){existingResolved[q.id]=q.resolved;});
     conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){var id='oq'+i;return {id:id,type:'clarification',resolved:!!existingResolved[id],messageIndex:(conv.messages||[]).length};});
+    // QA fix — the opening turn's suggestedTitle falls back to generic
+    // boilerplate when the model omits it on turn 1; without this, a
+    // conversation stuck on that boilerplate could never improve as later
+    // turns made its scope more specific (titleIsPlaceholder stays true
+    // until a real suggestion lands, from either turn).
+    if(conv.titleIsPlaceholder){
+      var _suggestedTurn=(parsed.suggestedTitle||'').trim();
+      if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
+    }
     raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.');
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
@@ -680,7 +790,6 @@ function raRenderLiveDraft(){
   var conv=_raActiveConv();
   if(!right||!conv)return;
   var unresolvedCount=(conv.openQuestions||[]).filter(function(q){return!q.resolved;}).length;
-  var verLabel=(conv.draftVersion>0)?(' · v0.'+(String(conv.draftVersion).length<2?('0'+conv.draftVersion):conv.draftVersion)):'';
   // §7 — Finalize is disabled until the conversation actually has a draft:
   // liveDraftMd is only populated once the opening turn completes (see
   // raRunOpeningTurn()/_raRunTurn()), so an empty/still-loading conversation
@@ -688,13 +797,21 @@ function raRenderLiveDraft(){
   // clickable on a brand-new, empty conversation with zero effect other
   // than an unnecessary RPC/save round-trip.
   var hasDraftContent=!!(conv.liveDraftMd&&conv.liveDraftMd.trim().length>0);
+  var verLabel=(conv.draftVersion>0)?(' · v0.'+(String(conv.draftVersion).length<2?('0'+conv.draftVersion):conv.draftVersion)):'';
+  var exportBtn='<button class="gl-export-btn" onclick="raExportMd()" title="Download the current draft as a .md file"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export</button>';
   right.innerHTML=
-    // QA issue #6 — the conversation title already shows in the left-panel
-    // card and the center chat header; repeating it here again added no
-    // information, just noise. Right panel now only needs "Live Draft" +
-    // version badge.
-    '<div class="ra-md-hdr"><div class="ra-md-hdr-eyebrow">Live Draft</div><div class="ra-md-hdr-title">Requirements Brief<span class="ra-md-hdr-ver">'+verLabel+'</span></div></div>'
-    +'<div class="ra-md-body" id="ra-md-body">'+_raMdToHtml(conv.liveDraftMd)+'</div>'
+    // QA follow-up: the grey banner is back (it was over-removed in the
+    // previous pass) — "LIVE DRAFT" eyebrow + the conversation's own
+    // contextualized title (never the product name) + version badge, with
+    // Export living here only (top-right), not duplicated in the footer.
+    // The markdown body still starts directly at "## Summary" — only the
+    // body's own redundant "# H1" line is stripped, not this banner.
+    '<div class="ra-md-hdr"><div class="ra-md-hdr-text"><div class="ra-md-hdr-eyebrow">Live Draft</div><div class="ra-md-hdr-title">'+e(conv.title||'Requirements Brief')+'<span class="ra-md-hdr-ver">'+verLabel+'</span></div></div>'
+      +'<div class="ra-md-hdr-actions">'
+      +(hasDraftContent?exportBtn:'')
+      +'<button class="collapse-btn" onclick="raCollapseRightPanel()" title="Collapse panel"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg></button>'
+      +'</div></div>'
+    +'<div class="ra-md-body" id="ra-md-body">'+_raMdToHtml(_raStripLeadingH1(conv.liveDraftMd))+'</div>'
     +(conv.status==='finalized'
       ?'<div class="ra-md-footer"><div class="ra-status-badge ra-status-final">Finalized'+(conv.rqNumber?(' · '+e(conv.rqNumber)):'')+'</div></div>'
       :'<div class="ra-md-footer"><div class="ra-footer-row">'
@@ -702,6 +819,36 @@ function raRenderLiveDraft(){
         +'<button class="ra-finalize-btn'+(hasDraftContent?'':' ra-finalize-btn-disabled')+'" id="ra-finalize-btn" '+(hasDraftContent?'onclick="raFinalizeClick()"':'disabled title="Start the conversation to build a draft before finalizing"')+'><i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> Finalize</button>'
       +'</div></div>');
   _raEnhanceLiveDraftDom();
+}
+
+// Strips the live draft's own leading "# H1 title" line, since the banner
+// above #ra-md-body already shows the conversation's contextualized title —
+// keeping both would reintroduce the duplicate the earlier QA pass flagged.
+// Only the first line is touched; everything from "## Summary" onward is
+// untouched.
+function _raStripLeadingH1(md){
+  if(!md)return md;
+  return md.replace(/^\s*#\s[^\n]*\n+/,'');
+}
+
+// Mirrors Guided Launch's glExportMd() (guided-launch.js) — downloads the
+// active conversation's live draft as a .md file, named from the
+// conversation's own contextual title rather than the product name (RA's
+// draft can cover any capability/release scope, not a whole product).
+function raExportMd(){
+  var conv=_raActiveConv();
+  if(!conv)return;
+  var md=conv.liveDraftMd||'';
+  var blob=new Blob([md],{type:'text/markdown'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  var name=(conv.title||'requirements-brief').replace(/[^a-z0-9\-_]+/gi,'-').toLowerCase();
+  a.href=url;
+  a.download=name+'-requirements-brief.md';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);
 }
 
 // ══════════════════════════════════════════════════════════════════════════

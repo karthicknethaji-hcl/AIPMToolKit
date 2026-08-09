@@ -1216,7 +1216,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
       + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
       + '  "liveDraftMd": "the full live draft in markdown, starting with a single # H1 title",\n'
       + '  "openQuestions": ["short clarification question text", "..."],\n'
-      + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'"\n'
+      + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
       + '}';
 
     return { sys: sys, usr: usr };
@@ -1251,7 +1251,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
     + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
     + '  "liveDraftMd": "the full live draft in markdown, starting with a single # H1 title",\n'
     + '  "openQuestions": ["short clarification question text", "..."],\n'
-    + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'"\n'
+    + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
     + '}';
 
   return { sys: sys, usr: usr };
@@ -1305,7 +1305,8 @@ function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,
     + '{\n'
     + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
     + '  "liveDraftMd": "the FULL updated live draft in markdown, starting with a single # H1 title",\n'
-    + '  "openQuestions": ["short clarification question text", "..."]\n'
+    + '  "openQuestions": ["short clarification question text", "..."],\n'
+    + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'), only if this turn has made the scope specific enough to name it and the conversation is still on a generic placeholder title - otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
     + '}';
 
   return { sys: sys, usr: usr };

@@ -570,6 +570,18 @@ function scBuildCapBreadcrumb(cap){
   return'<div class="sc-cap-breadcrumb" data-tooltip="'+e(fullPath)+'" id="scbc-'+Math.random().toString(36).slice(2)+'">'+rendered+'</div>';
 }
 
+// Re-fit breadcrumbs on viewport resize, not just on render — without this,
+// truncation set at one width goes stale (either under- or over-truncated)
+// if the user resizes without triggering a card re-render.
+if(typeof window!=='undefined'&&!window._scBreadcrumbResizeWired){
+  window._scBreadcrumbResizeWired=true;
+  var _scBcResizeTimer=null;
+  window.addEventListener('resize',function(){
+    clearTimeout(_scBcResizeTimer);
+    _scBcResizeTimer=setTimeout(function(){scFitBreadcrumbs();},150);
+  });
+}
+
 // Priority truncation: shorten L1 first, then L2, preserve L3
 // Called after render via requestAnimationFrame
 function scFitBreadcrumbs(){

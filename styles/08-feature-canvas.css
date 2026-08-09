@@ -31,7 +31,7 @@
 .sc-metric-name{font-size:12px;font-weight:700;color:var(--t1);flex:1;min-width:0;overflow:hidden;display:flex;align-items:baseline;gap:0;}
 .sc-metric-sep{font-size:10px;color:var(--label);margin:0 4px;flex-shrink:0;}
 .sc-metric-seg{font-size:12px;font-weight:500;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:1;}
-.sc-metric-seg-last{font-size:12px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;}
+.sc-metric-seg-last{font-size:12px;font-weight:700;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:1;min-width:24px;}
 .sc-metric-count{font-size:10px;color:var(--t3);margin-left:auto;white-space:nowrap;}
 /* Feature cards grid */
 .sc-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:8px;}
@@ -55,7 +55,7 @@
 .sc-card-remove:hover{border-color:var(--red);color:var(--red);background:#fde8e8;}
 .sc-card-name{font-size:11px;font-weight:600;color:var(--t1);line-height:1.35;}
 .sc-card-why{font-size:9px;color:var(--t3);margin-top:3px;line-height:1.4;flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
-.sc-card-footer{margin-top:auto;padding-top:6px;border-top:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;gap:4px;}
+.sc-card-footer{margin-top:auto;padding-top:6px;border-top:1px solid var(--divider);display:flex;align-items:center;justify-content:space-between;gap:4px;flex-wrap:wrap;row-gap:4px;}
 .sc-status-none{font-size:9px;color:var(--t4);display:flex;align-items:center;gap:4px;}
 .sc-status-done{font-size:9px;color:var(--green);font-weight:600;display:flex;align-items:center;gap:4px;}
 .sc-story-badge{font-size:8px;font-weight:700;background:#e8f5f3;color:var(--green);border:1px solid #a3d9d4;border-radius:8px;padding:1px 6px;}
