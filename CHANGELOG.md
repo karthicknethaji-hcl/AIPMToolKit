@@ -1,5 +1,11 @@
 # Changelog — AI PM Toolkit
 
+## v9.19 — Discovery Map: Reference Anchor + Distinctiveness Quota
+
+- Added — Discovery Map's AI generation (both Outcome Metrics and Process Area / capability-based approaches) now silently reasons against an internal reference-company analogue drawn from training knowledge, to push capability and stage naming toward operating-model-specific vocabulary instead of generic industry terms. No new input required; nothing is surfaced in the output.
+- Added — capability-based generation now requires at least 15-20% of generated capabilities to be genuinely distinctive to the specific vertical/sub-sector, rather than relying solely on the existing "never generic" floor.
+- No schema, UI, or data-model changes — prompt text only, applies automatically to all AI-generated Discovery Map runs.
+
 ## v9.18 — Requirement Agent: Discovery-First Entry Point redesign, + 2 QA fix passes
 
 **This is a supersession of v9.17.02's Requirement Agent mechanics, not an addition** — see `PROJECT_MAP.md`'s Requirement Agent entry for the full current-state description.

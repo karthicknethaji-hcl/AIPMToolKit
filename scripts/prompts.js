@@ -43,6 +43,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - Do NOT include l2_metrics, l3_metrics, or l4_metrics — depth setting is L1 only
@@ -56,6 +57,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - L2 per L1: as many as have genuine diagnostic value
@@ -69,6 +71,7 @@ function buildTreePrompt(fd,extra){
 - stage id: lowercase slug of label, underscores not hyphens (e.g. "order_capture")
 - stage description: maximum 12 words, present tense, what is measured in this stage
 - frameworks array: cite what applies, blend where necessary, be explicit if using first principles — never invent a framework name
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product operating a comparable business model in this space (from training knowledge — do not name it in the output). Use its operating model to inform how value-chain stages are framed and named. Do not let this influence individual metric names — the metric-naming rule below remains the sole authority there. If no confident reference exists, use first-principles value-chain reasoning instead.
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - L2 per L1: as many as have genuine diagnostic value
@@ -152,6 +155,8 @@ ${fd.approach==='capability-based'?`Rules:
 - Do NOT force AAER unless this is a genuine consumer growth product
 - L1 capabilities per stage: as many as genuinely apply — no minimum, no maximum — never pad
 - Each L1 capability name must be specific to this exact product — never generic
+- REFERENCE ANCHOR: Based on Industry and Product Type above, silently identify one well-known company or product that operates a comparable business model in this space (from your training knowledge — do not name it in the output, do not ask the user). Use that company's actual operating model as a mental reference so capability naming reflects how such a business genuinely runs, not generic industry terms. If no confident reference exists for this industry/product type, proceed using deep first-principles reasoning about the value chain instead — never force a weak or invented analogue.
+- DISTINCTIVENESS QUOTA: Of the capabilities generated across all stages, at least 15-20% must be distinctive to this exact vertical/sub-sector — the kind of capability that would NOT appear in a generic cross-industry capability list.
 - CAPABILITY NAMING — a capability name describes a function or system the product performs, never a measurement. Do NOT end a capability name with a metric-style suffix: Rate, Score, Accuracy, Latency, Frequency, Depth, Distribution, Coverage, Completeness, Conflict Rate, Success Rate, Throughput, Timeliness, or similar measurement units. If you find yourself naming something that sounds like it belongs on a dashboard, rename it to the underlying capability that the measurement would be measuring.
   Examples (WRONG → RIGHT):
   - "Order Ingestion Success Rate" → "Order Ingestion & Validation"
