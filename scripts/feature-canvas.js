@@ -160,34 +160,45 @@ function normalizeAIHypothesis(raw){
 // END Outcome Verification Loop shared helpers
 // ══════════════════════════════════════════════════════════════════════
 
-// ── Add Feature dropdown (C1, v7.84) ──
-// Mirrors ccToggleAddCapDrop's pattern for CC's "Add Capability" dropdown.
-function scToggleAddFeatDrop(evt){
-  if(evt)evt.stopPropagation();
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(!drop)return;
-  const isOpen=drop.classList.contains('open');
-  
-  if(isOpen){
-    drop.classList.remove('open');
-    document.removeEventListener('mousedown',_scAddFeatDropOutside);
-  } else {
-    drop.classList.add('open');
-    setTimeout(()=>document.addEventListener('mousedown',_scAddFeatDropOutside),0);
+// ── Toolbar actions kebab (v9.20) ──
+// Consolidates the toolbar's standalone "Add Feature" and "Export" buttons
+// into a single .tm-dots kebab, using the generic _uiRowMenuToggle()/
+// _uiRowMenuClose() mechanics (utils.js) already proven in Team Management,
+// PI Planning and Outcome Pulse. "Add Feature" drills in to the same two
+// options scShowAddFeatureModal()/scShowUploadFeatModal() already power,
+// replacing the popover's own content in place (same menuEl) rather than
+// opening a side flyout - done by writing directly to _uiRowMenuOpen.menuEl
+// instead of calling _uiRowMenuToggle again (which would just close it,
+// since re-toggling the same trigger is a close).
+function scTbKebabTopHtml(){
+  const canEdit=(typeof canEditSession!=='function')||canEditSession();
+  const addFeatRow=canEdit
+    ?'<div class="tm-menu-item tm-menu-item-expand" role="menuitem" tabindex="-1" onclick="event.stopPropagation();scTbKebabDrillAddFeature()"><span><i class="ti ti-plus" aria-hidden="true"></i> Add Feature</span><i class="ti ti-chevron-right" aria-hidden="true"></i></div>'
+    :'';
+  const exportDisabled=scCanvas.length===0||fcExportInFlight;
+  const exportAttrs=exportDisabled?' aria-disabled="true" tabindex="-1" style="opacity:0.5;cursor:not-allowed;"':' tabindex="-1"';
+  const exportClick=exportDisabled?'':'_uiRowMenuClose();scExportAll()';
+  const exportIcon=fcExportInFlight?'<i class="ti ti-loader-2" style="font-size:12px;animation:spin 1s linear infinite;" aria-hidden="true"></i>':'<i class="ti ti-download" aria-hidden="true"></i>';
+  const exportLabel=fcExportInFlight?'Exporting…':'Export';
+  const exportRow='<div class="tm-menu-item" role="menuitem"'+exportAttrs+' onclick="'+exportClick+'">'+exportIcon+' '+exportLabel+'</div>';
+  return '<div class="tm-menu-static" role="menu">'+addFeatRow+exportRow+'</div>';
+}
+function scToggleTbKebabMenu(triggerEl){
+  _uiRowMenuToggle(triggerEl,scTbKebabTopHtml());
+}
+function scTbKebabShowTop(){
+  if(typeof _uiRowMenuOpen!=='undefined'&&_uiRowMenuOpen&&_uiRowMenuOpen.menuEl){
+    _uiRowMenuOpen.menuEl.innerHTML=scTbKebabTopHtml();
   }
 }
-function scCloseAddFeatDrop(){
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(drop)drop.classList.remove('open');
-  document.removeEventListener('mousedown',_scAddFeatDropOutside);
-}
-function _scAddFeatDropOutside(e){
-  const drop=document.getElementById('sc-addfeat-drop');
-  if(!drop){document.removeEventListener('mousedown',_scAddFeatDropOutside);return;}
-  if(!drop.contains(e.target)){
-    drop.classList.remove('open');
-    document.removeEventListener('mousedown',_scAddFeatDropOutside);
-  }
+function scTbKebabDrillAddFeature(){
+  if(typeof _uiRowMenuOpen==='undefined'||!_uiRowMenuOpen||!_uiRowMenuOpen.menuEl)return;
+  _uiRowMenuOpen.menuEl.innerHTML=
+    '<div class="tm-submenu-standalone" role="menu">'
+    +'<div class="tm-submenu-back" onclick="event.stopPropagation();scTbKebabShowTop()"><i class="ti ti-chevron-left" aria-hidden="true"></i> Add Feature</div>'
+    +'<div class="cc-addcap-opt" role="menuitem" onclick="_uiRowMenuClose();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>'
+    +'<div class="cc-addcap-opt" role="menuitem" onclick="_uiRowMenuClose();scShowUploadFeatModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>'
+    +'</div>';
 }
 
 let scPanelLinkingMetric=false;
@@ -927,11 +938,10 @@ function scUpdateActionBar(visibleCanvas){
   // can do.
   const _canEditFcBar=(typeof canEditSession!=='function')||canEditSession();
   if(bar)bar.style.display=_canEditFcBar?'':'none';
-  // Add Feature is a static button in index.html, not part of a
-  // dynamically-rendered template — synced here since this function
-  // already runs on every FC render/tab-enter cycle.
-  const addFeatWrap=document.getElementById('sc-add-feat-wrap');
-  if(addFeatWrap)addFeatWrap.style.display=_canEditFcBar?'':'none';
+  // Add Feature/Export now live inside the toolbar's single kebab
+  // (#sc-tb-kebab-wrap, scTbKebabTopHtml()) - that menu is rebuilt fresh
+  // every time it's opened, so edit-permission and disabled state are
+  // resolved there rather than synced onto standalone elements here.
   // Refine bar + Send to Story Canvas — also static elements in index.html,
   // outside sc-action-bar's own scope, synced here for the same reason.
   const refineBar=document.getElementById('sc-refine-bar');
@@ -942,16 +952,11 @@ function scUpdateActionBar(visibleCanvas){
   if(!visibleCanvas)visibleCanvas=scCanvas;
   const total=visibleCanvas.length;
 
-  // v9.08.03 fix: Export lives in its own wrapper (sc-export-wrap-toolbar
-  // in index.html), OUTSIDE sc-action-bar's actual DOM scope — unlike
-  // select-all/info-count/generate-button below, which genuinely are
-  // inside the bar. The previous early return here (before this line)
-  // caused Export to never reach its own enable/disable logic for a
-  // view-only session, leaving it stuck disabled. Export must reflect
-  // "is there anything to export," never edit permission, so this now
-  // runs unconditionally, before any edit-mode branching.
-  const expBtn=document.getElementById('sc-export-btn');
-  if(expBtn&&!fcExportInFlight){expBtn.disabled=total===0;}
+  // v9.08.03 fix (superseded by v9.20's kebab consolidation, kept for the
+  // rationale): Export must reflect "is there anything to export," never
+  // edit permission - scTbKebabTopHtml() re-evaluates that (scCanvas.length)
+  // every time the kebab opens, so no live sync onto a standalone button
+  // is needed here.
 
   if(!_canEditFcBar)return;
   const visibleIds=new Set(visibleCanvas.map(f=>f.id));
@@ -1508,10 +1513,13 @@ function scConfirmLinkMetric(fid){
   // Update scPiSelectedIds
   if(scPiSelectedIds.has(oldId)){scPiSelectedIds.delete(oldId);scPiSelectedIds.add(newId);}
 
-  // G2 — update piPlan.submittedFeatureIds if present
-  if(typeof piPlan!=='undefined'&&piPlan&&piPlan.submittedFeatureIds){
-    const idx=piPlan.submittedFeatureIds.indexOf(oldId);
-    if(idx>-1)piPlan.submittedFeatureIds[idx]=newId;
+  // G2 — update submittedFeatureIds on every plan that references it
+  if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+    piPlans.forEach(function(_plan){
+      if(!_plan.submittedFeatureIds)return;
+      const idx=_plan.submittedFeatureIds.indexOf(oldId);
+      if(idx>-1)_plan.submittedFeatureIds[idx]=newId;
+    });
   }
 
   // G3 — propagate metric/stage to unlinked sibling features under same cap
@@ -1530,9 +1538,12 @@ function scConfirmLinkMetric(fid){
     if(typeof pcMigrateProtoFeatureId==='function')pcMigrateProtoFeatureId(sibOldId,sib.id);
     if(scSelectedIds.has(sibOldId)){scSelectedIds.delete(sibOldId);scSelectedIds.add(sib.id);}
     if(scPiSelectedIds.has(sibOldId)){scPiSelectedIds.delete(sibOldId);scPiSelectedIds.add(sib.id);}
-    if(typeof piPlan!=='undefined'&&piPlan&&piPlan.submittedFeatureIds){
-      const si=piPlan.submittedFeatureIds.indexOf(sibOldId);
-      if(si>-1)piPlan.submittedFeatureIds[si]=sib.id;
+    if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+      piPlans.forEach(function(_plan){
+        if(!_plan.submittedFeatureIds)return;
+        const si=_plan.submittedFeatureIds.indexOf(sibOldId);
+        if(si>-1)_plan.submittedFeatureIds[si]=sib.id;
+      });
     }
   });
 
@@ -2454,14 +2465,12 @@ Rules:
 // ── Export ──
 // ── FC Export — in-flight state ──
 var fcExportInFlight=false;
-function fcSyncExportBtn(){
-  var btn=document.getElementById('sc-export-btn');
-  if(!btn)return;
-  btn.disabled=!!fcExportInFlight;
-  btn.innerHTML=fcExportInFlight?
-    '<i class="ti ti-loader-2" style="font-size:11px;animation:spin 1s linear infinite;" aria-hidden="true"></i> Exporting\u2026':
-    '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export';
-}
+// v9.20: Export's own button (#sc-export-btn) was folded into the toolbar
+// kebab (scTbKebabTopHtml()) and no longer exists as a standalone element.
+// The kebab's Export row already closes the menu on click, before this
+// in-flight state changes, so there is nothing left in the DOM to sync \u2014
+// kept as a no-op stub since fcExportInFlight's toggling around it stays.
+function fcSyncExportBtn(){}
 async function scExportAll(){
   if(fcExportInFlight)return;
   var snap=(typeof fcGetVisibleCanvasSorted==='function')?fcGetVisibleCanvasSorted():(typeof fcGetVisibleCanvas==='function'?fcGetVisibleCanvas():[]);
@@ -3622,19 +3631,21 @@ function scDoEditFeat(fid, mode){
     feat.piSubmittedStoryCount=0;
     scSelectedIds.delete(fid);
     scPiSelectedIds.delete(fid);
-    // Item 27: if feature was in PI plan, remove its stories from plan
-    if(typeof piPlan!=='undefined'&&piPlan){
-      // Remove all this feature's story IDs from storyAssignments and backlogStoryIds
-      // (feat.stories is now [], so we need to remove by checking featureId on piFindStory)
-      // We stored stories before clearing — use the old stories to clean up
-      const oldStoryIds=Object.keys(piPlan.storyAssignments||{}).filter(sid=>{
-        const s=scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid));
-        return !s; // story no longer exists on canvas
+    // Item 27: if feature was in a release plan, remove its stories from
+    // whichever plan actually owns them (v9.20: searches across all plans,
+    // not a single bare global - a feature's stories could in principle be
+    // split across plans, though normally aren't).
+    if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)){
+      piPlans.forEach(function(_plan){
+        const oldStoryIds=Object.keys(_plan.storyAssignments||{}).filter(sid=>{
+          const s=scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid));
+          return !s; // story no longer exists on canvas
+        });
+        oldStoryIds.forEach(sid=>{delete _plan.storyAssignments[sid];});
       });
-      oldStoryIds.forEach(sid=>{
-        delete piPlan.storyAssignments[sid];
-        if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==sid);
-      });
+      if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+        piBacklogStoryIds=piBacklogStoryIds.filter(sid=>!!scCanvas.find(f=>f.stories&&f.stories.some(st=>st.id===sid)));
+      }
     }
     // Close story panel if this feature is open
     if(scPanelFeatureId===fid){

@@ -144,10 +144,12 @@ async function generateConfirmed(extra){
   // piInputs/piScVersion/piStoryPool reset to their declared defaults
   // (state.js) since they hold generation-attempt-specific derived data
   // (parsedCaps/parsedFeatures, a staleness hash tied to scCanvas) that
-  // goes stale the moment capStore/scCanvas are wiped. piSquads
-  // deliberately NOT reset — team capacity configuration, doesn't
-  // reference anything that becomes stale here.
-  piPlan=null;
+  // goes stale the moment capStore/scCanvas are wiped. v9.20: release
+  // plans (and their per-plan squads) are cleared the same way piPlan
+  // used to be - the shared backlog tray is plan-agnostic data tied to
+  // Story Canvas, not to this generation attempt, so it's left alone.
+  piPlans=[];
+  _piActivePlanId=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   piScVersion=null;
   piDdPanelOpen=false;
@@ -484,7 +486,7 @@ async function regen(){
   // Check if downstream data exists — warn before wiping
   const hasDownstream=(capStore&&Object.keys(capStore).length>0)||
     (scCanvas&&scCanvas.length>0)||
-    (piPlan&&Object.keys(piPlan).length>0);
+    (typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0);
   if(hasDownstream){
     _mmShowRegenConfirm(refinementText);
   } else {
@@ -579,7 +581,7 @@ async function _mmRegenProceed(refinementText){
         if(localEntry&&localEntry.snapshot){
           localEntry.snapshot.capStore={};
           localEntry.snapshot.scCanvas=[];
-          localEntry.snapshot.piPlan=null;
+          localEntry.snapshot.piPlans=[];
           localEntry.snapshot.dmRegenAt=sessionContext.dmRegenAt;
           localStorage.setItem(_SS_PREFIX+_activeSessionId,JSON.stringify(localEntry));
         }

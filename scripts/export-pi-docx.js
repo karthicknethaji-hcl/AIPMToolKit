@@ -14,6 +14,7 @@ function piSyncExportBtn(){
     '<i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export';
 }
 async function buildAndDownloadPIDocx(){
+  const piPlan=(typeof piGetActivePlan==='function')?piGetActivePlan():null;
   if(!piPlan){showToast('Generate a PI plan first.','info');return;}
   if(piExportInFlight)return;
   piExportInFlight=true;piSyncExportBtn();
@@ -290,7 +291,11 @@ async function buildAndDownloadPIDocx(){
 
     // ── Section 6 — Unplanned Backlog ──
     const s6=[h2('6. Unplanned Backlog')];
-    const backlogIds=piPlan.backlogStoryIds||[];
+    // backlogNotes is keyed by exactly the story ids that didn't fit this
+    // plan's last generation - the plan object itself no longer carries a
+    // separate backlogStoryIds field, since there is only one shared,
+    // global backlog tray in this app now (piBacklogStoryIds).
+    const backlogIds=Object.keys(piPlan.backlogNotes||{});
     if(backlogIds.length===0){
       s6.push(body('All stories are assigned to a sprint.'));
     } else {

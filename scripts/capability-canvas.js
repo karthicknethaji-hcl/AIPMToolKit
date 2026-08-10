@@ -200,6 +200,33 @@ function _ccAddCapDropOutside(e){
   }
 }
 
+// ── Toolbar kebab menu - consolidates the standalone "Add Capability"
+// dropdown and standalone Export button into a single .tm-dots trigger.
+// Uses the generic _uiRowMenuToggle(triggerEl, menuHtml) / _uiRowMenuClose()
+// helpers already proven by Outcome Pulse, Team Management and PI Planning
+// (scripts/utils.js) - no new dropdown component invented. The Filter
+// button stays a separate, always-visible control next to the kebab.
+function ccToolbarMenuHtml(){
+  const _canEditCcMenu=(typeof canEditSession!=='function')||canEditSession();
+  const addCapRow=_canEditCcMenu?`<div class="tm-menu-item tm-menu-item-expand" role="menuitem" tabindex="0" onclick="event.stopPropagation();ccMenuDrillAddCap()"><i class="ti ti-plus" aria-hidden="true"></i> Add Capability <i class="ti ti-chevron-right" aria-hidden="true"></i></div>`:'';
+  return `<div class="tm-menu-static" role="menu">
+    ${addCapRow}
+    <div class="tm-menu-item" role="menuitem" tabindex="0" onclick="_uiRowMenuClose();ccExportDocx()"><i class="ti ti-download" aria-hidden="true"></i> Export</div>
+  </div>`;
+}
+
+// Drill-in: swaps the currently-open popover's own content in place to show
+// the "Add Capability" sub-options - not a side flyout. Reuses the existing
+// _uiRowMenuOpen state (utils.js) so position/outside-click/escape handling
+// stays anchored to the same menu element; only its innerHTML changes.
+function ccMenuDrillAddCap(){
+  if(typeof _uiRowMenuOpen==='undefined'||!_uiRowMenuOpen||!_uiRowMenuOpen.menuEl)return;
+  _uiRowMenuOpen.menuEl.innerHTML=`<div class="tm-submenu-standalone" role="menu">
+    <div class="cc-addcap-opt" role="menuitem" tabindex="0" onclick="_uiRowMenuClose();ccShowAddCapModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Capability</div>
+    <div class="cc-addcap-opt" role="menuitem" tabindex="0" onclick="_uiRowMenuClose();ccShowUploadCapModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>
+  </div>`;
+}
+
 function ccToggleCCFilterDrop(evt){
   if(evt)evt.stopPropagation();
   const drop=document.getElementById('cc-cap-filter-drop');
@@ -1452,8 +1479,7 @@ function ccRenderAllCaps(){
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
           <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>${_ccOriginRaFilterHtml()}<div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
-          <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
-          ${ccAddCapBtnHTML('cc-tb-btn-add')}
+          <button class="tm-dots" onclick="_uiRowMenuToggle(this,ccToolbarMenuHtml())" aria-label="Capability Canvas actions" aria-haspopup="true" aria-expanded="false"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>
         </div>
       </div>
       <div class="cc-legend">
@@ -1655,8 +1681,7 @@ function ccRenderMainContent(){
         </div>
         <div style="display:flex;gap:7px;align-items:center;">
           <div class="cc-export-wrap" style="position:relative;"><button class="cc-tb-btn${ccCapFilter.size>0?' active':''}" id="cc-cap-filter-btn" onclick="ccToggleCCFilterDrop(event)" style="display:flex;align-items:center;gap:4px;"><i class="ti ti-filter" style="font-size:10px;" aria-hidden="true"></i> Filter <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button><div class="cc-export-drop" id="cc-cap-filter-drop"><div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Capabilities</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('without-features')?'checked':''} onchange="ccSetCapFilter('without-features')"> Without features</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('with-features')?'checked':''} onchange="ccSetCapFilter('with-features')"> With features</label><div style="height:0.5px;background:var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Origin</div><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-kpi')?'checked':''} onchange="ccSetCapFilter('origin-kpi')"> <i class="ti ti-hierarchy-2" style="font-size:11px;color:var(--blue);" aria-hidden="true"></i> Discovery Map</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-doc')?'checked':''} onchange="ccSetCapFilter('origin-doc')"> <i class="ti ti-file-text" style="font-size:11px;color:var(--orange);" aria-hidden="true"></i> Session document</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-custom')?'checked':''} onchange="ccSetCapFilter('origin-custom')"> <i class="ti ti-clipboard-list" style="font-size:11px;color:var(--green);" aria-hidden="true"></i> Custom plan</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-mi')?'checked':''} onchange="ccSetCapFilter('origin-mi')"> <i class="ti ti-world-search" style="font-size:11px;color:var(--purple);" aria-hidden="true"></i> Market intelligence</label><label class="fc-filter-row"><input type="checkbox" ${ccCapFilter.has('origin-diag')?'checked':''} onchange="ccSetCapFilter('origin-diag')"> <i class="ti ti-microscope" style="font-size:11px;color:var(--amber);" aria-hidden="true"></i> Diagnostics</label>${_ccOriginRaFilterHtml()}<div style="border-top:1px solid var(--divider);margin:4px 0;"></div><div style="padding:4px 12px 8px;"><button onclick="ccSetCapFilter(null)" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div></div></div>
-          <div class="cc-export-wrap">${ccRenderExportBtn()}</div>
-          ${ccAddCapBtnHTML('cc-tb-btn-add')}
+          <button class="tm-dots" onclick="_uiRowMenuToggle(this,ccToolbarMenuHtml())" aria-label="Capability Canvas actions" aria-haspopup="true" aria-expanded="false"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>
         </div>
       </div>
       <div class="cc-legend">

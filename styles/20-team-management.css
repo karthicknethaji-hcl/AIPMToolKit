@@ -56,6 +56,7 @@
 .tm-menu-item {
   padding: 8px 12px;
   font-size: 11px;
+  font-weight: 600;
   color: var(--t2);
   display: flex; align-items: center; gap: 8px;
   cursor: pointer;
@@ -68,6 +69,48 @@
 .tm-menu-item-danger:hover, .tm-menu-item-danger:focus {
   background: #FCEBEB;
   color: var(--red);
+}
+
+/* Static (non-row-bound) kebab menu container - Feature Canvas toolbar
+   consolidation and any future static-trigger kebab reuse this instead of
+   each caller inlining its own wrapper style. */
+.tm-menu-static {
+  width: 180px;
+  background: #fff;
+  border: 0.5px solid var(--divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  overflow: hidden;
+}
+.tm-menu-item-expand {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.tm-menu-item-expand .ti-chevron-right {
+  font-size: 10px;
+  color: var(--t3);
+}
+/* Drill-in submenu - replaces the open popover's own content in place
+   (same DOM node, same position) rather than opening a side flyout. */
+.tm-submenu-standalone {
+  width: 180px;
+  background: #fff;
+  border: 0.5px solid var(--divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  overflow: hidden;
+}
+.tm-submenu-standalone .tm-submenu-back {
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--t3);
+  cursor: pointer;
+  display: flex; align-items: center; gap: 5px;
+  border-bottom: 1px solid var(--card);
+  font-family: var(--font);
+}
+.tm-submenu-standalone .tm-submenu-back:hover {
+  background: var(--card);
 }
 
 .tm-filter-row {

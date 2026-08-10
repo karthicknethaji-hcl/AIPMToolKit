@@ -116,10 +116,7 @@ function newScBuildLayout(){
                 </div>
               </div>
               ${_newScBriefFilterBtnHtml()}
-              <div style="position:relative;">
-                <button class="export-cta-btn" id="nsc-export-btn" onclick="newScExportAll()" disabled><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export</button>
-              </div>
-              ${((typeof canEditSession!=='function')||canEditSession())?`<button class="cc-tb-btn-add" onclick="newScShowAddStoryModal(null)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Story</button>`:''}`
+              <button class="tm-dots" id="nsc-toolbar-kebab" onclick="event.stopPropagation();newScToggleToolbarMenu(this)" aria-label="Story Canvas actions" aria-haspopup="true" aria-expanded="false"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>`
               :`<button class="export-cta-btn" id="nsc-proto-export-btn" onclick="pcAvailCall('pcExportPrototype','${newScActiveNavFeat||''}')" ${!(typeof protoStore!=='undefined'&&protoStore[newScActiveNavFeat]&&protoStore[newScActiveNavFeat].variants&&protoStore[newScActiveNavFeat].variants['v1']&&protoStore[newScActiveNavFeat].variants['v1'].generated)?'disabled':''}><i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export Prototype</button>`}
             </div>
           </div>
@@ -448,14 +445,39 @@ function newScRenderMain(){
   if(piSub)piSub.textContent=piCount>0?piCount+' PI selected':'Select stories for PI first';
 }
 
+// Toolbar kebab menu - replaces the old standalone Add Story + Export
+// buttons. Uses the generic _uiRowMenuToggle(triggerEl, menuHtml) helper
+// already used by Outcome Pulse / Home / Team Management / PI Planning.
+// Story Canvas has no bulk-upload path for stories, so unlike Capability
+// Canvas / Feature Canvas this menu is flat - no submenu, no chevron.
+function newScToggleToolbarMenu(triggerEl){
+  const canEdit=(typeof canEditSession!=='function')||canEditSession();
+  const addItem=canEdit?'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();newScShowAddStoryModal(null)"><i class="ti ti-plus" aria-hidden="true"></i> Add Story</div>':'';
+  const menuHtml='<div class="tm-menu-static" role="menu">'
+    +addItem
+    +'<div class="tm-menu-item" role="menuitem" tabindex="-1" onclick="_uiRowMenuClose();newScExportAll()"><i class="ti ti-download" aria-hidden="true"></i> Export</div>'
+    +'</div>';
+  _uiRowMenuToggle(triggerEl,menuHtml);
+}
+
+// Finds the single release plan (out of the global piPlans array) that owns
+// this story's sprint assignment, if any. Story Canvas has zero plan-
+// awareness beyond this lookup - a story belongs to exactly one plan's
+// storyAssignments at a time, never dual-tagged.
+function scFindOwningPlan(storyId){
+  return (typeof piPlans!=='undefined'&&Array.isArray(piPlans)) ? (piPlans.find(function(p){ return p.storyAssignments && p.storyAssignments[storyId]; }) || null) : null;
+}
+
 function newScBuildStoryCard(st,feat,stageColor){
   const isActive=newScPanelStoryId===st.id&&newScPanelFeatId===feat.id;
   const isPiSel=!!st._stagedForPI;
   const isInPIPlan=!!st._inPIPlan;
   const hasDeps=st.dependencies&&st.dependencies.length>0;
-  // Check if story is assigned to a sprint in PI plan
-  const sprintAssignment=typeof piPlan!=='undefined'&&piPlan&&piPlan.storyAssignments&&piPlan.storyAssignments[st.id];
+  // Check if story is assigned to a sprint in its owning release plan
+  const _owningPlan=scFindOwningPlan(st.id);
+  const sprintAssignment=_owningPlan&&_owningPlan.storyAssignments[st.id];
   const sprintLabel=sprintAssignment?('Sprint '+(sprintAssignment.sprint||'?')):null;
+  const piPlanName=_owningPlan?_owningPlan.name:'In PI plan';
 
   let cls='nsc-story-card sc-card';
   if(isInPIPlan||sprintLabel)cls+=' nsc-pi-planned';
@@ -481,7 +503,7 @@ function newScBuildStoryCard(st,feat,stageColor){
       <div class="sc-card-actions">
         ${_canEditScCard?`<button class="sc-card-pencil" onclick="event.stopPropagation();newScShowEditStoryModal('${e(st.id)}','${e(feat.id)}')" title="Edit story" aria-label="Edit story" style="background:none;border:none;cursor:pointer;padding:2px;color:var(--t3);display:flex;align-items:center;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
         ${isInPIPlan
-          ?`<div class="nsc-pi-tag" title="In PI plan"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> In PI plan ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span>`:''}</div>`
+          ?`<div class="nsc-pi-tag" title="${e(piPlanName)}"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${e(piPlanName)} ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span>`:''}</div>`
           :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for PI':'Select for PI'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
         }
         ${_canEditScCard?`<button class="sc-card-remove" onclick="event.stopPropagation();newScDeleteStoryById('${e(st.id)}','${e(feat.id)}')" title="Remove story">
@@ -605,21 +627,12 @@ async function newScSendToPI(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piCount=scCanvas.reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC&&s._stagedForPI).length:0),0);
   if(piCount===0){showToast('Select stories for PI first.','info');return;}
-  // v9.01.01 fix: confirmed via diagnostic logging that piPlan is still
-  // null at this point for any session that reaches Story Canvas without
-  // ever having opened PI Canvas first (e.g. Discovery Map -> Feature
-  // Canvas -> Story Canvas). The guard below previously just skipped the
-  // push silently whenever piPlan was null -- meaning the story-level
-  // _inPIPlan flags got set (so Story Canvas looked correct) but the
-  // actual backlog array PI Canvas and the tab-reveal check depend on was
-  // never created at all. Initializing it minimally here, matching only
-  // the two fields anything downstream actually needs (backlogStoryIds,
-  // storyAssignments) -- NOT a full plan shape (name/sprints/etc), since
-  // piOnTabEnter()/piRenderBoard() are now fixed (see below) to correctly
-  // treat "no sprints yet" as the backlog-only empty state, not a
-  // generated plan.
-  if(typeof piPlan==='undefined'||!piPlan){
-    piPlan={backlogStoryIds:[],storyAssignments:{}};
+  // Story Canvas has zero plan-awareness by design - it never references
+  // any release plan object. Stories staged for PI go straight into the
+  // GLOBAL backlog array; which plan (if any) eventually claims them is
+  // entirely PI Planning's concern.
+  if(typeof piBacklogStoryIds==='undefined'||!Array.isArray(piBacklogStoryIds)){
+    piBacklogStoryIds=[];
   }
   // Dispatch: mark _inPIPlan, clear _stagedForPI, sync backlog
   scCanvas.forEach(f=>{
@@ -628,11 +641,8 @@ async function newScSendToPI(){
       if(st._inSC&&!st._hiddenFromSC&&st._stagedForPI){
         st._inPIPlan=true;
         st._stagedForPI=false;
-        if(typeof piPlan!=='undefined'&&piPlan){
-          if(!piPlan.backlogStoryIds)piPlan.backlogStoryIds=[];
-          if(!piPlan.backlogStoryIds.includes(st.id)&&!(piPlan.storyAssignments&&piPlan.storyAssignments[st.id])){
-            piPlan.backlogStoryIds.push(st.id);
-          }
+        if(!piBacklogStoryIds.includes(st.id)&&!scFindOwningPlan(st.id)){
+          piBacklogStoryIds.push(st.id);
         }
       }
     });
@@ -1100,10 +1110,12 @@ function newScConfirmRemoveFromPI(storyId,featId){
       if(st){
         st._inPIPlan=false;
         st._stagedForPI=false;
-        // Remove from PI plan if exists
-        if(typeof piPlan!=='undefined'&&piPlan){
-          if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-          if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+        // Remove from whichever plan owns it (if any), and return it to
+        // the global backlog rather than any plan-scoped field.
+        const _owner=scFindOwningPlan(storyId);
+        if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+        if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+          piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
         }
         scPiSelectedIds=new Set();
         scCanvas.forEach(f=>{if(f.stories&&f.stories.some(s=>s._stagedForPI))scPiSelectedIds.add(f.id);});
@@ -1130,10 +1142,12 @@ function newScDoRemoveStory(storyId,featId){
   st._hiddenFromSC=true;
   st._inSC=false;
   st._stagedForPI=false;
-  // Clean PI plan
-  if(typeof piPlan!=='undefined'&&piPlan){
-    if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-    if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+  // Clean PI plan - resolve the owning plan (if any) and strip the story
+  // from the global backlog too, never a plan-scoped field.
+  const _owner=scFindOwningPlan(storyId);
+  if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+  if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+    piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
   }
   if(typeof scPiSelectedIds!=='undefined'){
     scPiSelectedIds=new Set();
@@ -1169,10 +1183,13 @@ function newScDeleteStoryById(storyId,featId){
     `Remove "${st.title||st.id}"?`,
     warningMsg,
     ()=>{
-      // Remove from PI plan if assigned
-      if(typeof piPlan!=='undefined'&&piPlan){
-        if(piPlan.storyAssignments)delete piPlan.storyAssignments[storyId];
-        if(piPlan.backlogStoryIds)piPlan.backlogStoryIds=piPlan.backlogStoryIds.filter(id=>id!==storyId);
+      // Remove from PI plan if assigned - resolve the owning plan, and
+      // strip the story from the global backlog too, never a plan-scoped
+      // field.
+      const _owner=scFindOwningPlan(storyId);
+      if(_owner&&_owner.storyAssignments)delete _owner.storyAssignments[storyId];
+      if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds)){
+        piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
       }
       // Hide from SC only — do not delete from FC (shared data model)
       const _st=feat.stories.find(s=>s.id===storyId);

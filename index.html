@@ -413,19 +413,9 @@
                       <div style="padding:4px 12px 8px;"><button onclick="fcClearFilter()" style="font-size:10px;color:var(--purple);background:none;border:none;cursor:pointer;font-family:var(--font);padding:0;">Clear all filters</button></div>
                     </div>
                   </div>
-                  <!-- Export -->
-                  <div class="sc-export-wrap" id="sc-export-wrap-toolbar">
-                    <button class="export-cta-btn" id="sc-export-btn" onclick="scExportAll()" disabled>
-                      <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export
-                    </button>
-                  </div>
-                  <!-- Add Feature — primary, rightmost (dropdown: single / upload, v7.84) -->
-                  <div class="cc-addcap-wrap" id="sc-add-feat-wrap" style="position:relative;">
-                    <button class="cc-tb-btn-add" onclick="scToggleAddFeatDrop(event)"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-down" style="font-size:10px;" aria-hidden="true"></i></button>
-                    <div class="cc-addcap-drop" id="sc-addfeat-drop">
-                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowAddFeatureModal()"><i class="ti ti-pencil" aria-hidden="true"></i> Single Feature</div>
-                      <div class="cc-addcap-opt" onclick="scCloseAddFeatDrop();scShowUploadFeatModal()"><i class="ti ti-upload" aria-hidden="true"></i> Upload from File</div>
-                    </div>
+                  <!-- Actions kebab - consolidates Add Feature + Export (v9.20) -->
+                  <div class="cc-addcap-wrap" id="sc-tb-kebab-wrap" style="position:relative;">
+                    <button class="tm-dots" id="sc-tb-kebab-btn" aria-label="Feature Canvas actions" aria-haspopup="true" aria-expanded="false" onclick="event.stopPropagation();scToggleTbKebabMenu(this)"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>
                   </div>
                 </div>
               </div>

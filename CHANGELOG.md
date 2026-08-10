@@ -1,5 +1,12 @@
 # Changelog — AI PM Toolkit
 
+## v9.20 - 2026-08-10: Multi-Release Plan Support + Kebab Menu Consolidation
+
+- Added - Release Canvas now supports multiple, strictly sequential release plans (`piPlans[]`, replacing the single `piPlan`). Each new plan's start date must fall after the latest end date among all existing plans, enforced with no override. A shared, plan-agnostic backlog tray (`piBacklogStoryIds`) holds stories sent from Story Canvas until a plan claims them at generation time.
+- Added - Release Canvas's configuration screen redesigned: large serif release-name field, inline Starts/Sprints/Duration row, quiet Squad Capacity list, and a collapsed-by-default Additional Remarks field (renamed from Known Dependencies).
+- Changed - Kebab menu consolidation across Capability Canvas, Feature Canvas, Story Canvas, and Release Canvas - standalone Add/Export toolbar buttons are replaced by a single kebab per canvas, matching the existing pattern already used elsewhere in the app.
+- Changed - Story Canvas's "In PI plan" badge now shows the specific release plan name a story is sequenced into.
+
 ## v9.19 — Discovery Map: Reference Anchor + Distinctiveness Quota
 
 - Added — Discovery Map's AI generation (both Outcome Metrics and Process Area / capability-based approaches) now silently reasons against an internal reference-company analogue drawn from training knowledge, to push capability and stage naming toward operating-model-specific vocabulary instead of generic industry terms. No new input required; nothing is surfaced in the output.

@@ -660,7 +660,7 @@ function switchTab(t){
     const scTabReveal=document.getElementById('tab-sc');
     if(scTabReveal&&typeof scCanvas!=='undefined'&&scCanvas.some(f=>f.stories&&f.stories.length>0))scTabReveal.classList.add('revealed');
     const piTabReveal=document.getElementById('tab-pi');
-    if(piTabReveal&&typeof featPI!=='undefined'&&featPI&&typeof piPlan!=='undefined'&&piPlan)piTabReveal.classList.add('revealed');
+    if(piTabReveal&&typeof featPI!=='undefined'&&featPI&&typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0)piTabReveal.classList.add('revealed');
   }
   // Story Canvas tab entry
   if(t==='sc'){

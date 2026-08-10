@@ -196,7 +196,9 @@ let piInputs={
   overlapResolutions:{}
 };
 
-let piPlan=null;
+let piPlans=[];
+let piBacklogStoryIds=[];
+let _piActivePlanId=null;
 // Phase 5 fix (v8.118): flag set by the regenerate-confirm modal's own
 // button, letting piGenerate()'s re-entry skip straight past its own
 // confirm-modal branch and proceed to the lock-gated wipe — see
@@ -210,7 +212,6 @@ let _pgRegenConfirmed=false;
 // read-only, before piPlan gets wiped.
 let _pgRegenPriorSubmittedStoryIds=null;
 let piStoryPool={};  // standalone stories not attached to scCanvas features (PI demo + future use)
-let piSquads=[{name:(appSettings.defaultSquadName||'Squad')+' 1',capacity:appSettings.defaultSquadCapacity||80}];
 let piScVersion=null;
 let piDdPanelOpen=false;
 let piDdPanelMetricKey=null;

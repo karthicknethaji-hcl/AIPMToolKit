@@ -344,7 +344,7 @@ async function sessionStoreSyncFromDB() {
               remoteSnapshot = Object.assign({}, remoteSnapshot, {
                 capStore:   localSnap.capStore,
                 scCanvas:   localSnap.scCanvas,
-                piPlan:     localSnap.piPlan,
+                piPlans:    localSnap.piPlans,
                 dmRegenAt:  localSnap.dmRegenAt
               });
             }
@@ -809,6 +809,30 @@ var _ssRestoreSeq = 0;
 // save-before-clear landmine documented there — this function never
 // saves anything, so calling it twice, from two different callers, has
 // no side effects beyond the assignments themselves.
+// v9.20: multi-release-plan migration — converts a legacy single-plan
+// snapshot (s.piPlan / s.piSquads) into the new s.piPlans array plus the
+// promoted, plan-agnostic s.piBacklogStoryIds. Mirrors the productLeakAnalysis
+// legacy-wrap precedent above: detect the legacy non-array shape, wrap it
+// with generated metadata, normalize. No-op if already migrated.
+function migrateToMultiReleasePlans(snapshot){
+  if (Array.isArray(snapshot.piPlans)) return; // already migrated, no-op
+  if (snapshot.piPlan) {
+    var legacyPlan = Object.assign({}, snapshot.piPlan, {
+      id: 'rp-legacy-1',
+      squads: snapshot.piSquads || [],
+      createdAt: Date.now()
+    });
+    delete legacyPlan.backlogStoryIds; // promoted to snapshot.piBacklogStoryIds below
+    snapshot.piPlans = [legacyPlan];
+    snapshot.piBacklogStoryIds = snapshot.piPlan.backlogStoryIds || [];
+  } else {
+    snapshot.piPlans = [];
+    snapshot.piBacklogStoryIds = snapshot.piBacklogStoryIds || [];
+  }
+  delete snapshot.piPlan;
+  delete snapshot.piSquads;
+}
+
 function _ssApplySnapshotFields(s) {
   if (s.sessionContext !== undefined) sessionContext = s.sessionContext;
   if (s.gData !== undefined) gData = s.gData;
@@ -841,13 +865,15 @@ function _ssApplySnapshotFields(s) {
     }
     scStoryIdCounter=_maxFromCanvas;
   }
-  if (s.piPlan !== undefined) piPlan = s.piPlan;
+  migrateToMultiReleasePlans(s);
+  if (s.piPlans !== undefined) piPlans = s.piPlans;
+  if (s.piBacklogStoryIds !== undefined) piBacklogStoryIds = s.piBacklogStoryIds;
+  if (!_piActivePlanId && piPlans && piPlans.length) _piActivePlanId = piPlans[0].id;
   if (s.piInputs !== undefined) piInputs = s.piInputs;
   // FIX 2.1 (v9.03): Migrate old sessions with removed prev-pi type
   if (typeof ccMigrateLegacyPIInputs === 'function' && piInputs) {
     ccMigrateLegacyPIInputs(piInputs);
   }
-  if (s.piSquads !== undefined) piSquads = s.piSquads;
   if (s.diagnosticSessions !== undefined) diagnosticSessions = s.diagnosticSessions;
   if (s.activeDiagnosticId !== undefined) activeDiagnosticId = s.activeDiagnosticId;
   // Safety net: if diagnosticSessions restored but activeDiagnosticId is null, auto-set to first session
@@ -1546,9 +1572,9 @@ function _sessionStoreBuildSnapshot(opts) {
     capStore: (typeof capStore !== 'undefined') ? capStore : {},
     scCanvas: (typeof scCanvas !== 'undefined') ? scCanvas : [],
     scStoryIdCounter: (typeof scStoryIdCounter !== 'undefined') ? scStoryIdCounter : 0,
-    piPlan: (typeof piPlan !== 'undefined') ? piPlan : null,
+    piPlans: (typeof piPlans !== 'undefined') ? piPlans : [],
+    piBacklogStoryIds: (typeof piBacklogStoryIds !== 'undefined') ? piBacklogStoryIds : [],
     piInputs: (typeof piInputs !== 'undefined') ? piInputs : null,
-    piSquads: (typeof piSquads !== 'undefined') ? piSquads : [],
     diagnosticSessions: (typeof diagnosticSessions !== 'undefined') ? diagnosticSessions : [],
     activeDiagnosticId: (typeof activeDiagnosticId !== 'undefined') ? activeDiagnosticId : null,
     productLeakAnalysis: (typeof productLeakAnalysis !== 'undefined') ? productLeakAnalysis : [],
@@ -1614,7 +1640,7 @@ function _ssComputeLastStage() {
   // as well, so this branch only fires for legacy sessions that actually
   // used the old chat.
   if (typeof glStatus !== 'undefined' && glStatus === 'active' && typeof glMessages !== 'undefined' && glMessages && glMessages.length > 0) return 'Guided Launch';
-  if (typeof piPlan !== 'undefined' && piPlan) return 'Release Canvas';
+  if (typeof piPlans !== 'undefined' && Array.isArray(piPlans) && piPlans.length > 0) return 'Release Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });
     if (hasStories) return 'Story Canvas';
@@ -1666,16 +1692,14 @@ function _ssComputeCounts() {
     });
   }
 
-  if (typeof piPlan !== 'undefined' && piPlan && piPlan.storyAssignments) {
-    const sprintIds = Object.values(piPlan.storyAssignments)
-      .filter(function(v) { return v && v !== 'backlog'; });
-    if (sprintIds.length > 0) {
-      const nums = sprintIds.map(function(s) {
-        const m = String(s).match(/(\d+)$/);
-        return m ? parseInt(m[1]) : 0;
-      }).filter(function(n) { return n > 0; });
-      if (nums.length > 0) sprintActive = 'Sprint ' + Math.max.apply(null, nums);
-    }
+  if (typeof piPlans !== 'undefined' && Array.isArray(piPlans) && piPlans.length > 0) {
+    const _activePlan = (typeof _piActivePlanId !== 'undefined' && _piActivePlanId)
+      ? piPlans.find(function(p) { return p.id === _piActivePlanId; }) || piPlans[0]
+      : piPlans[0];
+    const sprintNums = Object.values(_activePlan.storyAssignments || {})
+      .map(function(a) { return a && a.sprint; })
+      .filter(function(n) { return typeof n === 'number' && n > 0; });
+    if (sprintNums.length > 0) sprintActive = 'Sprint ' + Math.max.apply(null, sprintNums);
   }
 
   var _docs=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.sessionDocs)
@@ -1842,10 +1866,16 @@ function _ssRevealTabs(s, meta) {
   // meant this check couldn't actually distinguish "nothing staged" from
   // "stories staged" -- now requires genuine staged content (a non-empty
   // backlog or at least one sprint assignment) before revealing the tab.
-  const hasPiContent = s.piPlan && (
-    (Array.isArray(s.piPlan.backlogStoryIds) && s.piPlan.backlogStoryIds.length > 0) ||
-    (s.piPlan.storyAssignments && Object.keys(s.piPlan.storyAssignments).length > 0)
-  );
+  // v9.20: s.piPlan (singular) no longer exists on any snapshot saved after
+  // this update - migrateToMultiReleasePlans() converts it to s.piPlans[]
+  // (and the plan-agnostic s.piBacklogStoryIds) before this ever runs, and
+  // a brand-new session created after v9.20 never had s.piPlan to begin
+  // with. Reveal whenever any plan has real content, or the shared backlog
+  // tray itself has stories waiting.
+  const hasPiContent = (Array.isArray(s.piBacklogStoryIds) && s.piBacklogStoryIds.length > 0) ||
+    (Array.isArray(s.piPlans) && s.piPlans.some(function(p){
+      return p && p.storyAssignments && Object.keys(p.storyAssignments).length > 0;
+    }));
   // TEMP DIAGNOSTIC (v9.01-diag) — remove once the PI-tab-resume issue is
   // confirmed fixed across a few real reproductions. Logs the actual
   // restored piPlan content and the reveal decision, so if the tab still

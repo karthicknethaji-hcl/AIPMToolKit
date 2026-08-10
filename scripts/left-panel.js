@@ -62,13 +62,13 @@ function applyFeats(){
     if(miTabEl)miTabEl.style.display='none';
     if(curTab==='mi')switchTab('mm');
   }
-  // PI Planning: hide tab if disabled, show if enabled and piPlan exists
+  // PI Planning: hide tab if disabled, show if enabled and a release plan exists
   const piTabEl=document.getElementById('tab-pi');
   if(piTabEl){
     if(!featPI){
       piTabEl.classList.remove('revealed');
       if(curTab==='pi')switchTab('mm');
-    } else if(typeof piPlan!=='undefined'&&piPlan){
+    } else if(typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0){
       piTabEl.classList.add('revealed');
     }
   }

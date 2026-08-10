@@ -1527,18 +1527,22 @@ function _lsApplyWholesaleCanvas(canvas, freshSnapshot, changeKind, changerName)
     return { appliedAny: true, description: 'Discovery Map regenerated' };
   }
   if (canvas === 'pi') {
-    if (freshSnapshot.piPlan === undefined) return { appliedAny: false, description: null };
-    piPlan = freshSnapshot.piPlan;
+    if (freshSnapshot.piPlans === undefined) return { appliedAny: false, description: null };
+    piPlans = freshSnapshot.piPlans;
+    if (freshSnapshot.piBacklogStoryIds !== undefined) piBacklogStoryIds = freshSnapshot.piBacklogStoryIds;
     if (freshSnapshot.piInputs !== undefined) piInputs = freshSnapshot.piInputs;
-    // v8.133 fix (item 2): piSquads is written by piGenerate() itself
-    // (squadsCapped) — missing it left the receiving viewer's squad
-    // capacity/color data stale relative to the newly-applied plan.
-    if (freshSnapshot.piSquads !== undefined) piSquads = freshSnapshot.piSquads;
+    // _piActivePlanId is intentionally NOT touched here — local per-collaborator state.
+    // If the currently-active plan id no longer exists in the fresh piPlans (e.g. deleted by
+    // another collaborator), fall back to the first available plan so the viewer isn't left
+    // pointing at nothing.
+    if (_piActivePlanId && !piPlans.some(function(p){return p.id === _piActivePlanId;})) {
+      _piActivePlanId = piPlans.length ? piPlans[0].id : null;
+    }
     // v8.141 (item 8): same conflict protection either way (full wholesale
-    // replace, same confirm-before-discard gate) — only the description
+    // replace, same confirm-before-discard gate) - only the description
     // differs, so a receiving viewer has a rough sense of which kind of
     // change happened, per the critique's recommendation.
-    var _piDesc = (changeKind === 'manual') ? (changerName || 'A teammate') + ' updated the PI Plan' : 'PI Plan regenerated';
+    var _piDesc = (changeKind === 'manual') ? (changerName || 'A teammate') + ' updated a release plan' : 'Release plan regenerated';
     return { appliedAny: true, description: _piDesc };
   }
   if (canvas === 'mi') {

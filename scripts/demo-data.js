@@ -662,7 +662,7 @@ function _demoLoadFocusly(){
   // ── PI Planning demo data — realistic board (3 squads, 5 sprints, 27+3 stories) ──
   piMode=false;
   // Capacity = story points per sprint (not PI total)
-  piSquads=[
+  const _demoSquads1=[
     {name:'Core App', devs:4,sprints:5,availability:85,capacity:18},
     {name:'Growth',   devs:3,sprints:5,availability:80,capacity:14},
     {name:'Platform', devs:3,sprints:5,availability:75,capacity:12}
@@ -763,7 +763,9 @@ function _demoLoadFocusly(){
     demoSprints2.push({id:i2+1,label:'Sprint '+(i2+1),dateRange:fmt2(s2)+' – '+fmt2(e3)});
   }
 
-  piPlan={
+  const _demoPlan1={
+    id:'rp-demo-1',
+    createdAt:Date.now(),
     name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStart2.toISOString().split('T')[0],
     sprintCount:5,sprintDuration:14,
@@ -778,7 +780,6 @@ function _demoLoadFocusly(){
       {description:'App Store Connect API access for screenshot A/B testing',owner:'Apple',dueDate:'Sprint 1',status:'confirmed'},
       {description:'Push notification certificate renewal',owner:'DevOps',dueDate:'Before Sprint 2',status:'in-progress'}
     ],
-    backlogStoryIds:['ST-GR7'],
     businessValueBullets:[
       'Reduce week-2 churn by 15% through habit formation mechanics',
       'Increase App Store rating from 4.1 to 4.4 via review management',
@@ -788,8 +789,13 @@ function _demoLoadFocusly(){
     businessValueOneLiner:'This PI builds the habit formation and platform infrastructure needed to convert first-week users into long-term subscribers.',
     backlogNotes:{
       'ST-GR7':'Low priority — rating trend data not available until ST-PL3 analytics schema lands'
-    }
+    },
+    squads:_demoSquads1
   };
+  piPlans=[_demoPlan1];
+  _piActivePlanId=_demoPlan1.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  if(!piBacklogStoryIds.includes('ST-GR7'))piBacklogStoryIds.push('ST-GR7');
 
   // Set _inPIPlan flags on demo stories that are in the PI plan
   // ST-004, ST-005 (One-tap session start) and ST-001 (post-session share) are in Sprint 1/2
@@ -1347,7 +1353,7 @@ function _demoLoadOrderHub(){
 
   // ── PI Planning demo data — light board (2 squads, 2 sprints, ~9 stories) ──
   piMode=false;
-  piSquads=[
+  const _demoSquadsOH=[
     {name:'Capture Squad',  devs:3,sprints:2,availability:85,capacity:14},
     {name:'Returns Squad',  devs:3,sprints:2,availability:80,capacity:12}
   ];
@@ -1401,7 +1407,9 @@ function _demoLoadOrderHub(){
     demoSprintsOH.push({id:iOH+1,label:'Sprint '+(iOH+1),dateRange:fmtOH(sOH)+' \u2013 '+fmtOH(eOH)});
   }
 
-  piPlan={
+  const _demoPlanOH={
+    id:'rp-demo-oh',
+    createdAt:Date.now(),
     name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStartOH.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
@@ -1413,7 +1421,6 @@ function _demoLoadOrderHub(){
     externalDeps:[
       {description:'Carrier zone data feed access for address serviceability validation',owner:'Carrier Partner API team',dueDate:'Sprint 1',status:'in-progress'}
     ],
-    backlogStoryIds:_backlogIdsOH,
     businessValueBullets:[
       'Improve order fill rate by surfacing accurate stock signals earlier in the funnel',
       'Reduce return processing time through guided reasons and in-store drop-off',
@@ -1423,8 +1430,13 @@ function _demoLoadOrderHub(){
     backlogNotes:{
       'ST-CAP4':'Blocked on carrier zone data feed — see external dependency',
       'ST-RET5':'Blocked on carrier scan webhook integration'
-    }
+    },
+    squads:_demoSquadsOH
   };
+  piPlans=[_demoPlanOH];
+  _piActivePlanId=_demoPlanOH.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  _backlogIdsOH.forEach(function(id){if(!piBacklogStoryIds.includes(id))piBacklogStoryIds.push(id);});
 
   // Set _inSC and _inPIPlan flags on demo stories
   const _piInPlanIdsOH=['ST-001','ST-002','ST-004','ST-005'];
@@ -1586,8 +1598,9 @@ function clearDemoMode(){
   ddGenerated=false;
   // Reset PI planning state
   piMode=false;
-  piPlan=null;
-  piSquads=[];
+  piPlans=[];
+  piBacklogStoryIds=[];
+  _piActivePlanId=null;
   piScVersion=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   // Hide PI tab
@@ -2140,7 +2153,7 @@ function _demoLoadUnifiedCart(){
 
   // ── PI Planning demo data — light board (2 squads, 2 sprints, ~9-10 stories) ──
   piMode=false;
-  piSquads=[
+  const _demoSquadsOC=[
     {name:'Cart & Checkout Squad', devs:4,sprints:2,availability:85,capacity:16},
     {name:'Accessibility Squad',   devs:2,sprints:2,availability:80,capacity:10}
   ];
@@ -2192,7 +2205,9 @@ function _demoLoadUnifiedCart(){
     demoSprintsOC.push({id:iOC+1,label:'Sprint '+(iOC+1),dateRange:fmtOC(sOC)+' \u2013 '+fmtOC(eOC)});
   }
 
-  piPlan={
+  const _demoPlanOC={
+    id:'rp-demo-oc',
+    createdAt:Date.now(),
     name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStartOC.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
@@ -2204,7 +2219,6 @@ function _demoLoadUnifiedCart(){
     externalDeps:[
       {description:'WCAG 2.2 AA audit checkpoint with external accessibility consultant',owner:'Accessibility Consultant',dueDate:'End of Sprint 2',status:'confirmed'}
     ],
-    backlogStoryIds:_backlogIdsOC,
     businessValueBullets:[
       'Increase cross-business attach rate via in-cart suggestions, date-conflict resolution, and single-charge checkout',
       'Ship WCAG 2.2 AA compliance for unified checkout ahead of the Q3 regulatory deadline',
@@ -2214,8 +2228,13 @@ function _demoLoadUnifiedCart(){
     backlogNotes:{
       'ST-CC4':'Blocked on bundle pricing engine carry-forward from PI-2026-Q1',
       'ST-A3':'Lower priority — itinerary calendar view accessibility scoped for next PI'
-    }
+    },
+    squads:_demoSquadsOC
   };
+  piPlans=[_demoPlanOC];
+  _piActivePlanId=_demoPlanOC.id;
+  piBacklogStoryIds=(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))?piBacklogStoryIds:[];
+  _backlogIdsOC.forEach(function(id){if(!piBacklogStoryIds.includes(id))piBacklogStoryIds.push(id);});
 
   // Set _inSC and _inPIPlan flags on demo stories
   const _piInPlanIdsOC=['ST-001','ST-002','ST-003','ST-007','ST-008'];

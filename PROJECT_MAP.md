@@ -51,7 +51,7 @@
 - Capability Canvas: `capStore`, `capStoreInvalidated`, `capActiveMetricKey`, `capActiveCapIdx`, `capActiveSubCapIdx`, `ccSelectedCapIds`, `ccPanelCapKey`
 - Diagnostic: `diagnosticSessions`, `activeDiagnosticId`, `productLeakAnalysis`, `diagEvidenceDrawerMetricId`, `leakDetailExperimentIdx`, `leakColDefaults`, `leakColVisible`, `leakFilters`, `leakSelectedIds`
 - Market Intelligence: `miData`, `miGenerated`, `miProductMode`, `miCapabilities`, `miFeatureCache`
-- PI Planning: `piMode`, `piFirstBuilt`, `piInputs`, `piPlan`, `piStoryPool`, `piSquads`, `piScVersion`, `piDdPanelOpen`, `piDdPanelMetricKey`
+- PI Planning (v9.20: multi-release-plan): `piMode`, `piFirstBuilt`, `piInputs`, `piPlans` (array of plan objects, each with its own `squads[]` - replaces the old singular `piPlan`/global `piSquads`), `piBacklogStoryIds` (global, plan-agnostic backlog tray), `_piActivePlanId` (local UI state only, never persisted or synced), `piStoryPool`, `piScVersion`, `piDdPanelOpen`, `piDdPanelMetricKey`
 
 `scripts/utils.js` — `e()` HTML escape, `showToast()`, `showConfirm()`, `trapFocus()`, shared helpers. `_uiRowMenuToggle()`/`_uiRowMenuClose()` — content-agnostic dropdown-menu mechanics (open/position/outside-click/Escape/single-open-at-a-time), used by Team Management's row-action menu and the session-card 3-dot menu. `ejs()` — JS-string-escape helper, distinct from `e()`'s HTML-escape: `e()` alone is unsafe when a value is spliced into an inline `onclick` JS string literal — see `home.js`'s `_homeSessMenuAction()` for the preferred fix, which avoids this class of bug entirely by moving off inline `onclick` string-splicing. `showConfirm()` has an optional 8th param `secondAction` ({label, bg, color, borderColor, onClick}) — renders a third button between Cancel and the primary confirm, used by Team Management's shared-session delete modal (see `team-management.js`).
 
@@ -413,8 +413,8 @@
 |---|---|---|---|
 | Caps → Story Canvas (KPI path) | `capability-canvas.js` | `ccSendToStoryCanvas()` | `scCanvas[]` |
 | Caps → Story Canvas (PI-first path) | `capability-canvas.js` | `ccSendToStoryCanvas()` | `scCanvas[]` (origin: 'pi') |
-| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (panel) | `feature-canvas.js` | `scPanelSendToPI()` | `piPlan.backlog[]` |
-| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (card nudge) | `feature-canvas.js` | `scPushStoriesToPI()` | `piPlan.backlog[]` |
+| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (panel) | `feature-canvas.js` | `scPanelSendToPI()` | `piBacklogStoryIds[]` (global, plan-agnostic) |
+| Stories → Release Canvas (user-facing label; internal code/ids remain `pi`-prefixed — label-only rename) (card nudge) | `feature-canvas.js` | `scPushStoriesToPI()` | `piBacklogStoryIds[]` (global, plan-agnostic) |
 | Market signals → Story Canvas | `market-intelligence.js` | `miSendToCanvas()` | `scCanvas[]` (origin: 'mi') |
 | Diagnostics → Story Canvas | `product-leak-analysis.js` | `laSendToStoryCanvas()` | `scCanvas[]` (origin: 'diagnostic') |
 | KPI tree regen → Evidence preserved | `diagnostic-view.js` | `dvMergeEvidenceOnRegen()` | `diagnosticSessions[]` |
