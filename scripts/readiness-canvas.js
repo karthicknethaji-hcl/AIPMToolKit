@@ -547,11 +547,14 @@ function rcTogglePanel(){
 // state applies across the whole plan while it's finalized. Consolidates
 // what used to be a separate breadcrumb-style canvas header (now
 // redundant with the left panel's Release Plan card). ──
+function rcStatusPillHtml(plan){
+  const isFinalized=plan.status==='finalized';
+  return `<span class="rc-status-pill${isFinalized?' rc-status-pill-finalized':''}">${isFinalized?'<i class="ti ti-lock" aria-hidden="true"></i> Finalized · Read-only':'Draft'}</span>`;
+}
 function rcTopActionsHtml(plan){
   const isFinalized=plan.status==='finalized';
-  const statusPill=`<span class="rc-status-pill${isFinalized?' rc-status-pill-finalized':''}">${isFinalized?'<i class="ti ti-lock" aria-hidden="true"></i> Finalized · Read-only':'Draft'}</span>`;
   const reopenLink=isFinalized?`<button class="rc-reopen-link" onclick="rcReopenForEdit()">Reopen for edits</button>`:'';
-  return `<div class="rc-top-actions">${statusPill}${reopenLink}<button class="rc-export-btn" onclick="rcExportDocx()"><i class="ti ti-download" aria-hidden="true"></i> Export</button></div>`;
+  return `<div class="rc-top-actions">${reopenLink}<button class="rc-export-btn" onclick="rcExportDocx()"><i class="ti ti-download" aria-hidden="true"></i> Export</button></div>`;
 }
 
 // ── Master render ────────────────────────────────────────────────────────
@@ -577,7 +580,7 @@ function rcRenderCanvas(){
       <div class="rc-main">
         <div class="rc-content">
           <div class="rc-section-title-row">
-            <div class="rc-section-title">${sec.n}. ${e(sec.label)}</div>
+            <div class="rc-section-title">${sec.n}. ${e(sec.label)} ${rcStatusPillHtml(plan)}</div>
             ${rcTopActionsHtml(plan)}
           </div>
           ${sectionHtml}
