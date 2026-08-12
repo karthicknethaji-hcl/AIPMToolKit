@@ -749,7 +749,10 @@ function rcLeftPanelHtml(plan){
         ${sourcesHtml}
         <div class="rc-lp-lineage-link" onclick="rcOpenLineageDrawer()">View full lineage &rarr;</div>
       </div>
-      <div class="rc-step-nav">${stepsHtml}</div>
+      <div class="rc-lp-card">
+        <div class="rc-lp-card-title">Progress</div>
+        <div class="rc-step-nav">${stepsHtml}</div>
+      </div>
     </div>
   `;
 }
