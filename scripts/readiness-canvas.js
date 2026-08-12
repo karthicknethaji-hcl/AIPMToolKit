@@ -945,10 +945,14 @@ function rcOpenLineageDrawer(){
     </div>`).join('');
   drawer.innerHTML=`
     <div class="rc-lineage-hdr">
-      <div>Lineage &amp; Sources</div>
+      <div>
+        <div class="rc-lineage-tag">Lineage</div>
+        <div class="rc-lineage-title">Lineage &amp; Sources</div>
+      </div>
       <button onclick="rcCloseLineageDrawer()" title="Close" aria-label="Close"><i class="ti ti-x" aria-hidden="true"></i></button>
     </div>
     <div class="rc-lineage-body">${rows||'<div class="rc-empty">No lineage sources.</div>'}</div>
+    <div class="rc-lineage-footer">Read-only lineage view</div>
   `;
   drawer.classList.add('open');
   trapFocus(drawer);
