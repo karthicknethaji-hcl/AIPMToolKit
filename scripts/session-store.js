@@ -1682,6 +1682,13 @@ function _ssComputeLastStage() {
 function _ssComputeCounts() {
   let caps = 0, features = 0, stories = 0, sprintActive = null;
 
+  var briefs = 0;
+  if (typeof raConversations !== 'undefined' && Array.isArray(raConversations)) {
+    briefs = raConversations.filter(function(c) { return c && c.status === 'finalized'; }).length;
+  }
+
+  var releases = (typeof piPlans !== 'undefined' && Array.isArray(piPlans)) ? piPlans.length : 0;
+
   if (typeof capStore !== 'undefined') {
     Object.keys(capStore).forEach(function(k) {
       const e = capStore[k];
@@ -1725,7 +1732,7 @@ function _ssComputeCounts() {
     }).length;
   }
 
-  return { caps, features, stories, sprintActive, docs:_docs, protos };
+  return { caps, features, stories, sprintActive, docs:_docs, protos, briefs, releases };
 }
 
 // Phase 5 fix (v8.118): single source of truth for "should the MI tab be

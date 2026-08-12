@@ -305,7 +305,16 @@ const CALLER_TIERS = {
   // post-Capability-Canvas agent — see requirement-agent.js) — same general
   // tier/resolution-chain reasoning as guided-launch above. Distinct caller
   // key from 'guided-launch' on purpose: these are two separate features.
-  'requirement-agent': 'general'
+  'requirement-agent': 'general',
+  // v9.23: Adoption Readiness's optional "Regenerate with AI" enhancements
+  // (readiness-canvas.js) — general tier, same reasoning-over-structured-
+  // JSON profile as fc-gen-stories. The deterministic/templated drafts
+  // remain the default and the fallback on any AI-call failure; these
+  // callers only fire when the user explicitly requests enrichment.
+  'arp-change-overview': 'general',
+  'arp-impact-groups': 'general',
+  'arp-readiness-actions': 'general',
+  'arp-launch-narrative': 'general'
 };
 
 // Tier -> model, per provider. This is the ONLY place a literal model ID
