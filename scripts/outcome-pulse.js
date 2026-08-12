@@ -508,7 +508,16 @@ function opBuildStageGroups(){
 // ADOPTION_READINESS_SPEC.md §5 non-goals: no per-release checkpoint
 // field). Shares opSignalFilter/opMetricFilter with the Stage view. ──
 function opBuildReleaseGroups(){
-  const plans=(typeof piPlans!=='undefined'?piPlans:[]);
+  // A release only earns a place in the outcome breakdown once its own
+  // Adoption Readiness plan has been finalized — a draft/in-review release
+  // hasn't actually launched yet, so there's no real outcome signal to
+  // attribute to it (matches the same "draft content shouldn't count as
+  // done" principle used throughout Adoption Readiness's review gating).
+  const readinessPlans=(typeof piReadinessPlans!=='undefined'?piReadinessPlans:[]);
+  const plans=(typeof piPlans!=='undefined'?piPlans:[]).filter(p=>{
+    const rp=readinessPlans.find(r=>r.releasePlanId===p.id);
+    return rp&&rp.status==='finalized';
+  });
   const byRelease={};
   plans.forEach(p=>{byRelease[p.id]={stageKey:'release:'+p.id,stageLabel:p.name||'Untitled Release',features:[]};});
   scCanvas.forEach(f=>{

@@ -799,6 +799,17 @@ function rcRenderCanvas(){
   const container=document.getElementById('rc-canvas');
   const plan=rcGetActivePlan();
   if(!container||!plan)return;
+  // .rc-content is destroyed and rebuilt on every render (innerHTML swap
+  // below), so its scrollTop resets to 0 by default — every add/edit/
+  // delete action in this file re-renders the whole canvas, which was
+  // silently scrolling the PM back to the top of a long section (e.g.
+  // Impact & Affected Groups with 6+ cards) after every single edit.
+  // Capture both the internal .rc-content scroll AND the page/window
+  // scroll before replacing it, reapply after — whichever one is actually
+  // the scrolling context in a given layout gets restored either way.
+  const _prevScroll=container.querySelector('.rc-content');
+  const _scrollTop=_prevScroll?_prevScroll.scrollTop:0;
+  const _winScrollY=window.scrollY||document.documentElement.scrollTop||0;
   rcMarkSectionVisited(plan,rcActiveSection);
   // Side-effecting trigger, not a pure read — must run BEFORE rcRenderSection5
   // builds its HTML (below) so that render sees the pending flag it sets, and
@@ -834,6 +845,11 @@ function rcRenderCanvas(){
       </div>
     </div>
   `;
+  if(_scrollTop){
+    const _newScroll=container.querySelector('.rc-content');
+    if(_newScroll)_newScroll.scrollTop=_scrollTop;
+  }
+  if(_winScrollY)window.scrollTo(0,_winScrollY);
 }
 
 // ── Section 1 — Change Overview ─────────────────────────────────────────
