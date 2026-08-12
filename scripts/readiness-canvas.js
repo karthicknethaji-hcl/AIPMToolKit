@@ -549,7 +549,7 @@ function rcTogglePanel(){
 // redundant with the left panel's Release Plan card). ──
 function rcStatusPillHtml(plan){
   const isFinalized=plan.status==='finalized';
-  return `<span class="rc-status-pill${isFinalized?' rc-status-pill-finalized':''}">${isFinalized?'<i class="ti ti-lock" aria-hidden="true"></i> Finalized · Read-only':'Draft'}</span>`;
+  return `<span class="rc-status-pill${isFinalized?' rc-status-pill-finalized':''}">${isFinalized?'<i class="ti ti-lock" aria-hidden="true"></i> Finalized':'Draft'}</span>`;
 }
 function rcTopActionsHtml(plan){
   const isFinalized=plan.status==='finalized';
@@ -915,7 +915,7 @@ function rcFinalize(){
   }
   rcPersist();
   showToast('Readiness Plan finalized.','success');
-  if(typeof switchTab==='function')switchTab('op');
+  rcRenderCanvas();
 }
 function rcReopenForEdit(){
   const plan=rcGetActivePlan();
