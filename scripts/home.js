@@ -1402,10 +1402,11 @@ function _homeRenderPinnedBanner(sess){
   html+='<div class="home-sess-divider"></div>';
   html+='<div class="home-pin-bottom">';
   html+='<div class="home-sess-counts">';
+  html+='<div class="home-sess-ct"><i class="ti ti-file-description" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.briefs||0)+'</span> briefs</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-layers-subtract" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.caps||0)+'</span> caps</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-writing" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.features||0)+'</span> features</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-list-details" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.stories||0)+'</span> stories</div>';
-  if(counts.sprintActive) html+='<div class="home-sess-ct"><i class="ti ti-calendar-event" aria-hidden="true"></i><span class="home-sess-ct-val">'+e(counts.sprintActive)+'</span></div>';
+  html+='<div class="home-sess-ct"><i class="ti ti-rocket" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.releases||0)+'</span> releases</div>';
   html+='</div>';
   html+='<button class="home-sess-resume-link" onclick="event.stopPropagation();homeSessionResume(\''+sess.id+'\')"><i class="ti ti-player-play" aria-hidden="true"></i> Resume &#8594;</button>';
   html+='</div>'; // pin-bottom
@@ -1457,11 +1458,11 @@ function _homeRenderSessionCard(sess, isLastActive){
   html+='<div class="home-sess-divider"></div>';
   html+='<div class="home-sess-bottom">';
   html+='<div class="home-sess-counts-grid">';
+  html+='<div class="home-sess-ct"><i class="ti ti-file-description" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.briefs||0)+'</span> briefs</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-layers-subtract" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.caps||0)+'</span> caps</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-writing" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.features||0)+'</span> features</div>';
   html+='<div class="home-sess-ct"><i class="ti ti-list-details" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.stories||0)+'</span> stories</div>';
-  html+='<div class="home-sess-ct"><i class="ti ti-calendar-event" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.sprintActive||'&mdash;')+'</span></div>';
-  html+='<div class="home-sess-ct"><i class="ti ti-files" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.docs||0)+'</span> docs</div>';
+  html+='<div class="home-sess-ct"><i class="ti ti-rocket" aria-hidden="true"></i><span class="home-sess-ct-val">'+(counts.releases||0)+'</span> releases</div>';
   html+='</div>';
   html+='<div class="home-sess-footer-row">';
   html+=_homeSessMetaLine(sess);
