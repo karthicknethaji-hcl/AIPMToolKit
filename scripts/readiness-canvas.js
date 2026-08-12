@@ -191,7 +191,9 @@ function rcDraftChangeOverview(piPlan,lineage){
 }
 
 function rcTitleCase(s){
-  return String(s||'').split(' ').map(w=>w?w.charAt(0).toUpperCase()+w.slice(1).toLowerCase():w).join(' ');
+  // Preserve words that are already all-uppercase (acronyms like QA, PM) —
+  // only title-case words that aren't.
+  return String(s||'').split(' ').map(w=>(w&&!(w.length>1&&w===w.toUpperCase()))?w.charAt(0).toUpperCase()+w.slice(1).toLowerCase():w).join(' ');
 }
 // ── Impact Groups (§1.4) — deterministic actor-language extraction from
 // story acceptance criteria. Confidence rule enforced in code, not just
@@ -1028,6 +1030,35 @@ function rcConfirmRemoveGroup(gid){
     'danger'
   );
 }
+// ── Shared modal shell for Edit/Add Group — both open functions below
+// build only their own header/body/footer HTML and hand it to this helper,
+// so the overlay/close/Escape/focus-trap wiring lives in exactly one place. ──
+function rcOpenGroupModal(overlayId,headerHtml,bodyHtml,footerHtml){
+  const existing=document.getElementById(overlayId);
+  if(existing)existing.remove();
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.id=overlayId;
+  overlay.innerHTML=`<div class="modal" style="max-width:440px;overflow-y:auto;max-height:80vh;position:relative;">
+    <button onclick="document.getElementById('${overlayId}').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
+      <div style="font-size:13px;font-weight:500;color:var(--t1);">${headerHtml}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 20px 4px;">${bodyHtml}</div>
+    <div class="modal-footer">${footerHtml}</div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const _esc=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}};
+  document.addEventListener('keydown',_esc,true);
+  if(typeof trapFocus==='function')trapFocus(overlay);
+  return overlay;
+}
+function rcGroupModalFieldHtml(label,id,value,required){
+  return `<div>
+        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">${e(label)}${required?'<span style="color:var(--red);margin-left:1px;">*</span>':''}</label>
+        <textarea id="${id}" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;">${e(value)}</textarea>
+      </div>`;
+}
 // ── Edit Group modal — mirrors Feature Canvas's Edit Feature modal shell
 // (header + close X, stacked fields, Cancel/Save Changes footer) so the
 // two "edit a card's details" experiences feel consistent app-wide. ──
@@ -1035,39 +1066,15 @@ function rcOpenEditGroupModal(gid){
   const plan=rcGetActivePlan();if(!plan)return;
   const g=plan.impactGroups.find(x=>x.id===gid);
   if(!g)return;
-  const existing=document.getElementById('rc-edit-group-overlay');
-  if(existing)existing.remove();
-  const overlay=document.createElement('div');
-  overlay.className='modal-overlay';
-  overlay.id='rc-edit-group-overlay';
-  overlay.innerHTML=`<div class="modal" style="max-width:440px;overflow-y:auto;max-height:80vh;position:relative;">
-    <button onclick="document.getElementById('rc-edit-group-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Edit Group &middot; ${e(g.name)}</div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 20px 4px;">
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Current State</label>
-        <textarea id="rc-eg-current" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;">${e(g.currentState)}</textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Future State</label>
-        <textarea id="rc-eg-future" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;">${e(g.futureState)}</textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Required Behavior</label>
-        <textarea id="rc-eg-behavior" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;">${e(g.requiredBehavior)}</textarea>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="modal-cancel-btn" onclick="document.getElementById('rc-edit-group-overlay').remove()">Cancel</button>
-      <button class="modal-confirm-btn" onclick="rcSaveEditGroupModal('${gid}')">Save Changes</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  const _esc=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}};
-  document.addEventListener('keydown',_esc,true);
-  if(typeof trapFocus==='function')trapFocus(overlay);
+  rcOpenGroupModal(
+    'rc-edit-group-overlay',
+    `Edit Group &middot; ${e(g.name)}`,
+    rcGroupModalFieldHtml('Current State','rc-eg-current',g.currentState)
+      +rcGroupModalFieldHtml('Future State','rc-eg-future',g.futureState)
+      +rcGroupModalFieldHtml('Required Behavior','rc-eg-behavior',g.requiredBehavior),
+    `<button class="modal-cancel-btn" onclick="document.getElementById('rc-edit-group-overlay').remove()">Cancel</button>
+     <button class="modal-confirm-btn" onclick="rcSaveEditGroupModal('${gid}')">Save Changes</button>`
+  );
 }
 function rcSaveEditGroupModal(gid){
   const plan=rcGetActivePlan();if(!plan)return;
@@ -1076,7 +1083,14 @@ function rcSaveEditGroupModal(gid){
   g.currentState=(document.getElementById('rc-eg-current').value||'').trim();
   g.futureState=(document.getElementById('rc-eg-future').value||'').trim();
   g.requiredBehavior=(document.getElementById('rc-eg-behavior').value||'').trim();
-  if(g.status==='confirmed')rcRegenerateActionsFromConfirmedGroups(plan);
+  if(g.status==='confirmed'){
+    // rcRegenerateActionsFromConfirmedGroups only creates actions for groups
+    // that have none yet — drop this group's existing ones first so an edit
+    // to Required Behavior actually regenerates fresh action text instead of
+    // leaving the old behavior baked into their descriptions.
+    plan.readinessActions=(plan.readinessActions||[]).filter(a=>a.groupId!==gid);
+    rcRegenerateActionsFromConfirmedGroups(plan);
+  }
   const rec=rcComputeRecommendation(plan);
   plan.recommendation.systemValue=rec.value;
   plan.recommendation.reasoning=rec.reason;
@@ -1089,43 +1103,19 @@ function rcSaveEditGroupModal(gid){
 // creating a group is a full-width editing surface instead of four
 // unstyled inputs stacked in a narrow inline strip. ──
 function rcOpenAddGroupModal(){
-  const existing=document.getElementById('rc-add-group-overlay');
-  if(existing)existing.remove();
-  const overlay=document.createElement('div');
-  overlay.className='modal-overlay';
-  overlay.id='rc-add-group-overlay';
-  overlay.innerHTML=`<div class="modal" style="max-width:440px;overflow-y:auto;max-height:80vh;position:relative;">
-    <button onclick="document.getElementById('rc-add-group-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Add Group</div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 20px 4px;">
-      <div>
+  rcOpenGroupModal(
+    'rc-add-group-overlay',
+    'Add Group',
+    `<div>
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Group Name<span style="color:var(--red);margin-left:1px;">*</span></label>
         <input id="rc-ag-name" type="text" placeholder="e.g. Support Team" style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);">
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Current State</label>
-        <textarea id="rc-ag-current" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;"></textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Future State</label>
-        <textarea id="rc-ag-future" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;"></textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Required Behavior</label>
-        <textarea id="rc-ag-behavior" style="width:100%;height:70px;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);background:var(--bg);resize:none;"></textarea>
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button class="modal-cancel-btn" onclick="document.getElementById('rc-add-group-overlay').remove()">Cancel</button>
-      <button class="modal-confirm-btn" onclick="rcSubmitAddGroup()">Add Group</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  const _esc=function(ev){if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}};
-  document.addEventListener('keydown',_esc,true);
-  if(typeof trapFocus==='function')trapFocus(overlay);
+      </div>`
+      +rcGroupModalFieldHtml('Current State','rc-ag-current','')
+      +rcGroupModalFieldHtml('Future State','rc-ag-future','')
+      +rcGroupModalFieldHtml('Required Behavior','rc-ag-behavior',''),
+    `<button class="modal-cancel-btn" onclick="document.getElementById('rc-add-group-overlay').remove()">Cancel</button>
+     <button class="modal-confirm-btn" onclick="rcSubmitAddGroup()">Add Group</button>`
+  );
   document.getElementById('rc-ag-name').focus();
 }
 function rcSubmitAddGroup(){
@@ -1152,6 +1142,12 @@ function rcSubmitAddGroup(){
   rcRenderCanvas();
 }
 
+// Single source of truth for "is this action row filled in enough to
+// review" — used both to disable the checkbox at render time and to guard
+// the toggle handler itself, so the two can never disagree.
+function rcActionCanReview(a,groupLabel){
+  return !!(groupLabel&&groupLabel.trim()&&a.actionType&&a.actionType.trim()&&a.description&&a.description.trim());
+}
 // ── Section 4 — Readiness Actions ───────────────────────────────────────
 // Table layout: # | User Group | Action | Details | Reviewed. Reviewed is
 // the last column deliberately — the PM reads who/what/details left to
@@ -1179,7 +1175,7 @@ function rcRenderSection4(plan){
     // Can't meaningfully "review" a row that isn't even filled in yet —
     // require user group, action title, and details before the checkbox
     // is usable, rather than letting an empty placeholder row get ticked.
-    const canReview=!!(groupLabel&&groupLabel.trim()&&a.actionType&&a.actionType.trim()&&a.description&&a.description.trim());
+    const canReview=rcActionCanReview(a,groupLabel);
     const reviewedDisabled=(!canReview&&!a.reviewed);
     return `${pendingRow}
       <tr>
@@ -1267,7 +1263,7 @@ function rcToggleActionReviewed(aid,checked){
   if(!a)return;
   const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
   const groupLabel=(a.groupName!=null?a.groupName:((groupsById[a.groupId]||{}).name||''));
-  const canReview=!!(groupLabel&&groupLabel.trim()&&a.actionType&&a.actionType.trim()&&a.description&&a.description.trim());
+  const canReview=rcActionCanReview(a,groupLabel);
   if(checked&&!canReview){
     showToast('Fill in user group, action, and details before marking this reviewed.','warn');
     rcRenderCanvas();
