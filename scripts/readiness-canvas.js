@@ -292,6 +292,206 @@ function rcRegenerateActionsFromConfirmedGroups(plan){
   });
 }
 
+// ── AI Enhancements (v9.23) ──────────────────────────────────────────────
+// Every section above has a free, instant, deterministic draft (see
+// comments on rcDraftChangeOverview/rcDraftImpactGroups/
+// rcGenerateActionsForGroup/rcComputeRecommendation). These functions
+// silently upgrade that draft with LLM reasoning at the natural moment
+// each section's content is first produced — plan creation for Change
+// Overview + Impact Groups, group confirmation for Readiness Actions, and
+// first stable view for the Launch Recommendation narrative — rather than
+// via a manual "regenerate" button. There is deliberately no button: the
+// deterministic draft is never wrong, only less rich, so an AI call that
+// fails or is offline just leaves it in place with no user-visible error.
+// Free-form section navigation (jumping 1 -> 6) is unaffected — none of
+// these calls depend on visit ORDER, only on data actually being present
+// (a group must be confirmed before its actions enhance; the narrative
+// reflects whatever is true right now, correct even if partially reviewed).
+function rcGetSourcePiPlan(plan){
+  if(!plan)return null;
+  return (typeof piPlans!=='undefined'?piPlans:[]).find(p=>p.id===plan.releasePlanId)||null;
+}
+function rcBuildStoryContext(plan){
+  const piPlan=rcGetSourcePiPlan(plan);
+  if(!piPlan)return{features:[],sprintCount:0,rolloutType:'Phased'};
+  const storyIds=Object.keys(piPlan.storyAssignments||{});
+  const features=[];
+  (typeof scCanvas!=='undefined'?scCanvas:[]).forEach(f=>{
+    if(!f.stories)return;
+    const inScope=f.stories.filter(s=>storyIds.indexOf(s.id)!==-1);
+    if(!inScope.length)return;
+    features.push({
+      name:f.name,
+      why:f.why||'',
+      metric:(f.outcomeHypothesis&&f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.metric)?{
+        metric:f.outcomeHypothesis.primary.metric,
+        baseline:f.outcomeHypothesis.primary.baseline,
+        target:f.outcomeHypothesis.primary.target
+      }:null,
+      stories:inScope.map(s=>({
+        statement:s.statement||'',
+        scenarios:(Array.isArray(s.scenarios)?s.scenarios:[]).map(sc=>({given:sc.given||'',when:sc.when||'',then:sc.then||''}))
+      }))
+    });
+  });
+  return{features,sprintCount:piPlan.sprintCount||0,rolloutType:(plan.releaseScope&&plan.releaseScope.rolloutType)||'Phased'};
+}
+function rcParseAiJson(txt){
+  return JSON.parse((txt||'').replace(/```json|```/g,'').trim());
+}
+const RC_SYS_CHANGE_OVERVIEW='You are a senior product manager writing a release readiness brief for other PMs and stakeholders. Respond ONLY with valid JSON: {"whatsChanging":"...","whyNeeded":"..."}. whatsChanging is 1-2 factual sentences naming what ships. whyNeeded is a coherent 2-4 sentence narrative explaining why this work matters, referencing the outcome metrics by name where relevant. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
+const RC_SYS_IMPACT_GROUPS='You are a senior product manager identifying every real user or stakeholder group affected by this release, including groups never explicitly named in the stories (e.g. support, ops, other internal teams) when the change realistically affects them. Respond ONLY with valid JSON: an array of up to 6 objects, each {"name":"...","currentState":"...","futureState":"...","requiredBehavior":"..."}. name is a short role/title. currentState and futureState are each 1-2 plain-language sentences (not raw Given/Then fragments). requiredBehavior is a complete sentence stating specifically what this group needs to do differently, tailored to the rollout type given. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
+const RC_SYS_READINESS_ACTIONS='You are a senior product manager planning launch readiness actions for one specific affected group. Given the group\'s current state, future state, and required behavior, propose 2-4 specific, concrete readiness actions (not generic communication/support boilerplate) - e.g. training, documentation updates, monitoring setup, a rollback rehearsal, whatever genuinely fits this change. Respond ONLY with valid JSON: an array of objects, each {"actionType":"...","description":"...","needsSignoff":true|false}. actionType is a short 1-3 word label. description is 1-2 complete sentences. needsSignoff is true only for actions that materially gate launch readiness. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
+const RC_SYS_LAUNCH_NARRATIVE='You are a senior product manager writing a short launch risk narrative for stakeholders. The launch decision (Ready/Conditional/Hold) is already fixed by the system - do not change or contradict it. Respond ONLY with valid JSON: {"narrative":"..."}. narrative is 2-4 sentences explaining, in plain business language, specifically which groups/actions (by name) still need attention and why this matters for this release, or if nothing is outstanding, why the release is genuinely ready. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
+
+// Fires once, right after plan creation, for Change Overview + Impact
+// Groups together (both need the same story/feature context). Runs in the
+// background — the plan is already visible with its deterministic draft
+// before this resolves; a subtle banner (rcRenderCanvas) shows while
+// plan._aiEnhancePending is true, and success silently replaces the draft
+// in place. A failed/offline call just leaves the deterministic draft as
+// the final content, with plan._aiEnhancePending cleared either way.
+function rcAiEnhanceNewPlan(planId){
+  const plan=(piReadinessPlans||[]).find(p=>p.id===planId);
+  if(!plan)return;
+  const ctx=rcBuildStoryContext(plan);
+  if(!ctx.features.length)return; // nothing to reason over yet — keep the deterministic empty-state copy
+  plan._aiEnhancePending=true;
+  Promise.allSettled([
+    callAPI(RC_SYS_CHANGE_OVERVIEW,JSON.stringify(ctx),800,undefined,undefined,'arp-change-overview'),
+    callAPI(RC_SYS_IMPACT_GROUPS,JSON.stringify(ctx),1500,undefined,undefined,'arp-impact-groups')
+  ]).then(([coRes,igRes])=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(!p2)return;
+    if(coRes.status==='fulfilled'){
+      try{
+        const parsed=rcParseAiJson(coRes.value);
+        if(parsed&&parsed.whatsChanging&&parsed.whyNeeded){
+          p2.changeOverview.whatsChanging=String(parsed.whatsChanging).trim();
+          p2.changeOverview.whyNeeded=String(parsed.whyNeeded).trim();
+          p2.changeOverview.aiEnhanced=true;
+        }
+      }catch(err){/* keep deterministic draft */}
+    }
+    if(igRes.status==='fulfilled'){
+      try{
+        const parsed=rcParseAiJson(igRes.value);
+        if(Array.isArray(parsed)&&parsed.length){
+          p2.impactGroups=parsed.filter(g=>g&&g.name).map(g=>({
+            id:'ig-'+Math.random().toString(36).slice(2),
+            name:String(g.name).trim(),
+            currentState:String(g.currentState||'').trim(),
+            futureState:String(g.futureState||'').trim(),
+            requiredBehavior:String(g.requiredBehavior||'').trim(),
+            status:'draft',
+            origin:'ai'
+          }));
+        }
+      }catch(err){/* keep deterministic draft */}
+    }
+    p2._aiEnhancePending=false;
+    rcPersist();
+    if(rcGetActivePlan()===p2)rcRenderCanvas();
+  });
+}
+// Fires when a group is confirmed (rcConfirmGroup), replacing that group's
+// just-created deterministic actions with tailored ones. Skipped if the PM
+// already reviewed one of the deterministic actions before this resolves
+// (a few-second window at most) — their review shouldn't be silently
+// discarded by a background upgrade.
+function rcAiEnhanceActionsForGroup(planId,gid){
+  const plan=(piReadinessPlans||[]).find(p=>p.id===planId);
+  if(!plan)return;
+  const g=(plan.impactGroups||[]).find(x=>x.id===gid);
+  if(!g)return;
+  if(!plan._aiActionsPending)plan._aiActionsPending={};
+  plan._aiActionsPending[gid]=true;
+  const usr=JSON.stringify({group:{name:g.name,currentState:g.currentState,futureState:g.futureState,requiredBehavior:g.requiredBehavior},rolloutType:(plan.releaseScope&&plan.releaseScope.rolloutType)||'Phased'});
+  callAPI(RC_SYS_READINESS_ACTIONS,usr,700,undefined,undefined,'arp-readiness-actions').then(txt=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(!p2)return;
+    const g2=(p2.impactGroups||[]).find(x=>x.id===gid);
+    const existing=(p2.readinessActions||[]).filter(a=>a.groupId===gid);
+    if(g2&&g2.status==='confirmed'&&!existing.some(a=>a.reviewed)){
+      const parsed=rcParseAiJson(txt);
+      if(Array.isArray(parsed)&&parsed.length){
+        const fresh=parsed.filter(a=>a&&a.description).map(a=>({
+          id:'ra-'+Math.random().toString(36).slice(2),
+          groupId:gid,
+          actionType:String(a.actionType||'Action').trim(),
+          description:String(a.description).trim(),
+          needsSignoff:!!a.needsSignoff,
+          reviewed:false
+        }));
+        p2.readinessActions=(p2.readinessActions||[]).filter(a=>a.groupId!==gid).concat(fresh);
+        const rec=rcComputeRecommendation(p2);
+        p2.recommendation.systemValue=rec.value;
+        p2.recommendation.reasoning=rec.reason;
+      }
+    }
+    if(p2._aiActionsPending)delete p2._aiActionsPending[gid];
+    rcPersist();
+    if(rcGetActivePlan()===p2)rcRenderCanvas();
+  }).catch(()=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(p2&&p2._aiActionsPending)delete p2._aiActionsPending[gid];
+    if(p2&&rcGetActivePlan()===p2)rcRenderCanvas();
+  });
+}
+// Signature of everything the launch narrative could reference — recompute
+// whenever it changes (a group gets confirmed, an action gets reviewed,
+// etc.), not on every render. Cheap plain-string comparison, no AI call
+// involved in computing it.
+function rcRecommendationSignature(plan){
+  const rec=rcComputeRecommendation(plan);
+  const groups=(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>g.id+':'+g.status).sort().join(',');
+  const actions=(plan.readinessActions||[]).map(a=>a.id+':'+(a.reviewed?1:0)).sort().join(',');
+  return rec.value+'|'+groups+'|'+actions;
+}
+// Called from rcRenderCanvas (never from inside rcRenderSection5 itself —
+// see that function for why) whenever Section 5 is the active section.
+// Lazily generates the narrative the first time it's viewed for a given
+// signature, and again any time the signature changes thereafter. A failed
+// call records that signature as failed so it doesn't retry every render
+// until something actually changes.
+function rcMaybeTriggerLaunchNarrative(plan){
+  if(!plan||plan.status==='finalized'||plan._aiNarrativePending)return;
+  const sig=rcRecommendationSignature(plan);
+  if(plan.recommendation.aiNarrativeSig===sig||plan._aiNarrativeFailedSig===sig)return;
+  plan._aiNarrativePending=true;
+  const planId=plan.id;
+  const rec=rcComputeRecommendation(plan);
+  const ctx={
+    recommendation:rec.value,
+    systemReason:rec.reason,
+    rolloutType:(plan.releaseScope&&plan.releaseScope.rolloutType)||'Phased',
+    groups:(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>({name:g.name,status:g.status})),
+    actions:(plan.readinessActions||[]).map(a=>({actionType:a.actionType,group:((plan.impactGroups||[]).find(g=>g.id===a.groupId)||{}).name,needsSignoff:a.needsSignoff,reviewed:a.reviewed}))
+  };
+  callAPI(RC_SYS_LAUNCH_NARRATIVE,JSON.stringify(ctx),600,undefined,undefined,'arp-launch-narrative').then(txt=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(!p2)return;
+    try{
+      const parsed=rcParseAiJson(txt);
+      if(parsed&&parsed.narrative){
+        p2.recommendation.aiNarrative=String(parsed.narrative).trim();
+        p2.recommendation.aiNarrativeSig=sig;
+      }else{
+        p2._aiNarrativeFailedSig=sig;
+      }
+    }catch(err){
+      p2._aiNarrativeFailedSig=sig;
+    }
+    p2._aiNarrativePending=false;
+    rcPersist();
+    if(rcGetActivePlan()===p2)rcRenderCanvas();
+  }).catch(()=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(p2){p2._aiNarrativePending=false;p2._aiNarrativeFailedSig=sig;}
+    if(p2&&rcGetActivePlan()===p2)rcRenderCanvas();
+  });
+}
+
 // ── Creation (§1.2) ──────────────────────────────────────────────────────
 function rcCreatePlan(releasePlanId){
   const piPlan=(typeof piPlans!=='undefined'?piPlans:[]).find(p=>p.id===releasePlanId);
@@ -323,6 +523,7 @@ function rcCreatePlan(releasePlanId){
   if(!Array.isArray(piReadinessPlans))piReadinessPlans=[];
   piReadinessPlans.push(plan);
   rcRevealTab();
+  rcAiEnhanceNewPlan(plan.id);
   return plan;
 }
 
@@ -593,7 +794,13 @@ function rcRenderCanvas(){
   const plan=rcGetActivePlan();
   if(!container||!plan)return;
   rcMarkSectionVisited(plan,rcActiveSection);
+  // Side-effecting trigger, not a pure read — must run BEFORE rcRenderSection5
+  // builds its HTML (below) so that render sees the pending flag it sets, and
+  // must NOT itself call rcRenderCanvas() (that happens later, async, from
+  // the fetch's own .then/.catch) to avoid re-entrant rendering.
+  if(rcActiveSection===5)rcMaybeTriggerLaunchNarrative(plan);
   const staleBanner=plan.staleFlag?`<div class="rc-stale-banner"><i class="ti ti-alert-triangle" aria-hidden="true"></i> This release plan was regenerated. Review this Readiness Plan against its new scope before finalizing again.</div>`:'';
+  const enhanceBanner=plan._aiEnhancePending?`<div class="rc-ai-enhance-banner"><i class="ti ti-sparkles" aria-hidden="true"></i> Enhancing Change Overview and Impact & Affected Groups with AI...</div>`:'';
   const sec=RC_SECTIONS.find(s=>s.n===rcActiveSection)||RC_SECTIONS[0];
   let sectionHtml='';
   switch(rcActiveSection){
@@ -606,6 +813,7 @@ function rcRenderCanvas(){
   }
   container.innerHTML=`
     ${staleBanner}
+    ${enhanceBanner}
     <div class="rc-body">
       <div class="rc-left-panel${rcPanelOpen?'':' collapsed'}" id="rc-left-panel">${rcLeftPanelHtml(plan)}</div>
       <div class="rc-main">
@@ -713,7 +921,9 @@ function rcRenderSection3(plan){
         ${actions}
       </div>`;
   }).join('');
+  const enhancePendingNote=plan._aiEnhancePending?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Identifying additional affected groups with AI...</div>`:'';
   return `
+    ${enhancePendingNote}
     ${cards||'<div class="rc-empty">No candidate groups were drafted - add one manually below.</div>'}
     <div class="rc-add-group-card">
       <div class="rc-add-link" onclick="rcToggleAddGroupForm()"><i class="ti ti-plus" aria-hidden="true"></i> Add group</div>
@@ -767,6 +977,7 @@ function rcConfirmGroup(gid){
   plan.recommendation.systemValue=rec.value;
   plan.recommendation.reasoning=rec.reason;
   rcPersist();rcRenderCanvas();
+  rcAiEnhanceActionsForGroup(plan.id,gid);
 }
 function rcRemoveGroup(gid){
   const plan=rcGetActivePlan();if(!plan)return;
@@ -806,9 +1017,15 @@ function rcSubmitAddGroup(){
 // ── Section 4 — Readiness Actions ───────────────────────────────────────
 function rcRenderSection4(plan){
   const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
-  const rows=(plan.readinessActions||[]).map(a=>{
-    const g=groupsById[a.groupId];
-    return `
+  const actionsByGroup={};
+  (plan.readinessActions||[]).forEach(a=>{
+    if(!actionsByGroup[a.groupId])actionsByGroup[a.groupId]=[];
+    actionsByGroup[a.groupId].push(a);
+  });
+  const pending=plan._aiActionsPending||{};
+  const rows=Object.keys(actionsByGroup).map(gid=>{
+    const g=groupsById[gid];
+    const cards=actionsByGroup[gid].map(a=>`
       <div class="rc-action-card">
         <div class="rc-action-hdr">
           <span class="rc-action-type">${e(a.actionType)}</span>
@@ -817,7 +1034,10 @@ function rcRenderSection4(plan){
         </div>
         <div class="ra-field-wrap" style="margin-top:6px;"><div class="ra-field-text" id="rc-ft-action-${a.id}">${e(a.description)}</div><button class="ra-field-pencil" onclick="rcEditActionField('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div>
         <label class="rc-reviewed-toggle"><input type="checkbox" ${a.reviewed?'checked':''} onchange="rcToggleActionReviewed('${a.id}',this.checked)"> Mark Reviewed</label>
-      </div>`;
+      </div>`).join('');
+    return `
+      ${pending[gid]?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Tailoring ${g?e(g.name):'this group'}'s readiness actions with AI...</div>`:''}
+      ${cards}`;
   }).join('');
   return `
     ${rows||'<div class="rc-empty">Confirm at least one impact group in Section 3 to generate readiness actions.</div>'}
@@ -863,12 +1083,16 @@ function rcRenderSection5(plan){
     ?`<div class="rc-field-label">Rationale <span class="rc-required">*</span></div><textarea class="ra-field-input" id="rc-override-rationale" onblur="rcSaveField('overrideRationale','recommendation.overrideRationale',this.value)" placeholder="Explain why this recommendation was overridden.">${e(rec.overrideRationale)}</textarea>`
     :'';
   const overrideNote=isOverridden?`<div class="rc-rec-override-note"><i class="ti ti-user-edit" aria-hidden="true"></i> Overridden by PM &middot; system value is ${e(rec.systemValue)}</div>`:'';
+  const narrativeBlock=plan._aiNarrativePending
+    ?`<div class="rc-field-label">AI Risk Narrative</div><div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Writing risk narrative with AI...</div>`
+    :(rec.aiNarrative?`<div class="rc-field-label">AI Risk Narrative</div><div class="rc-readonly-block">${e(rec.aiNarrative)}</div>`:'');
   return `
     <div class="rc-card">
       <div class="rc-rec-value ${valueClass}${isOverridden?' rc-rec-overridden':''}">${e(displayValue)}</div>
       ${overrideNote}
       <div class="rc-field-label">Reasoning</div>
       ${rcFieldHtml('reasoning','recommendation.reasoning',true)}
+      ${narrativeBlock}
       <div class="rc-field-label">Conditions to Clear</div>
       ${rcFieldHtml('conditionsToClear','recommendation.conditionsToClear',true)}
     </div>

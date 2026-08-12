@@ -149,6 +149,8 @@
 .rc-group-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
 .rc-group-name{font-size:12.5px;font-weight:700;color:var(--t1);}
 .rc-ai-badge{font-size:9px;font-weight:700;color:var(--amber);background:var(--amber-pale);padding:2px 7px;border-radius:4px;letter-spacing:0.3px;}
+.rc-ai-enhance-banner{display:flex;align-items:center;gap:8px;padding:8px 20px;font-size:11px;flex-shrink:0;background:var(--purple-pale);color:var(--purple-deep);}
+.rc-ai-pending-note{display:flex;align-items:center;gap:6px;font-size:11px;font-style:italic;color:var(--purple);margin-bottom:10px;}
 .rc-behavior-draft{width:100%;border:1px dashed var(--amber);border-radius:5px;padding:8px;font-family:var(--font);font-size:12px;min-height:50px;}
 .rc-group-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px;}
 .rc-add-group-card{background:#fff;border:1px dashed var(--divider);border-radius:8px;padding:14px 16px;}
