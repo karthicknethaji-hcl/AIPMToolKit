@@ -190,6 +190,9 @@ function rcDraftChangeOverview(piPlan,lineage){
   return{whatsChanging,whyNeeded,metrics};
 }
 
+function rcTitleCase(s){
+  return String(s||'').split(' ').map(w=>w?w.charAt(0).toUpperCase()+w.slice(1).toLowerCase():w).join(' ');
+}
 // ── Impact Groups (§1.4) — deterministic actor-language extraction from
 // story acceptance criteria. Confidence rule enforced in code, not just
 // UI copy: a candidate group is only drafted when at least 2 distinct
@@ -209,7 +212,7 @@ function rcDraftImpactGroups(piPlan,releaseScope){
       while((m=ACTOR_RE.exec(text))){
         const label=m[1].trim().replace(/\s+/g,' ');
         const norm=label.toLowerCase();
-        if(!actorHits[norm])actorHits[norm]={label:label.charAt(0).toUpperCase()+label.slice(1),count:0,givens:[],thens:[]};
+        if(!actorHits[norm])actorHits[norm]={label:rcTitleCase(label),count:0,givens:[],thens:[]};
         actorHits[norm].count++;
         (Array.isArray(st.scenarios)?st.scenarios:[]).forEach(sc=>{
           if(sc.given)actorHits[norm].givens.push(sc.given);
@@ -253,13 +256,13 @@ function rcComputeRecommendation(plan){
   if(groups.length===0||groups.some(g=>g.status==='draft')){
     return{value:'Hold',reason:groups.length===0?'No impact groups have been reviewed yet.':'At least one impact group is still unreviewed.'};
   }
-  const unsignedActions=actions.filter(a=>a.needsSignoff&&!a.reviewed);
+  const unreviewedActions=actions.filter(a=>!a.reviewed);
   const activeGroups=groups.filter(g=>g.status==='confirmed').length;
   const fullRolloutRisk=(plan.releaseScope&&plan.releaseScope.rolloutType==='Full')&&activeGroups>RC_FULL_ROLLOUT_GROUP_THRESHOLD;
-  if(unsignedActions.length>0||fullRolloutRisk){
-    return{value:'Conditional',reason:unsignedActions.length>0?(unsignedActions.length+' readiness action'+(unsignedActions.length===1?'':'s')+' still '+(unsignedActions.length===1?'needs':'need')+' sign-off.'):('This is a Full rollout touching '+activeGroups+' impact groups, above the review threshold.')};
+  if(unreviewedActions.length>0||fullRolloutRisk){
+    return{value:'Conditional',reason:unreviewedActions.length>0?(unreviewedActions.length+' readiness action'+(unreviewedActions.length===1?'':'s')+' still '+(unreviewedActions.length===1?'needs':'need')+' review.'):('This is a Full rollout touching '+activeGroups+' impact groups, above the review threshold.')};
   }
-  return{value:'Ready',reason:'All impact groups have been reviewed and every sign-off action is complete.'};
+  return{value:'Ready',reason:'All impact groups have been reviewed and every readiness action is complete.'};
 }
 
 // ── Readiness Actions (§1.3) — generated only from confirmed groups, one
@@ -274,14 +277,14 @@ function rcGenerateActionsForGroup(group){
   // then reference the required behavior as its own sentence.
   const gap=group.requiredBehavior||('Adapt to the new '+group.name.toLowerCase()+' flow.');
   return [
-    {id:'ra-'+Math.random().toString(36).slice(2),groupId:group.id,actionType:'Communication',description:'Notify '+group.name+' ahead of launch about this change. Required behavior: '+gap,needsSignoff:true,reviewed:false},
-    {id:'ra-'+Math.random().toString(36).slice(2),groupId:group.id,actionType:'Support-readiness',description:'Brief support/frontline staff on this change for '+group.name+' so questions are answerable on day one. Required behavior: '+gap,needsSignoff:false,reviewed:false}
+    {id:'ra-'+Math.random().toString(36).slice(2),groupId:group.id,groupName:group.name,actionType:'Communication',description:'Notify '+group.name+' ahead of launch about this change. Required behavior: '+gap,reviewed:false},
+    {id:'ra-'+Math.random().toString(36).slice(2),groupId:group.id,groupName:group.name,actionType:'Support-readiness',description:'Brief support/frontline staff on this change for '+group.name+' so questions are answerable on day one. Required behavior: '+gap,reviewed:false}
   ];
 }
 function rcRegenerateActionsFromConfirmedGroups(plan){
   const confirmedIds=(plan.impactGroups||[]).filter(g=>g.status==='confirmed').map(g=>g.id);
   // Keep actions belonging to still-confirmed groups untouched (preserves
-  // reviewed/needsSignoff edits); drop actions for groups no longer
+  // reviewed edits); drop actions for groups no longer
   // confirmed; add actions for newly-confirmed groups that don't have any yet.
   plan.readinessActions=(plan.readinessActions||[]).filter(a=>confirmedIds.indexOf(a.groupId)!==-1);
   confirmedIds.forEach(gid=>{
@@ -341,7 +344,7 @@ function rcParseAiJson(txt){
 }
 const RC_SYS_CHANGE_OVERVIEW='You are a senior product manager writing a release readiness brief for other PMs and stakeholders. Respond ONLY with valid JSON: {"whatsChanging":"...","whyNeeded":"..."}. whatsChanging is 1-2 factual sentences naming what ships. whyNeeded is a coherent 2-4 sentence narrative explaining why this work matters, referencing the outcome metrics by name where relevant. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 const RC_SYS_IMPACT_GROUPS='You are a senior product manager identifying every real user or stakeholder group affected by this release, including groups never explicitly named in the stories (e.g. support, ops, other internal teams) when the change realistically affects them. Respond ONLY with valid JSON: an array of up to 6 objects, each {"name":"...","currentState":"...","futureState":"...","requiredBehavior":"..."}. name is a short role/title. currentState and futureState are each 1-2 plain-language sentences (not raw Given/Then fragments). requiredBehavior is a complete sentence stating specifically what this group needs to do differently, tailored to the rollout type given. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
-const RC_SYS_READINESS_ACTIONS='You are a senior product manager planning launch readiness actions for one specific affected group. Given the group\'s current state, future state, and required behavior, propose 2-4 specific, concrete readiness actions (not generic communication/support boilerplate) - e.g. training, documentation updates, monitoring setup, a rollback rehearsal, whatever genuinely fits this change. Respond ONLY with valid JSON: an array of objects, each {"actionType":"...","description":"...","needsSignoff":true|false}. actionType is a short 1-3 word label. description is 1-2 complete sentences. needsSignoff is true only for actions that materially gate launch readiness. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
+const RC_SYS_READINESS_ACTIONS='You are a senior product manager planning launch readiness actions for one specific affected group. Given the group\'s current state, future state, and required behavior, propose 2-4 specific, concrete readiness actions (not generic communication/support boilerplate) - e.g. training, documentation updates, monitoring setup, a rollback rehearsal, whatever genuinely fits this change. Respond ONLY with valid JSON: an array of objects, each {"actionType":"...","description":"..."}. actionType is a short 1-3 word label. description is 1-2 complete sentences. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 const RC_SYS_LAUNCH_NARRATIVE='You are a senior product manager writing a short launch risk narrative for stakeholders. The launch decision (Ready/Conditional/Hold) is already fixed by the system - do not change or contradict it. Respond ONLY with valid JSON: {"narrative":"..."}. narrative is 2-4 sentences explaining, in plain business language, specifically which groups/actions (by name) still need attention and why this matters for this release, or if nothing is outstanding, why the release is genuinely ready. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 
 // Fires once, right after plan creation, for Change Overview + Impact
@@ -418,9 +421,9 @@ function rcAiEnhanceActionsForGroup(planId,gid){
         const fresh=parsed.filter(a=>a&&a.description).map(a=>({
           id:'ra-'+Math.random().toString(36).slice(2),
           groupId:gid,
+          groupName:g2.name,
           actionType:String(a.actionType||'Action').trim(),
           description:String(a.description).trim(),
-          needsSignoff:!!a.needsSignoff,
           reviewed:false
         }));
         p2.readinessActions=(p2.readinessActions||[]).filter(a=>a.groupId!==gid).concat(fresh);
@@ -466,7 +469,7 @@ function rcMaybeTriggerLaunchNarrative(plan){
     systemReason:rec.reason,
     rolloutType:(plan.releaseScope&&plan.releaseScope.rolloutType)||'Phased',
     groups:(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>({name:g.name,status:g.status})),
-    actions:(plan.readinessActions||[]).map(a=>({actionType:a.actionType,group:((plan.impactGroups||[]).find(g=>g.id===a.groupId)||{}).name,needsSignoff:a.needsSignoff,reviewed:a.reviewed}))
+    actions:(plan.readinessActions||[]).map(a=>({actionType:a.actionType,group:((plan.impactGroups||[]).find(g=>g.id===a.groupId)||{}).name,reviewed:a.reviewed}))
   };
   callAPI(RC_SYS_LAUNCH_NARRATIVE,JSON.stringify(ctx),600,undefined,undefined,'arp-launch-narrative').then(txt=>{
     const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
@@ -683,7 +686,7 @@ const RC_SECTIONS=[
   {n:6,label:'Readiness Summary'}
 ];
 // Sections whose content has real checklist-style sub-items (impact group
-// confirmation, readiness action sign-off) aren't "done" just because the
+// confirmation, readiness action review) aren't "done" just because the
 // user scrolled past them — they're only done once those sub-items are
 // actually resolved. Sections without sub-items are done once visited.
 function rcSectionOutstanding(plan,n){
@@ -1015,34 +1018,99 @@ function rcSubmitAddGroup(){
 }
 
 // ── Section 4 — Readiness Actions ───────────────────────────────────────
+// Table layout: # | User Group | Action | Details | Reviewed. Reviewed is
+// the last column deliberately — the PM reads who/what/details left to
+// right and only then confirms, rather than a leading checkbox inviting a
+// tick before the row's been read (see build discussion for rationale).
 function rcRenderSection4(plan){
+  const confirmedGroups=(plan.impactGroups||[]).filter(g=>g.status==='confirmed');
+  if(!confirmedGroups.length){
+    return '<div class="rc-empty">Confirm at least one impact group in Section 3 to generate readiness actions.</div>';
+  }
   const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
-  const actionsByGroup={};
-  (plan.readinessActions||[]).forEach(a=>{
-    if(!actionsByGroup[a.groupId])actionsByGroup[a.groupId]=[];
-    actionsByGroup[a.groupId].push(a);
-  });
+  const actions=plan.readinessActions||[];
   const pending=plan._aiActionsPending||{};
-  const rows=Object.keys(actionsByGroup).map(gid=>{
-    const g=groupsById[gid];
-    const cards=actionsByGroup[gid].map(a=>`
-      <div class="rc-action-card">
-        <div class="rc-action-hdr">
-          <span class="rc-action-type">${e(a.actionType)}</span>
-          <span class="rc-action-group">${g?e(g.name):''}</span>
-          ${a.needsSignoff?'<span class="rc-signoff-badge">Sign-off required</span>':''}
-        </div>
-        <div class="ra-field-wrap" style="margin-top:6px;"><div class="ra-field-text" id="rc-ft-action-${a.id}">${e(a.description)}</div><button class="ra-field-pencil" onclick="rcEditActionField('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div>
-        <label class="rc-reviewed-toggle"><input type="checkbox" ${a.reviewed?'checked':''} onchange="rcToggleActionReviewed('${a.id}',this.checked)"> Mark Reviewed</label>
-      </div>`).join('');
-    return `
-      ${pending[gid]?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Tailoring ${g?e(g.name):'this group'}'s readiness actions with AI...</div>`:''}
-      ${cards}`;
+  const pendingShown=new Set();
+  let sn=0;
+  const rows=actions.map(a=>{
+    const g=groupsById[a.groupId];
+    sn++;
+    let pendingRow='';
+    if(g&&pending[g.id]&&!pendingShown.has(g.id)){
+      pendingShown.add(g.id);
+      pendingRow=`<tr><td colspan="6" class="rc-ai-pending-note-cell"><div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Tailoring ${e(g.name)}'s readiness actions with AI...</div></td></tr>`;
+    }
+    const groupLabel=(a.groupName!=null?a.groupName:(g?g.name:''));
+    // Can't meaningfully "review" a row that isn't even filled in yet —
+    // require user group, action title, and details before the checkbox
+    // is usable, rather than letting an empty placeholder row get ticked.
+    const canReview=!!(groupLabel&&groupLabel.trim()&&a.actionType&&a.actionType.trim()&&a.description&&a.description.trim());
+    const reviewedDisabled=(!canReview&&!a.reviewed);
+    return `${pendingRow}
+      <tr>
+        <td class="rc-action-sn">${sn}</td>
+        <td><div class="ra-field-wrap"><div class="ra-field-text" id="rc-ft-action-group-${a.id}">${e(groupLabel)||'<span class="ra-field-empty">User group</span>'}</div><button class="ra-field-pencil" onclick="rcEditActionGroup('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div></td>
+        <td class="rc-action-type-cell"><div class="ra-field-wrap"><div class="ra-field-text" id="rc-ft-action-type-${a.id}">${e(a.actionType)||'<span class="ra-field-empty">Action title</span>'}</div><button class="ra-field-pencil" onclick="rcEditActionType('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div></td>
+        <td><div class="ra-field-wrap"><div class="ra-field-text" id="rc-ft-action-${a.id}">${e(a.description)||'<span class="ra-field-empty">Details</span>'}</div><button class="ra-field-pencil" onclick="rcEditActionField('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div></td>
+        <td class="rc-action-reviewed-cell"><input type="checkbox" ${a.reviewed?'checked':''} ${reviewedDisabled?'disabled':''} onchange="rcToggleActionReviewed('${a.id}',this.checked)" aria-label="Mark ${e(a.actionType)} reviewed" title="${reviewedDisabled?'Fill in user group, action, and details before marking reviewed':''}"></td>
+        <td class="rc-action-del-cell"><button class="rc-row-del" onclick="rcDeleteActionRow('${a.id}')" title="Remove"><i class="ti ti-x" aria-hidden="true"></i></button></td>
+      </tr>`;
   }).join('');
   return `
-    ${rows||'<div class="rc-empty">Confirm at least one impact group in Section 3 to generate readiness actions.</div>'}
-
+    <table class="rc-actions-table">
+      <thead><tr><th>#</th><th>User Group</th><th>Action</th><th>Details</th><th>Reviewed</th><th></th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="6" class="rc-empty">No readiness actions yet.</td></tr>'}</tbody>
+    </table>
+    <div class="rc-add-link" onclick="rcAddActionRow()"><i class="ti ti-plus" aria-hidden="true"></i> Add action</div>
   `;
+}
+function rcAddActionRow(){
+  const plan=rcGetActivePlan();if(!plan)return;
+  const confirmedGroups=(plan.impactGroups||[]).filter(g=>g.status==='confirmed');
+  if(!confirmedGroups.length)return;
+  // groupId is kept only for internal bookkeeping (AI-enhancement targeting,
+  // cleanup when a group is un-confirmed) — groupName is the actual
+  // free-text label shown and edited in the table, independent of it.
+  plan.readinessActions=(plan.readinessActions||[]).concat([{id:'ra-'+Math.random().toString(36).slice(2),groupId:confirmedGroups[0].id,groupName:confirmedGroups[0].name,actionType:'',description:'',reviewed:false}]);
+  rcPersist();rcRenderCanvas();
+}
+function rcEditActionGroup(aid){
+  const el=document.getElementById('rc-ft-action-group-'+aid);
+  if(!el)return;
+  const plan=rcGetActivePlan();
+  const a=plan.readinessActions.find(x=>x.id===aid);
+  const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
+  const current=(a.groupName!=null?a.groupName:((groupsById[a.groupId]||{}).name||''));
+  el.parentElement.innerHTML=`<input type="text" class="ra-field-input" onblur="rcSaveActionGroupName('${aid}',this.value)" value="${e(current)}">`;
+  el.parentElement.querySelector('input').focus();
+}
+function rcSaveActionGroupName(aid,value){
+  const plan=rcGetActivePlan();if(!plan)return;
+  const a=(plan.readinessActions||[]).find(x=>x.id===aid);
+  if(a)a.groupName=value;
+  rcPersist();rcRenderCanvas();
+}
+function rcEditActionType(aid){
+  const el=document.getElementById('rc-ft-action-type-'+aid);
+  if(!el)return;
+  const plan=rcGetActivePlan();
+  const a=plan.readinessActions.find(x=>x.id===aid);
+  el.parentElement.innerHTML=`<input type="text" class="ra-field-input" onblur="rcSaveActionType('${aid}',this.value)" value="${e(a.actionType)}">`;
+  el.parentElement.querySelector('input').focus();
+}
+function rcSaveActionType(aid,value){
+  const plan=rcGetActivePlan();if(!plan)return;
+  const a=plan.readinessActions.find(x=>x.id===aid);
+  if(a)a.actionType=value;
+  rcPersist();rcRenderCanvas();
+}
+function rcDeleteActionRow(aid){
+  const plan=rcGetActivePlan();if(!plan)return;
+  plan.readinessActions=(plan.readinessActions||[]).filter(a=>a.id!==aid);
+  const rec=rcComputeRecommendation(plan);
+  plan.recommendation.systemValue=rec.value;
+  plan.recommendation.reasoning=rec.reason;
+  rcPersist();rcRenderCanvas();
 }
 function rcEditActionField(aid){
   const el=document.getElementById('rc-ft-action-'+aid);
@@ -1061,7 +1129,16 @@ function rcSaveActionField(aid,value){
 function rcToggleActionReviewed(aid,checked){
   const plan=rcGetActivePlan();if(!plan)return;
   const a=plan.readinessActions.find(x=>x.id===aid);
-  if(a)a.reviewed=checked;
+  if(!a)return;
+  const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
+  const groupLabel=(a.groupName!=null?a.groupName:((groupsById[a.groupId]||{}).name||''));
+  const canReview=!!(groupLabel&&groupLabel.trim()&&a.actionType&&a.actionType.trim()&&a.description&&a.description.trim());
+  if(checked&&!canReview){
+    showToast('Fill in user group, action, and details before marking this reviewed.','warn');
+    rcRenderCanvas();
+    return;
+  }
+  a.reviewed=checked;
   const rec=rcComputeRecommendation(plan);
   plan.recommendation.systemValue=rec.value;
   plan.recommendation.reasoning=rec.reason;
@@ -1117,11 +1194,27 @@ function rcSetOverride(v){
 function rcRenderSection6(plan){
   rcEnsureWhatsShipping(plan);
   const s2=plan.releaseScope||{};
+  const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
+  const actionsTable=(plan.readinessActions||[]).length
+    ?`<table class="rc-actions-table"><thead><tr><th>#</th><th>User Group</th><th>Action</th><th>Details</th><th>Reviewed</th></tr></thead><tbody>${
+        (plan.readinessActions||[]).map((a,i)=>{
+          const g=groupsById[a.groupId];
+          const groupLabel=(a.groupName!=null?a.groupName:(g?g.name:''));
+          return `<tr>
+            <td class="rc-action-sn">${i+1}</td>
+            <td>${e(groupLabel)||'&mdash;'}</td>
+            <td class="rc-action-type-cell">${e(a.actionType)}</td>
+            <td>${e(a.description)}</td>
+            <td class="rc-action-reviewed-cell"><input type="checkbox" ${a.reviewed?'checked':''} disabled aria-label="${e(a.actionType)} reviewed"></td>
+          </tr>`;
+        }).join('')
+      }</tbody></table>`
+    :'<p>No actions yet.</p>';
   const secDefs=[
     {n:1,title:'Change Overview',hasOutstanding:rcSectionOutstanding(plan,1),body:`<p>${e(plan.changeOverview.whatsChanging)}</p><p>${e(plan.changeOverview.whyNeeded)}</p>`},
     {n:2,title:'Release Scope',hasOutstanding:rcSectionOutstanding(plan,2),body:`<p><b>What's Shipping:</b> ${e(s2.whatsShipping)||'&mdash;'}</p><p><b>Squad:</b> ${e(s2.squad)||'&mdash;'}</p><p><b>Sprint Dates:</b> ${e(s2.sprintDates)||'&mdash;'}</p><p><b>Stories / Features / Points:</b> ${s2.storyCount||0} / ${s2.featureCount||0} / ${s2.storyPoints||0}</p><p><b>Rollout Type:</b> ${e(s2.rolloutType)}${s2.rolloutType==='Other'&&s2.rolloutTypeOther?' - '+e(s2.rolloutTypeOther):''}</p>`},
     {n:3,title:'Impact & Affected Groups',hasOutstanding:rcSectionOutstanding(plan,3),body:(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>`<div style="margin-bottom:10px;"><b>${e(g.name)}</b> - ${e(g.status)}<p><b>Current State:</b> ${e(g.currentState)||'&mdash;'}</p><p><b>Future State:</b> ${e(g.futureState)||'&mdash;'}</p><p><b>Required Behavior:</b> ${e(g.requiredBehavior)||'&mdash;'}</p></div>`).join('')||'<p>No groups.</p>'},
-    {n:4,title:'Readiness Actions',hasOutstanding:rcSectionOutstanding(plan,4),body:(plan.readinessActions||[]).map(a=>`<div>${e(a.actionType)}: ${e(a.description)} ${a.reviewed?'(reviewed)':''}</div>`).join('')||'<p>No actions yet.</p>'},
+    {n:4,title:'Readiness Actions',hasOutstanding:rcSectionOutstanding(plan,4),body:actionsTable},
     {n:5,title:'Launch Recommendation',hasOutstanding:rcSectionOutstanding(plan,5),body:`<p><b>${e(plan.recommendation.override||plan.recommendation.systemValue)}</b></p><p>${e(plan.recommendation.reasoning)}</p>`}
   ];
   const visited=plan.visitedSections||[];
@@ -1129,13 +1222,18 @@ function rcRenderSection6(plan){
     const notVisited=!visited.includes(s.n);
     const chipClass=notVisited?'rc-chip-neutral':(s.hasOutstanding?'rc-chip-warn':'rc-chip-ok');
     const chipLabel=notVisited?'Not reviewed':(s.hasOutstanding?'Needs review':'Reviewed');
+    // Only Change Overview (§1) opens expanded by default — the rest stay
+    // collapsed so the PM has to deliberately open and check each one
+    // before reaching Finalize, rather than everything looking "already
+    // reviewed" just because it's visibly expanded on landing.
+    const expanded=s.n===1;
     return `
     <div class="rc-accordion-card">
       <div class="rc-accordion-hdr" onclick="rcToggleAccordion(this)">
         <span>${s.n}. ${e(s.title)}</span>
         <span class="rc-chip ${chipClass}">${chipLabel}</span>
       </div>
-      <div class="rc-accordion-body" style="display:block;">${s.body}</div>
+      <div class="rc-accordion-body" style="display:${expanded?'block':'none'};">${s.body}</div>
     </div>`;
   }).join('');
   const unreviewedCount=secDefs.filter(s=>!visited.includes(s.n)||s.hasOutstanding).length;

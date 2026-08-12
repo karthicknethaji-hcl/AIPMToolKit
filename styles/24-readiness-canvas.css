@@ -157,12 +157,16 @@
 .rc-add-group-card input,.rc-add-group-card textarea{display:block;width:100%;margin-bottom:8px;}
 
 /* ── Section 4 — Readiness Actions ── */
-.rc-action-card{background:var(--card);border:1px solid var(--divider);border-radius:8px;padding:12px 14px;margin-bottom:10px;}
-.rc-action-hdr{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-.rc-action-type{font-size:9.5px;font-weight:700;color:var(--purple);text-transform:uppercase;background:var(--purple-pale);padding:2px 7px;border-radius:4px;}
-.rc-action-group{font-size:10.5px;color:var(--t3);}
-.rc-signoff-badge{font-size:9px;color:var(--red);margin-left:auto;font-weight:700;}
-.rc-reviewed-toggle{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--t2);margin-top:8px;cursor:pointer;}
+.rc-actions-table{width:100%;border-collapse:collapse;font-size:11.5px;}
+.rc-actions-table th{text-align:left;font-size:9.5px;color:var(--t3);text-transform:uppercase;letter-spacing:0.3px;padding:6px 8px;border-bottom:1px solid var(--divider);}
+.rc-actions-table td{padding:9px 8px;border-bottom:1px solid var(--divider);vertical-align:top;color:var(--t1);}
+.rc-action-sn{width:26px;color:var(--t3);}
+.rc-action-type-cell{font-weight:600;color:var(--purple);white-space:nowrap;}
+.rc-action-reviewed-cell{width:64px;text-align:center;}
+.rc-action-reviewed-cell input{width:16px;height:16px;cursor:pointer;}
+.rc-action-del-cell{width:28px;text-align:center;}
+.rc-ai-pending-note-cell{padding:8px !important;border-bottom:none !important;background:var(--purple-pale);}
+.rc-ai-pending-note-cell .rc-ai-pending-note{margin-bottom:0;}
 
 /* ── Section 5 — Launch Recommendation ── */
 .rc-rec-value{display:inline-block;font-size:16px;font-weight:700;padding:4px 14px;border-radius:6px;margin-bottom:12px;}
