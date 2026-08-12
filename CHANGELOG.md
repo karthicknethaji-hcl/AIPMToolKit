@@ -1,5 +1,18 @@
 # Changelog — AI PM Toolkit
 
+## v9.22 - 2026-08-11: Adoption Readiness becomes a top-nav tab
+
+- Changed - Adoption Readiness is now a real top-nav tab (id `arp`, positioned immediately after Release Canvas), replacing the v9.21 full-frame drawer/overlay (`#rc-canvas` shown/hidden via `.open` class toggle). The tab reveals once at least one readinessPlan exists in the session, following the same convention as Story Canvas/Release Canvas/Requirement Agent. It is still only ever created from Release Canvas's kebab menu ("Readiness Plan" item) once sprint planning is complete - only viewing moved into the tab.
+- Changed - Header redesign: removed the "ADOPTION READINESS" eyebrow and "[Release Plan Name] · Adoption Readiness Plan · [Draft/Finalized]" breadcrumb (duplicated what the left panel's Release Plan card already shows). Each section now shows just its own title (e.g. "6. Readiness Summary"), with the Finalized/Read-only status pill, "Reopen for edits" link, and Export button consolidated into one right-aligned action row alongside the title, on every section (1-6).
+- Changed - `openReadinessCanvas(releasePlanId)`/`closeReadinessCanvas()` replaced by `rcNavigateToPlan(releasePlanId)` (creates the plan if needed, sets it active, switches to the tab) and `rcOnTabEnter()` (the tab's own entry point, called by `switchTab('arp')`); renders an empty state when the tab is entered directly with no active Release Plan / no readinessPlan yet.
+
+## v9.21 - 2026-08-11: Adoption Readiness
+
+- Added - New Adoption Readiness flow (`readinessPlan`, 1:1 with a Release Plan): 6-section screen flow (Change Overview, Release Scope, Impact & Affected Groups, Readiness Actions, Launch Recommendation, Readiness Summary) plus a lineage drawer, reached only from Release Canvas's kebab menu (new "Readiness Plan" item, enabled once sprint planning is complete). New full-frame container (`#rc-canvas`), not a top-nav tab.
+- Added - Release Canvas kebab menu gains two new confirmation modals (Release Plan Complete on first sprint-planning completion; Release Plan Updated after a regenerate that unfreezes an existing Readiness Plan) and a conditional copy branch on Regenerate when a Readiness Plan already exists. Regeneration recomputes the Readiness Plan's release-scope/lineage fields without deleting any PM edits.
+- Changed - Outcome Pulse's tab visibility is now gated on `opUnlocked` (set true the first time any Readiness Plan is finalized in a session, stays true for the rest of the session) instead of the old "feature flag + Discovery Map + Feature Canvas content" trigger. Outcome Breakdown gains a By Stage / By Release toggle sharing its existing Metrics/Signal filters.
+- Added - Feature Canvas's AI hypothesis generation now carries forward a feature's most recently logged Outcome Pulse actual as its new baseline (target untouched); shows a soft amber warning badge when no prior actual exists.
+
 ## v9.20 - 2026-08-10: Multi-Release Plan Support + Kebab Menu Consolidation
 
 - Added - Release Canvas now supports multiple, strictly sequential release plans (`piPlans[]`, replacing the single `piPlan`). Each new plan's start date must fall after the latest end date among all existing plans, enforced with no override. A shared, plan-agnostic backlog tray (`piBacklogStoryIds`) holds stories sent from Story Canvas until a plan claims them at generation time.

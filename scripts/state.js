@@ -160,6 +160,14 @@ let raLastOpenConversationId=null;
 let raActiveConversationId=null;  // transient — which conversation is open in the left panel right now
 let raBusy=false;                 // true while an AI call is in flight — blocks concurrent sends
 
+// ── ADOPTION READINESS STATE (v9.21) — owned/rendered by readiness-canvas.js,
+// triggered only from Release Canvas's kebab menu. Persisted per-session —
+// see session-store.js's _sessionStoreBuildSnapshot()/sessionStoreRestore(). ──
+let piReadinessPlans=[];          // [{id,releasePlanId,releasePlanName,status,changeOverview,releaseScope,impactGroups,readinessActions,recommendation,lineageSources,createdAt,finalizedAt,staleFlag}]
+let rcActivePlanId=null;          // transient — which readinessPlan is open in the Adoption Readiness canvas right now
+let rcActiveSection=1;            // transient — which of the 6 sections is showing
+let opUnlocked=false;             // session-level, one-way flag: once true (first Readiness Plan finalize), Outcome Pulse tab stays visible forever this session
+
 // ── DIAGNOSTIC STATE ──
 let diagnosticSessions=[];
 let activeDiagnosticId=null;

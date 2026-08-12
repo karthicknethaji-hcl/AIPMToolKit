@@ -936,6 +936,9 @@ function _ssApplySnapshotFields(s) {
     raEnabled = s.raEnabled;
   }
   if (s.raConversations !== undefined) raConversations = s.raConversations;
+  // Adoption Readiness (v9.21) — flat globals restore, same pattern as raEnabled above.
+  if (s.piReadinessPlans !== undefined) piReadinessPlans = s.piReadinessPlans;
+  if (s.opUnlocked !== undefined) opUnlocked = s.opUnlocked;
   if (s.raLastOpenConversationId !== undefined) raLastOpenConversationId = s.raLastOpenConversationId;
   // Restore protoStore — unconditional, old sessions without it get empty {}
   protoStore = s.protoStore || {};
@@ -1616,7 +1619,11 @@ function _sessionStoreBuildSnapshot(opts) {
     // Map's "Define Requirements" CTA relabel/reroute (kpi-tree.js).
     raEnabled: (typeof raEnabled !== 'undefined') ? raEnabled : false,
     raConversations: (typeof raConversations !== 'undefined') ? raConversations : [],
-    raLastOpenConversationId: (typeof raLastOpenConversationId !== 'undefined') ? raLastOpenConversationId : null
+    raLastOpenConversationId: (typeof raLastOpenConversationId !== 'undefined') ? raLastOpenConversationId : null,
+    // Adoption Readiness (v9.21) — flat globals, matching raEnabled's own
+    // convention (not a nested session.* object, per build spec correction).
+    piReadinessPlans: (typeof piReadinessPlans !== 'undefined') ? piReadinessPlans : [],
+    opUnlocked: (typeof opUnlocked !== 'undefined') ? opUnlocked : false
   };
 }
 
@@ -1785,7 +1792,7 @@ function _ssSyncTabVisibility(s, meta) {
     var el=document.getElementById(id);
     if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
   });
-  ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
+  ['tab-sc','tab-pi','tab-ra','tab-arp'].forEach(function(id){
     var el=document.getElementById(id);
     if(el) el.classList.remove('revealed');
   });
@@ -1856,9 +1863,9 @@ function _ssRevealTabs(s, meta) {
   // Revised: also require at least one Feature Canvas feature (s.scCanvas)
   // to exist before revealing — matches the same combined condition now
   // enforced in applyFeats() (left-panel.js).
-  if (s.gData && typeof appSettings !== 'undefined' && appSettings && appSettings.featOutcomePulse && Array.isArray(s.scCanvas) && s.scCanvas.length > 0) {
+  {
     const tabOp = document.getElementById('tab-op');
-    if (tabOp) tabOp.style.display = '';
+    if (tabOp) tabOp.style.display = s.opUnlocked ? '' : 'none';
   }
   // v9.01-diag fix: was `if (s.piPlan)` -- a bare truthiness check that's
   // true for ANY non-null piPlan object, including the default empty one
@@ -1884,6 +1891,13 @@ function _ssRevealTabs(s, meta) {
   if (hasPiContent) {
     const tabPi = document.getElementById('tab-pi');
     if (tabPi) tabPi.classList.add('revealed');
+  }
+  // Adoption Readiness (v9.22, real top-nav tab) — reveal whenever this
+  // snapshot has at least one readinessPlan, same content-truthiness
+  // convention as tab-sc/tab-pi/tab-ra above.
+  if (Array.isArray(s.piReadinessPlans) && s.piReadinessPlans.length > 0) {
+    const tabArp = document.getElementById('tab-arp');
+    if (tabArp) tabArp.classList.add('revealed');
   }
   if (s.productLeakAnalysis && (Array.isArray(s.productLeakAnalysis) ? s.productLeakAnalysis.length > 0 : true)) {
     const tabLa = document.getElementById('tab-la');

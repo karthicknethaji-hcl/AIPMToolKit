@@ -30,6 +30,7 @@
 <link rel="stylesheet" href="./styles/21-outcome-pulse.css">
 <link rel="stylesheet" href="./styles/22-guided-launch.css">
 <link rel="stylesheet" href="./styles/23-requirement-agent.css">
+<link rel="stylesheet" href="./styles/24-readiness-canvas.css">
 </head>
 <body>
 <!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
@@ -123,6 +124,7 @@
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-sc" onclick="switchTab('sc')"><i class="ti ti-list-details"></i> Story Canvas<span class="tab-pending-dot" id="tab-sc-dot"></span></button>
     <button class="tab-btn tab-gated" id="tab-pi" onclick="switchTab('pi')"><i class="ti ti-calendar-event"></i> Release Canvas<span class="tab-pending-dot" id="tab-pi-dot"></span></button>
+    <button class="tab-btn tab-gated" id="tab-arp" onclick="switchTab('arp')"><i class="ti ti-checklist"></i> Adoption Readiness<span class="tab-pending-dot" id="tab-arp-dot"></span></button>
     <button class="tab-btn" id="tab-op" onclick="switchTab('op')" style="display:none;"><i class="ti ti-activity"></i> Outcome Pulse</button>
     <div class="home-tab-lock" id="home-tab-lock"><i class="ti ti-lock" style="font-size:9px;" aria-hidden="true"></i><span>Tabs unlock after you launch a session</span></div>
   </div></div>
@@ -515,6 +517,14 @@
     <div class="gl-tab" id="gl-tab"></div>
     <!-- Requirement Agent Tab (v9.16) -->
     <div class="ra-tab" id="ra-tab"></div>
+    <!-- Adoption Readiness Tab (v9.22) — real top-nav tab (id 'arp'), same
+         .arp-tab/.on toggle convention every other tab content container
+         uses (switchTab() in api.js). Entry point is rcOnTabEnter() in
+         readiness-canvas.js, called from switchTab('arp'). Adoption
+         Readiness is still only ever CREATED via Release Canvas's kebab
+         menu (piOpenReadinessPlan() in pi-planning.js) — only VIEWING
+         moved from a full-frame drawer overlay into this tab. -->
+    <div class="arp-tab" id="rc-canvas"></div>
   </div>
 </div>
 </div><!-- end app-shell -->
@@ -622,6 +632,7 @@
   <script src="./scripts/pi-planning.js"></script>
   <script src="./scripts/export-pi-docx.js"></script>
   <script src="./scripts/outcome-pulse.js"></script>
+  <script src="./scripts/readiness-canvas.js"></script>
 <script src="./scripts/session-store.js"></script>
 <script src="./scripts/live-sync.js"></script>
 <script src="./scripts/guided-launch.js"></script>

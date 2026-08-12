@@ -604,6 +604,10 @@ async function piGenerate(){
 
   const activePlan=piGetActivePlan();
   const isDrafting=!activePlan; // Case 1: no active plan (or it points at a plan that no longer exists)
+  // Adoption Readiness (v9.21, §1.10/§2.5) — captured BEFORE any mutation so
+  // the post-regeneration modal only ever fires when a readinessPlan
+  // genuinely pre-existed this specific regenerate call.
+  const _rpBeforeRegen=(!isDrafting&&typeof rcFindPlan==='function')?rcFindPlan(activePlan.id):null;
 
   const squads=piGetSquads();
   if(squads.length===0){showToast('Add at least one squad before generating.','warn');return;}
@@ -948,6 +952,23 @@ async function piGenerate(){
     scApplyPIPlannedBadges(piPlan.storyAssignments);
   piUpdateTabBadge();
 
+    // Adoption Readiness (v9.21, §1.10) — extend the REAL regen path, don't
+    // replace it: recompute the readinessPlan's Release-Plan-derived fields
+    // and unfreeze it, then show the post-regeneration modal (§2.5) only
+    // when one already existed before this call.
+    if(_rpBeforeRegen&&typeof rcApplyRegenerationEffect==='function'){
+      rcApplyRegenerationEffect(_rpBeforeRegen,piPlan);
+      if(typeof rcShowPostRegenModal==='function')rcShowPostRegenModal(piPlan,_rpBeforeRegen);
+    }
+    // Adoption Readiness (v9.21, §2.3) — first-time sprint-planning-complete
+    // confirmation. Fires only on the incomplete->complete transition, once
+    // per plan (piPlan._rcCompletionNotified guards re-firing on later
+    // visits/regenerations of an already-complete plan).
+    if(piPlanSprintComplete(piPlan)&&!piPlan._rcCompletionNotified){
+      piPlan._rcCompletionNotified=true;
+      if(typeof rcShowReleaseCompleteModal==='function')rcShowReleaseCompleteModal(piPlan);
+    }
+
     // Clear in-flight guard before switching tab — switchTab calls blockIfGenerating
     // which would show the "Hold on" modal if aiGenInFlight is still active.
     endAiGen();
@@ -1176,7 +1197,8 @@ function piComputeSprints(count,durationDays,startDateStr){
     const start=new Date(current);
     const end=new Date(current);
     end.setDate(end.getDate()+durationDays-1);
-    const fmt=d=>d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+    const _piMonths3=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const fmt=d=>d.getDate()+' '+_piMonths3[d.getMonth()];
     sprints.push({id:i+1,label:'Sprint '+(i+1),dateRange:fmt(start)+' – '+fmt(end)});
     current.setDate(current.getDate()+durationDays);
   }
@@ -1188,6 +1210,16 @@ function piComputeSprints(count,durationDays,startDateStr){
 // empty, Yes/No/Cancel modal when it isn't) - this is just the entry point. ──
 function piConfirmRegenerate(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
+  // Adoption Readiness (v9.21, §2.4) — conditional copy branch. If this
+  // Release Plan has no readinessPlan yet, behavior is completely
+  // unchanged (direct regenerate, no extra modal). If one exists, show the
+  // Adoption-Readiness-aware warning first; piGenerate() runs from there.
+  const activePlan=piGetActivePlan();
+  const existingRp=(activePlan&&typeof rcFindPlan==='function')?rcFindPlan(activePlan.id):null;
+  if(activePlan&&existingRp&&typeof rcShowRegenReadinessWarningModal==='function'){
+    rcShowRegenReadinessWarningModal(activePlan,existingRp);
+    return;
+  }
   piGenerate();
 }
 
@@ -1195,10 +1227,27 @@ function piConfirmRegenerate(){
 // Uses the generic _uiRowMenuToggle(triggerEl, menuHtml) helper already used
 // by Outcome Pulse / Home / Team Management. ──
 function piPlanMenuHtml(){
+  const activePlan=piGetActivePlan();
+  const _readinessReady=!!(activePlan&&piPlanSprintComplete(activePlan));
+  const readinessItem=_readinessReady
+    ?`<div class="tm-menu-item" role="menuitem" style="color:var(--purple);font-weight:700;" onclick="_uiRowMenuClose();piOpenReadinessPlan();"><i class="ti ti-checklist" aria-hidden="true"></i> Readiness Plan</div>`
+    :`<div class="tm-menu-item" role="menuitem" tabindex="-1" aria-disabled="true" style="color:var(--label);cursor:not-allowed;" title="Complete sprint planning to enable.">Readiness Plan</div>`;
   return `<div class="tm-menu-static" role="menu">
     <div class="tm-menu-item" role="menuitem" onclick="_uiRowMenuClose();piConfirmRegenerate();"><i class="ti ti-refresh" aria-hidden="true"></i> Regenerate</div>
     <div class="tm-menu-item" role="menuitem" onclick="_uiRowMenuClose();piExportDocx();"><i class="ti ti-download" aria-hidden="true"></i> Export</div>
+    <div style="height:1px;background:var(--divider);margin:4px 0;"></div>
+    ${readinessItem}
   </div>`;
+}
+
+// ── Adoption Readiness entry point (v9.22) — creates the readinessPlan (if
+// none exists yet for this Release Plan) and switches into the Adoption
+// Readiness tab, per ADOPTION_READINESS_SPEC.md §2.2. ──
+function piOpenReadinessPlan(){
+  if(typeof canEditSession==='function'&&!canEditSession())return;
+  const activePlan=piGetActivePlan();
+  if(!activePlan||!piPlanSprintComplete(activePlan))return;
+  if(typeof rcNavigateToPlan==='function')rcNavigateToPlan(activePlan.id);
 }
 
 // ── Sprint board ──
@@ -1446,10 +1495,28 @@ function piDragOver(evt){
   if(col)col.style.borderColor='var(--purple)';
 }
 
+// Adoption Readiness (v9.21, §1.9 step 3) — freeze enforcement for the
+// Release Plan while its Readiness Plan is finalized. Regenerate remains
+// the explicit unfreeze path (§1.10/§2.4/§2.5), so this check must never
+// gate piConfirmRegenerate()/piGenerate() itself, only board-edit mutators.
+// Guarded: piDrop, piMoveToPrint (covers piUpdateAssignmentSprint and
+// piMoveBacklogToSprint, which delegate to it), piDropToBacklog,
+// piRemoveStoryFromSprint, piSavePoints, piUpdateAssignment, piLinkDep,
+// piRemoveDep, piSyncNewStories, piSetStartDate. Deliberately NOT guarded:
+// piSaveNote and piSavePointsBacklog, since neither changes sprint
+// membership or release scope (note text and backlog-only point edits
+// don't feed Adoption Readiness's story/feature counts or lineage).
+function piIsPlanFrozenByReadiness(plan){
+  if(!plan)return false;
+  const rp=(typeof rcFindPlan==='function')?rcFindPlan(plan.id):null;
+  return !!(rp&&rp.status==='finalized');
+}
+
 function piDrop(evt,targetSprint){
   evt.preventDefault();
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   const storyId=piDraggingId;
   piDraggingId=null;
   if(!storyId)return;
@@ -1477,6 +1544,7 @@ function piMoveToPrint(storyId,targetSprint,manual){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
   if(!piPlan)return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   if(!piPlan.storyAssignments[storyId]){
     piPlan.storyAssignments[storyId]={sprint:targetSprint,squad:'',points:3,status:'planned'};
   } else {
@@ -1484,6 +1552,15 @@ function piMoveToPrint(storyId,targetSprint,manual){
   }
   if(manual)piPlan.storyAssignments[storyId].manuallyMoved=true;
   if(typeof piBacklogStoryIds!=='undefined'&&Array.isArray(piBacklogStoryIds))piBacklogStoryIds=piBacklogStoryIds.filter(id=>id!==storyId);
+  // Adoption Readiness (v9.21, §2.3) — same first-time sprint-planning-complete
+  // check as piGenerate(), reachable from manual drag/drop and sprint-select
+  // mutators (piDrop, piUpdateAssignmentSprint, piMoveBacklogToSprint all
+  // delegate here), since a PM can complete planning manually without ever
+  // regenerating.
+  if(typeof piPlanSprintComplete==='function'&&piPlanSprintComplete(piPlan)&&!piPlan._rcCompletionNotified){
+    piPlan._rcCompletionNotified=true;
+    if(typeof rcShowReleaseCompleteModal==='function')rcShowReleaseCompleteModal(piPlan);
+  }
   piRenderBoard();
   piUpdateTabBadge();
   if(!_isDemoSession&&typeof sessionStoreSave==='function'&&typeof _activeSessionId!=='undefined'&&_activeSessionId){
@@ -1504,6 +1581,7 @@ function piDropToBacklog(evt){
   piDraggingId=null;
   document.querySelectorAll('.pi-sprint-col').forEach(c=>c.style.borderColor='');
   if(!storyId||!piPlan)return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   // Only move if currently assigned to a sprint
   if(!piPlan.storyAssignments||!piPlan.storyAssignments[storyId])return;
   piRemoveStoryFromSprint(storyId);
@@ -1514,6 +1592,7 @@ function piRemoveStoryFromSprint(storyId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
   if(!piPlan)return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   if(piPlan.storyAssignments[storyId])delete piPlan.storyAssignments[storyId];
   if(typeof piBacklogStoryIds==='undefined'||!Array.isArray(piBacklogStoryIds))piBacklogStoryIds=[];
   if(!piBacklogStoryIds.includes(storyId))piBacklogStoryIds.push(storyId);
@@ -1714,6 +1793,7 @@ function piSyncNewStories(){
   // Additive sync — add new stories to backlog only
   const piPlan=piGetActivePlan();
   if(!piPlan)return;
+  if(piIsPlanFrozenByReadiness(piPlan))return;
   const currentHash=piComputeHash();
   const prevIds=(piPlan.piScVersion||'').split('|');
   const currentIds=scCanvas.map(f=>f.id);
@@ -1863,6 +1943,7 @@ function piEditPoints(storyId){
 function piSavePoints(storyId,pts){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   if(!piPlan||!piPlan.storyAssignments[storyId])return;
   piPlan.storyAssignments[storyId].points=Math.max(1,Math.min(20,pts||3));
   piPlan.storyAssignments[storyId].userSetPoints=true;
@@ -1881,7 +1962,12 @@ function piUpdateAssignment(storyId,field,value){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
   if(!piPlan||!piPlan.storyAssignments[storyId])return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   piPlan.storyAssignments[storyId][field]=value;
+  if(typeof piPlanSprintComplete==='function'&&piPlanSprintComplete(piPlan)&&!piPlan._rcCompletionNotified){
+    piPlan._rcCompletionNotified=true;
+    if(typeof rcShowReleaseCompleteModal==='function')rcShowReleaseCompleteModal(piPlan);
+  }
   piRenderBoard();
   piOpenRightPanel(storyId);
   // v8.133 fix (item 7): see piSavePoints() above for the full rationale.
@@ -1996,6 +2082,7 @@ function piLinkDep(storyId){
   const container=document.getElementById('pi-rp-dep-form-'+storyId);
   const dir=container&&container._currentDir||'blocks';
   if(!piPlan)return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   if(!piPlan.dependencies)piPlan.dependencies=[];
   if(dir==='external'){
     const desc=document.getElementById('dep-ext-desc-'+storyId);
@@ -2023,6 +2110,7 @@ function piRemoveDep(storyId,fromId,toId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piPlan=piGetActivePlan();
   if(!piPlan||!piPlan.dependencies)return;
+  if(piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   piPlan.dependencies=piPlan.dependencies.filter(d=>!(d.fromId===fromId&&d.toId===toId));
   piRenderBoard();
   piRenderRightPanel(storyId);
@@ -2188,6 +2276,7 @@ function piToggleLeftPanel(){
 function piSetStartDate(val){
   if(!val)return;
   const piPlan=piGetActivePlan();
+  if(piPlan&&piIsPlanFrozenByReadiness(piPlan)){showToast('This release plan is frozen by its finalized Readiness Plan. Regenerate to unlock it.','warn');return;}
   if(piPlan)piPlan.startDate=val;
   const inp=document.getElementById('pi-start-date');
   if(inp)inp.value=val;

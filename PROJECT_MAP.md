@@ -183,6 +183,19 @@
 - **Badges / misc:** `piUpdateTabBadge()`
 - **Export:** `piExportDocx()` → calls `buildAndDownloadPIDocx()` in `export-pi-docx.js`
 
+`scripts/readiness-canvas.js` (`styles/24-readiness-canvas.css`) — Adoption Readiness (v9.22). In-app flow letting a PM prepare a completed Release Plan for launch. A real top-nav tab (id `'arp'`, immediately after Release Canvas), content container `#rc-canvas`/`.arp-tab`, toggled via the same `.on`-class convention every other tab uses (`switchTab()` in api.js). Still only ever CREATED from Release Canvas's kebab menu (`piPlanMenuHtml()`, pi-planning.js) — only VIEWING is a tab now.
+- **Data model:** `piReadinessPlans[]` (state.js, persisted) — one entry per Release Plan that has an Adoption Readiness plan, `{id,releasePlanId,releasePlanName,status,changeOverview,releaseScope,impactGroups,readinessActions,recommendation,lineageSources,createdAt,finalizedAt,staleFlag}`. `lineageSources` uses name-string references (requirementName/stage/capability/feature), matching the app's existing `f.cap`/`f.stage`/`f.metric` convention — not IDs.
+- **Entry:** `rcNavigateToPlan(releasePlanId)` (creates the plan on first entry via `rcCreatePlan()` if needed, else resumes, then `switchTab('arp')`). `rcOnTabEnter()` is the tab's own entry point (called by `switchTab('arp')`) — renders the active plan, or `rcRenderEmpty()` if the tab was entered directly with no active Release Plan / no readinessPlan for it yet. Tab reveal via `rcRevealTab()` (adds `.revealed` to `#tab-arp`), mirrored in `applyFeats()` (left-panel.js), `_ssRevealTabs()` (session-store.js), and `homeClearSession()`'s reset list (home.js).
+- **Screen flow:** `rcRenderSection1()`..`rcRenderSection6()`, `rcGoTo(n)`. Section 1 (Change Overview) and Section 5 (reasoning/conditionsToClear) are synthesized deterministically in this build (not a live AI call — a documented scope decision, see CHANGELOG); every AI-attributed field remains hover-to-edit exactly the same.
+- **Hover-to-edit:** `.ra-field-pencil`/`.ra-field-wrap` — standardized on `sc-card-pencil`'s pure-CSS hover approach (NOT `op-nsm-pencil`'s mouseenter/mouseleave), reused by `rcFieldHtml()`/`rcEditField()`/`rcSaveField()` uniformly across all 6 sections.
+- **Launch Recommendation gate:** `rcComputeRecommendation()` — pure deterministic function (Hold/Conditional/Ready), structurally the same "engine decides, AI narrates" split as `piEscalate`/`piDetectCycles`.
+- **Finalize/reopen:** `rcFinalize()` (sets `status:'finalized'`, sets the one-way session flag `opUnlocked=true` on first-ever finalize), `rcReopenForEdit()`.
+- **Regeneration effect:** `rcApplyRegenerationEffect(plan,newPiPlan)` — called from `pi-planning.js`'s `piGenerate()` right after an in-place regenerate completes; unfreezes the plan, sets `staleFlag`, recomputes only the Release-Plan-derived fields (`releaseScope`, `lineageSources`), never touches PM-edited `changeOverview` text.
+- **Kebab-menu modals:** `rcShowReleaseCompleteModal()` (§2.3, fires on the sprint-planning incomplete→complete transition), `rcShowPostRegenModal()` (§2.5), `rcShowRegenReadinessWarningModal()` (§2.4 conditional Regenerate copy) — all DESIGN_SYSTEM.md §8 full modal anatomy (trapFocus, capture-phase Escape, x at top:12/right:12).
+- **Lineage drawer:** `rcOpenLineageDrawer()`/`rcCloseLineageDrawer()` — nests INSIDE `#rc-canvas`, reuses the app's existing 440px right-drawer width convention (distinct from the full-frame readiness canvas itself).
+- **Feature Canvas hypothesis carry-forward (§4):** `rcApplyHypothesisCarryForward(featureName,hyp)` — called from both `normalizeAIHypothesis()` call sites in `capability-canvas.js`; overwrites `primary.baseline` from Outcome Pulse's most recently logged actual for a feature of that name if one exists, else stamps `primary._rcNoPriorOutcomeWarning=true`, rendered as a soft amber badge by `feature-canvas.js`'s `scBuildOutcomeHypChipHTML()`.
+- **Minimal Release Plan freeze:** `piIsPlanFrozenByReadiness(plan)` (pi-planning.js) — gates `piDrop()`/`piSavePoints()` while the plan's Readiness Plan is finalized; Regenerate remains the explicit unfreeze path. Not yet extended to every sprint-board mutator (see CHANGELOG/build report).
+
 `scripts/feature-canvas.js` — Story Canvas tab.
 - **Canvas render:** `scRenderCanvas()`, `scRenderCapNav()`, `scToggleCapNav()`, `scSetCapFilter()`, `scSetGroup()`, `scRenderStatusChips()`, `scRenderUnplannedBanner()`, `scShowUnplannedBanner()`, `scDismissUnplannedBanner()`
 - **Feature lifecycle:** `scToggleFeatureFromDrawer()`, `scToggleFeature()`, `scMakeFeatureId()`, `scRemoveFeature()`, `scDoRemoveFeature()`
@@ -353,6 +366,14 @@
 | PI left panel toggle | `scripts/pi-planning.js` (piToggleLeftPanel) |
 | PI export DOCX | `scripts/pi-planning.js` (piExportDocx), `scripts/export-pi-docx.js` (buildAndDownloadPIDocx) |
 | (Previous PI upload feature fully decommissioned — do not reference) | — |
+| **Adoption Readiness (v9.21)** | |
+| Readiness Plan kebab menu item, enable/disable state | `scripts/pi-planning.js` (piPlanMenuHtml, piOpenReadinessPlan, piPlanSprintComplete) |
+| Adoption Readiness screen flow, data model, lineage drawer | `scripts/readiness-canvas.js`, `styles/24-readiness-canvas.css` |
+| Adoption Readiness tab entry | `scripts/readiness-canvas.js` (rcNavigateToPlan, rcOnTabEnter, rcRenderEmpty), `scripts/api.js` (switchTab 'arp' branch) |
+| Release Plan Complete / Release Plan Updated / Regenerate-warning modals | `scripts/readiness-canvas.js` (rcShowReleaseCompleteModal, rcShowPostRegenModal, rcShowRegenReadinessWarningModal) |
+| Adoption Readiness Finalize / reopen / regeneration effect | `scripts/readiness-canvas.js` (rcFinalize, rcReopenForEdit, rcApplyRegenerationEffect) |
+| Adoption Readiness data model, session flags | `scripts/state.js` (piReadinessPlans, rcActivePlanId, rcActiveSection, opUnlocked), `scripts/session-store.js` (_sessionStoreBuildSnapshot, sessionStoreRestore) |
+| Feature Canvas hypothesis carry-forward, soft warning badge | `scripts/readiness-canvas.js` (rcApplyHypothesisCarryForward), `scripts/capability-canvas.js` (both normalizeAIHypothesis call sites), `scripts/feature-canvas.js` (scBuildOutcomeHypChipHTML) |
 | **Diagnostic View** | |
 | Create diagnostic view CTA, bottom action bar | `scripts/kpi-tree.js`, `styles/11-diagnostic-view.css` |
 | Diagnostic view layout, left panel, readiness | `scripts/diagnostic-view.js`, `styles/11-diagnostic-view.css` |
@@ -381,7 +402,8 @@
 | **Outcome Pulse (Outcome Verification Loop)** | |
 | Outcome Pulse tab layout, NSM card, Hypothesis Health card, Outcome Breakdown, unified modal, PDF export | `scripts/outcome-pulse.js`, `styles/21-outcome-pulse.css` |
 | Suggest Experiment (Outcome Pulse iteration loop), Experiment Library panel, metric filter, experiment-count badge | `scripts/outcome-pulse.js`, `scripts/prompts.js` (`buildOutcomePulseExperimentPrompt()`), `styles/21-outcome-pulse.css` |
-| Outcome Pulse tab entry/render | `scripts/api.js` (switchTab — `opRender()`), `scripts/left-panel.js` (applyFeats — featOutcomePulse gate) |
+| Outcome Pulse tab entry/render | `scripts/api.js` (switchTab — `opRender()`), `scripts/left-panel.js` (applyFeats — gated on `opUnlocked`, v9.21; replaces the old featOutcomePulse+gData+scCanvas trigger entirely) |
+| Outcome Pulse By Stage / By Release toggle | `scripts/outcome-pulse.js` (opBuildReleaseGroups, opSetGroupMode, opGroupMode), `styles/24-readiness-canvas.css` (.op-group-toggle) |
 | Outcome Pulse Settings toggle | `scripts/settings-page.js` (spP2, settingsPageSave), `scripts/state.js` (appSettings.featOutcomePulse) |
 | outcomeHypothesis shared helpers (clone, compute direction/signal, aggregate, normalize AI response) | `scripts/feature-canvas.js` — top of file, dedicated section above the existing FC state block |
 | outcomeHypothesis capture UI (Edit Feature, Add Feature modals) | `scripts/feature-canvas.js` (scBuildOutcomeHypothesisSectionHTML, scShowEditFeatModal, scShowAddFeatureModal, scDoEditFeat, scDoAddFeat) |

@@ -810,10 +810,15 @@ function homeClearSession(){
     const el=document.getElementById(id);
     if(el){ el.style.display='none'; el.removeAttribute('data-home-hidden'); }
   });
-  ['tab-sc','tab-pi'].forEach(function(id){
+  ['tab-sc','tab-pi','tab-arp'].forEach(function(id){
     const el=document.getElementById(id);
     if(el){ el.classList.remove('revealed'); el.removeAttribute('data-home-hidden'); }
   });
+  if(typeof opUnlocked!=='undefined')opUnlocked=false;
+  const tabOpResetEl=document.getElementById('tab-op');
+  if(tabOpResetEl)tabOpResetEl.style.display='none';
+  const tabRaResetEl=document.getElementById('tab-ra');
+  if(tabRaResetEl)tabRaResetEl.classList.remove('revealed');
 
   // Reset tab badges
   if(typeof fcUpdateTabBadge==='function') fcUpdateTabBadge();

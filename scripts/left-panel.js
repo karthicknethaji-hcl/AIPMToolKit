@@ -72,20 +72,25 @@ function applyFeats(){
       piTabEl.classList.add('revealed');
     }
   }
-  // Outcome Verification Loop (v9.10.00 feedback item 8, revised): Outcome
-  // Pulse reveals only once the feature flag is on, a Discovery Map has
-  // been generated (gData exists), AND at least one feature exists in
-  // Feature Canvas (scCanvas.length>0) — without a Discovery Map, Outcome
-  // Breakdown has no value-chain stages to derive rows from; without any
-  // features, there is nothing yet to attach an outcome hypothesis to, so
-  // the tab would show a legitimately-empty-looking but functionally
-  // useless screen. Matches PI's existing "only reveal once real data
-  // exists" pattern rather than Market Intelligence's "reveal purely on
-  // flag" pattern.
+  // Adoption Readiness tab (v9.22, real top-nav tab) — reveal once at
+  // least one readinessPlan exists in the session, same content-truthiness
+  // convention as tab-sc/tab-pi above (never un-reveal here; only Home's
+  // reset flow un-reveals tabs, matching tab-sc/tab-pi's own precedent).
+  const arpTabEl=document.getElementById('tab-arp');
+  if(arpTabEl&&typeof piReadinessPlans!=='undefined'&&Array.isArray(piReadinessPlans)&&piReadinessPlans.length>0){
+    arpTabEl.classList.add('revealed');
+  }
+  // Adoption Readiness gating (v9.21) — REPLACES the old "reveal once a
+  // feature flag + Discovery Map + Feature Canvas content exist" trigger
+  // entirely (that condition is retired, not layered under this one, per
+  // ADOPTION_READINESS_SPEC.md §3.1). Outcome Pulse now only ever becomes
+  // visible once the FIRST Adoption Readiness Plan in this session reaches
+  // status:"finalized" (opUnlocked, a one-way session-level flag set by
+  // readiness-canvas.js's rcFinalize()). Once true it stays visible for the
+  // remainder of the session, regardless of any later reopen/un-finalize.
   const opTabEl=document.getElementById('tab-op');
   if(opTabEl){
-    const _hasFcContent=typeof scCanvas!=='undefined'&&Array.isArray(scCanvas)&&scCanvas.length>0;
-    if(!featOutcomePulse||typeof gData==='undefined'||!gData||!_hasFcContent){
+    if(!(typeof opUnlocked!=='undefined'&&opUnlocked)){
       opTabEl.style.display='none';
       if(curTab==='op')switchTab('mm');
     } else {

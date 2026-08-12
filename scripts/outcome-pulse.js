@@ -18,6 +18,7 @@
 let opExpandedStages=new Set();
 let opSignalFilter=''; // '' = all signals
 let opMetricFilter=''; // '' = all metrics (v9.11, Outcome Pulse Iteration Loop)
+let opGroupMode='stage'; // 'stage' | 'release' (v9.21, Adoption Readiness §3.2) — shares opSignalFilter/opMetricFilter across both views, not a per-view filter
 
 // ── opGetTrackedMetrics — distinct, alphabetically sorted list of metric
 // names across tracked features (v9.11). "Tracked" here means the same
@@ -403,7 +404,7 @@ function opBuildHypHealthCardHTML(){
 function opRenderBreakdown(){
   const container=document.getElementById('op-breakdown-card');
   if(!container)return;
-  const stageRows=opBuildStageGroups();
+  const stageRows=(opGroupMode==='release')?opBuildReleaseGroups():opBuildStageGroups();
   let rowsHTML='';
   stageRows.forEach(sg=>{
     const isExpanded=opExpandedStages.has(sg.stageKey);
@@ -431,6 +432,10 @@ function opRenderBreakdown(){
       <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--divider);">
         <div style="font-size:11px;font-weight:700;color:var(--t1);text-transform:uppercase;letter-spacing:0.5px;">Outcome Breakdown</div>
         <div style="display:flex;align-items:center;gap:8px;">
+          <div class="op-group-toggle">
+            <button class="op-group-toggle-btn ${opGroupMode==='stage'?'active':''}" onclick="opSetGroupMode('stage')">By Stage</button>
+            <button class="op-group-toggle-btn ${opGroupMode==='release'?'active':''}" onclick="opSetGroupMode('release')">By Release</button>
+          </div>
           <div class="op-filter-ctrl">
             <i class="ti ti-filter" aria-hidden="true"></i>
             <select id="op-signal-filter" onchange="opSetSignalFilter(this.value)" class="op-filter-select">
@@ -445,8 +450,8 @@ function opRenderBreakdown(){
           <div class="op-filter-ctrl">
             <i class="ti ti-chart-line" aria-hidden="true"></i>
             <select id="op-metric-filter" onchange="opSetMetricFilter(this.value)" class="op-filter-select">
-              <option value="">All Metrics</option>
-              ${opGetTrackedMetrics().map(m=>`<option value="${e(m)}" ${opMetricFilter===m?'selected':''}>${e(m)}</option>`).join('')}
+              <option value="" title="All Metrics">All Metrics</option>
+              ${opGetTrackedMetrics().map(m=>`<option value="${e(m)}" title="${e(m)}" ${opMetricFilter===m?'selected':''}>${e(m)}</option>`).join('')}
             </select>
           </div>
         </div>
@@ -491,6 +496,51 @@ function opBuildStageGroups(){
   });
   // Only show stages with at least one tracked feature (post-filter)
   return filtered.filter(sg=>sg.features.length>0);
+}
+
+// ── By Release grouping (v9.21, Adoption Readiness §3.2) — same shape/
+// filter logic as opBuildStageGroups() above, grouping by which Release
+// Plan last touched each feature (resolved per-story via that plan's
+// storyAssignments, rolled up to feature level) instead of by value-chain
+// stage. A feature touched by multiple releases appears once per release
+// group it belongs to (same underlying hypothesis object each time — this
+// app does not persist a separate hypothesis snapshot per release, see
+// ADOPTION_READINESS_SPEC.md §5 non-goals: no per-release checkpoint
+// field). Shares opSignalFilter/opMetricFilter with the Stage view. ──
+function opBuildReleaseGroups(){
+  const plans=(typeof piPlans!=='undefined'?piPlans:[]);
+  const byRelease={};
+  plans.forEach(p=>{byRelease[p.id]={stageKey:'release:'+p.id,stageLabel:p.name||'Untitled Release',features:[]};});
+  scCanvas.forEach(f=>{
+    if(!isOutcomeTrackableFeature(f))return;
+    if(!f.stories||!f.stories.length)return;
+    const storyIds=f.stories.map(s=>s.id);
+    plans.forEach(p=>{
+      const touched=storyIds.some(id=>p.storyAssignments&&p.storyAssignments[id]);
+      if(touched)byRelease[p.id].features.push(f);
+    });
+  });
+  const filtered=Object.values(byRelease).map(sg=>{
+    let filteredFeatures=opSignalFilter
+      ?sg.features.filter(f=>{
+          const sig=f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.signal;
+          const normalizedSig=sig||'awaiting';
+          return normalizedSig===opSignalFilter;
+        })
+      :sg.features;
+    if(opMetricFilter){
+      filteredFeatures=filteredFeatures.filter(f=>f.outcomeHypothesis.primary&&f.outcomeHypothesis.primary.metric===opMetricFilter);
+    }
+    return{...sg,features:filteredFeatures,aggregates:computeHypothesisAggregates(filteredFeatures)};
+  });
+  // Same rule as Stage view: a release group with zero surviving rows after
+  // filtering does not render at all — no placeholder/empty-state for it.
+  return filtered.filter(sg=>sg.features.length>0);
+}
+
+function opSetGroupMode(mode){
+  opGroupMode=(mode==='release')?'release':'stage';
+  opRenderBreakdown();
 }
 
 function opToggleStage(stageKey){

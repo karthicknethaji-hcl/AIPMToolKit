@@ -493,7 +493,7 @@ function switchTab(t){
   // Close DD panel on every tab switch
   if(typeof ccCloseDDPanel==='function')ccCloseDDPanel();
   // Update all tab buttons — includes home, fc (Feature Canvas) and sc (Story Canvas)
-  ['mm','cc','pi','mi','la','fc','sc','op','gl','ra','home'].forEach(id=>{
+  ['mm','cc','pi','arp','mi','la','fc','sc','op','gl','ra','home'].forEach(id=>{
     const el=document.getElementById('tab-'+id);
     if(el)el.classList.toggle('active',t===id);
   });
@@ -504,6 +504,7 @@ function switchTab(t){
   const miTab=document.getElementById('mi-tab');
   const ccTab=document.getElementById('cc-tab');
   const piTab=document.getElementById('pi-tab');
+  const arpTab=document.getElementById('rc-canvas');
   const opTab=document.getElementById('op-tab');
   const glTab=document.getElementById('gl-tab');
   const raTab=document.getElementById('ra-tab');
@@ -519,6 +520,7 @@ function switchTab(t){
   if(miTab)miTab.classList.toggle('on',t==='mi');
   if(ccTab)ccTab.classList.toggle('on',t==='cc');
   if(piTab)piTab.classList.toggle('on',t==='pi');
+  if(arpTab)arpTab.classList.toggle('on',t==='arp');
   if(opTab)opTab.classList.toggle('on',t==='op');
   if(glTab)glTab.classList.toggle('on',t==='gl');
   if(raTab)raTab.classList.toggle('on',t==='ra');
@@ -556,7 +558,7 @@ function switchTab(t){
       if(el) el.style.display='none';
     });
     // SC and PI use .revealed class — hide them too when on Home
-    ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra','tab-arp'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.classList.contains('revealed')){
         el.setAttribute('data-home-hidden','1');
@@ -574,7 +576,7 @@ function switchTab(t){
       }
     });
     // Restore SC and PI revealed state if they were hidden on Home entry
-    ['tab-sc','tab-pi','tab-ra'].forEach(function(id){
+    ['tab-sc','tab-pi','tab-ra','tab-arp'].forEach(function(id){
       const el=document.getElementById(id);
       if(el&&el.getAttribute('data-home-hidden')==='1'){
         el.classList.add('revealed');
@@ -631,6 +633,10 @@ function switchTab(t){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
     if(typeof piOnTabEnter==='function')piOnTabEnter();
+  }else if(t==='arp'){
+    const bar=document.getElementById('diag-action-bar');
+    if(bar)bar.style.display='none';
+    if(typeof rcOnTabEnter==='function')rcOnTabEnter();
   }else if(t==='mi'){
     const bar=document.getElementById('diag-action-bar');
     if(bar)bar.style.display='none';
@@ -661,6 +667,8 @@ function switchTab(t){
     if(scTabReveal&&typeof scCanvas!=='undefined'&&scCanvas.some(f=>f.stories&&f.stories.length>0))scTabReveal.classList.add('revealed');
     const piTabReveal=document.getElementById('tab-pi');
     if(piTabReveal&&typeof featPI!=='undefined'&&featPI&&typeof piPlans!=='undefined'&&Array.isArray(piPlans)&&piPlans.length>0)piTabReveal.classList.add('revealed');
+    const arpTabReveal=document.getElementById('tab-arp');
+    if(arpTabReveal&&typeof piReadinessPlans!=='undefined'&&Array.isArray(piReadinessPlans)&&piReadinessPlans.length>0)arpTabReveal.classList.add('revealed');
   }
   // Story Canvas tab entry
   if(t==='sc'){

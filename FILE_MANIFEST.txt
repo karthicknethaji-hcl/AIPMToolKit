@@ -48,6 +48,7 @@ pi-planning.js
 product-leak-analysis.js
 prompts.js
 prototype-canvas.js
+readiness-canvas.js          ← v9.21; Adoption Readiness screen flow, data model, and kebab-menu-triggered entry, distinct from requirement-agent.js
 requirement-agent.js          ← v9.16; global, multi-conversation release-requirements agent, distinct from guided-launch.js
 session-store.js
 settings-page.js
@@ -82,6 +83,7 @@ utils.js
 21-outcome-pulse.css
 22-guided-launch.css
 23-requirement-agent.css
+24-readiness-canvas.css       ← v9.21; Adoption Readiness screen flow + lineage drawer + Outcome Pulse By Stage/By Release toggle
 
 ## assets/
 prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/

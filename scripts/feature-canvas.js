@@ -142,7 +142,7 @@ function formatOutcomeUnit(unit,customLabel){
 // feature-generation response (spec §6.5 Finding J).
 function normalizeAIHypothesis(raw){
   if(!raw||typeof raw!=='object')return null;
-  const metric=(raw.metric||'').toString().trim().slice(0,60);
+  const metric=(raw.metric||'').toString().trim();
   if(!metric)return null;
   const unit=OUTCOME_HYP_UNITS.includes(raw.unit)?raw.unit:'custom';
   const customLabel=unit==='custom'?(raw.unit||'').toString().trim().slice(0,20):'';
@@ -818,7 +818,14 @@ function scBuildOutcomeHypChipHTML(f){
   // all the truncation styling (overflow:hidden, text-overflow:ellipsis,
   // white-space:nowrap, max-width) that used to live directly on
   // .sc-hyp-chip.
-  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}"><span class="sc-hyp-chip-inner"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> ${e(label)}</span></span>`;
+  // Adoption Readiness (v9.21, §4.1) — soft, non-blocking amber warning
+  // badge when the carry-forward check (rcApplyHypothesisCarryForward(),
+  // readiness-canvas.js) found no logged prior-release actual. Informational
+  // only — never blocks generation, never requires dismissal.
+  const carryWarn=p._rcNoPriorOutcomeWarning
+    ?`<span class="sc-hyp-carry-warn pgt-tooltip" data-tooltip="No outcome logged for the prior release. Baseline shown below may be outdated. Consider checking Outcome Pulse before confirming."><i class="ti ti-alert-triangle" aria-hidden="true"></i></span>`
+    :'';
+  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}"><span class="sc-hyp-chip-inner"><i class="ti ti-target-arrow" style="font-size:9px;" aria-hidden="true"></i> ${e(label)}</span></span>${carryWarn}`;
 }
 
     h+=`<div class="sc-cards">`;

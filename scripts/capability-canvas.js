@@ -1948,11 +1948,21 @@ async function ccGenerateFeatures(refinement){
     // feature.intakeBriefId) for every feature generated from an RA-created
     // capability. null for manually-created capabilities/sub-caps, exactly
     // as before.
-    cap.featStore[featKey]=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,
+    cap.featStore[featKey]=parsed.features.map(f=>{
+      // Adoption Readiness (v9.21, §4.1) — hypothesis carry-forward check.
+      // Runs unconditionally (including for previously "Achieved" hypotheses)
+      // before the feature object is finalized: overwrites baseline from
+      // Outcome Pulse's most recently logged actual for a feature of this
+      // same name if one exists; otherwise leaves baseline as-is and stamps
+      // a soft, non-blocking warning flag the card chip renders (feature-canvas.js).
+      let _hyp=(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null;
+      if(_hyp&&typeof rcApplyHypothesisCarryForward==='function')_hyp=rcApplyHypothesisCarryForward(f.name,_hyp);
+      return{name:f.name,why:f.why,selected:false,
       metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:subCapName,
-      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null,
+      outcomeHypothesis:_hyp,
       intakeBriefId:(!isSubCap&&cap.intakeBriefId)?cap.intakeBriefId:null,
-      rqNumber:(!isSubCap&&cap.rqNumber)?cap.rqNumber:null}));
+      rqNumber:(!isSubCap&&cap.rqNumber)?cap.rqNumber:null};
+    });
     // Only re-render the main area / clear the refine input if this
     // attempt still owns the feature panel — otherwise the user has since
     // navigated to a different capability and this stale success should
@@ -3392,9 +3402,15 @@ async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,cap
     if(!cap.featStore)cap.featStore={};
     // QA issue #4 — same RA-provenance carry-through as the single-capability
     // generation path above (ccGenerateFeaturesForCapClick).
-    const newFeats=parsed.features.map(f=>({name:f.name,why:f.why,selected:false,metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null,
-      outcomeHypothesis:(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null,
-      intakeBriefId:cap.intakeBriefId||null,rqNumber:cap.rqNumber||null}));
+    // Adoption Readiness (v9.21, §4.1) — same carry-forward check as the
+    // single-capability generation path above; applies unconditionally.
+    const newFeats=parsed.features.map(f=>{
+      let _hyp=(typeof normalizeAIHypothesis==='function')?normalizeAIHypothesis(f.hypothesis):null;
+      if(_hyp&&typeof rcApplyHypothesisCarryForward==='function')_hyp=rcApplyHypothesisCarryForward(f.name,_hyp);
+      return{name:f.name,why:f.why,selected:false,metric:entry.metricName,stage:entry.stageLabel,cap:cap.name,subCap:null,
+      outcomeHypothesis:_hyp,
+      intakeBriefId:cap.intakeBriefId||null,rqNumber:cap.rqNumber||null};
+    });
     if(isPIFirst&&cap.featStore[featKey]&&cap.featStore[featKey].length>0){
       // Path B: ADD to existing features, don't replace
       cap.featStore[featKey]=[...cap.featStore[featKey],...newFeats];
