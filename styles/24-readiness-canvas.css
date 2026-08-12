@@ -82,6 +82,7 @@
 .rc-step-active{font-weight:700;color:var(--t1);}
 .rc-step-active .rc-step-circle{background:var(--purple);color:#fff;}
 .rc-step-done .rc-step-circle{background:var(--green-pale);color:var(--green);}
+.rc-step-warn .rc-step-circle{background:var(--amber-pale);color:var(--amber);}
 
 .rc-nav{
   width:220px;flex-shrink:0;border-right:1px solid var(--divider);
@@ -105,7 +106,8 @@
   background:var(--card);border:1px solid var(--divider);border-radius:8px;
   padding:14px 16px;margin-bottom:14px;
 }
-.rc-field-label{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:5px;}
+.rc-field-label{font-size:10px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:0.4px;margin-top:14px;margin-bottom:5px;}
+.rc-field-label:first-child{margin-top:0;}
 .rc-readonly{font-size:12px;color:var(--t1);}
 .rc-readonly-block{font-size:11.5px;color:var(--t2);line-height:1.5;margin-bottom:10px;}
 .rc-required{color:var(--red);}
@@ -175,6 +177,7 @@
 .rc-chip{font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.3px;}
 .rc-chip-ok{color:var(--green);background:var(--green-pale);}
 .rc-chip-warn{color:var(--amber);background:var(--amber-pale);}
+.rc-chip-neutral{color:var(--t3);background:var(--divider);}
 .rc-export-btn{
   background:none;border:1px solid var(--divider);color:var(--t2);border-radius:6px;
   padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);

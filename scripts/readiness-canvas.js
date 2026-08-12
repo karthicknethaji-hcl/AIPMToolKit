@@ -481,6 +481,20 @@ const RC_SECTIONS=[
   {n:5,label:'Launch Recommendation'},
   {n:6,label:'Readiness Summary'}
 ];
+// Sections whose content has real checklist-style sub-items (impact group
+// confirmation, readiness action sign-off) aren't "done" just because the
+// user scrolled past them — they're only done once those sub-items are
+// actually resolved. Sections without sub-items are done once visited.
+function rcSectionOutstanding(plan,n){
+  if(n===3)return (plan.impactGroups||[]).some(g=>g.status==='draft');
+  if(n===4)return (plan.readinessActions||[]).some(a=>!a.reviewed);
+  if(n===5){
+    const rec=plan.recommendation||{};
+    const isOverridden=!!(rec.override&&rec.override!==rec.systemValue);
+    return isOverridden&&!(rec.overrideRationale&&rec.overrideRationale.trim());
+  }
+  return false;
+}
 function rcGoTo(n){
   rcActiveSection=n;
   const plan=rcGetActivePlan();
@@ -498,9 +512,13 @@ function rcLeftPanelHtml(plan){
   const sourcesHtml=sources.length
     ?sources.map(src=>`<div class="rc-lp-source-row">${e(src.requirementName)}</div>`).join('')
     :'<div class="rc-lp-source-row rc-empty" style="padding:4px 0;">No sources.</div>';
+  const visited=plan.visitedSections||[];
   const stepsHtml=RC_SECTIONS.map(sec=>{
-    const state=sec.n<rcActiveSection?'done':(sec.n===rcActiveSection?'active':'pending');
-    const marker=state==='done'?'<i class="ti ti-check" aria-hidden="true"></i>':sec.n;
+    let state;
+    if(sec.n===rcActiveSection)state='active';
+    else if(!visited.includes(sec.n))state='pending';
+    else state=rcSectionOutstanding(plan,sec.n)?'warn':'done';
+    const marker=state==='done'?'<i class="ti ti-check" aria-hidden="true"></i>':(state==='warn'?'<i class="ti ti-alert-triangle" aria-hidden="true"></i>':sec.n);
     return `<div class="rc-step-item rc-step-${state}" onclick="rcGoTo(${sec.n})"><span class="rc-step-circle">${marker}</span><span class="rc-step-label">${e(sec.label)}</span></div>`;
   }).join('');
   return `
@@ -558,10 +576,23 @@ function rcTopActionsHtml(plan){
 }
 
 // ── Master render ────────────────────────────────────────────────────────
+// A step only counts as reviewed once the user has actually landed on it —
+// jumping straight from section 1 to section 6 (allowed, per free-form nav)
+// must not retroactively mark 2-5 as reviewed just because their number is
+// lower than the current section.
+function rcMarkSectionVisited(plan,n){
+  if(!plan)return;
+  if(!Array.isArray(plan.visitedSections))plan.visitedSections=[];
+  if(!plan.visitedSections.includes(n)){
+    plan.visitedSections.push(n);
+    rcPersist();
+  }
+}
 function rcRenderCanvas(){
   const container=document.getElementById('rc-canvas');
   const plan=rcGetActivePlan();
   if(!container||!plan)return;
+  rcMarkSectionVisited(plan,rcActiveSection);
   const staleBanner=plan.staleFlag?`<div class="rc-stale-banner"><i class="ti ti-alert-triangle" aria-hidden="true"></i> This release plan was regenerated. Review this Readiness Plan against its new scope before finalizing again.</div>`:'';
   const sec=RC_SECTIONS.find(s=>s.n===rcActiveSection)||RC_SECTIONS[0];
   let sectionHtml='';
@@ -861,26 +892,34 @@ function rcSetOverride(v){
 // ── Section 6 — Readiness Summary ───────────────────────────────────────
 function rcRenderSection6(plan){
   rcEnsureWhatsShipping(plan);
-  const outstanding=(plan.impactGroups||[]).some(g=>g.status==='draft');
   const s2=plan.releaseScope||{};
   const secDefs=[
-    {n:1,title:'Change Overview',hasOutstanding:false,body:`<p>${e(plan.changeOverview.whatsChanging)}</p><p>${e(plan.changeOverview.whyNeeded)}</p>`},
-    {n:2,title:'Release Scope',hasOutstanding:false,body:`<p><b>What's Shipping:</b> ${e(s2.whatsShipping)||'&mdash;'}</p><p><b>Squad:</b> ${e(s2.squad)||'&mdash;'}</p><p><b>Sprint Dates:</b> ${e(s2.sprintDates)||'&mdash;'}</p><p><b>Stories / Features / Points:</b> ${s2.storyCount||0} / ${s2.featureCount||0} / ${s2.storyPoints||0}</p><p><b>Rollout Type:</b> ${e(s2.rolloutType)}${s2.rolloutType==='Other'&&s2.rolloutTypeOther?' - '+e(s2.rolloutTypeOther):''}</p>`},
-    {n:3,title:'Impact & Affected Groups',hasOutstanding:outstanding,body:(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>`<div><b>${e(g.name)}</b> - ${e(g.status)}</div>`).join('')||'<p>No groups.</p>'},
-    {n:4,title:'Readiness Actions',hasOutstanding:false,body:(plan.readinessActions||[]).map(a=>`<div>${e(a.actionType)}: ${e(a.description)} ${a.reviewed?'(reviewed)':''}</div>`).join('')||'<p>No actions yet.</p>'},
-    {n:5,title:'Launch Recommendation',hasOutstanding:false,body:`<p><b>${e(plan.recommendation.override||plan.recommendation.systemValue)}</b></p><p>${e(plan.recommendation.reasoning)}</p>`}
+    {n:1,title:'Change Overview',hasOutstanding:rcSectionOutstanding(plan,1),body:`<p>${e(plan.changeOverview.whatsChanging)}</p><p>${e(plan.changeOverview.whyNeeded)}</p>`},
+    {n:2,title:'Release Scope',hasOutstanding:rcSectionOutstanding(plan,2),body:`<p><b>What's Shipping:</b> ${e(s2.whatsShipping)||'&mdash;'}</p><p><b>Squad:</b> ${e(s2.squad)||'&mdash;'}</p><p><b>Sprint Dates:</b> ${e(s2.sprintDates)||'&mdash;'}</p><p><b>Stories / Features / Points:</b> ${s2.storyCount||0} / ${s2.featureCount||0} / ${s2.storyPoints||0}</p><p><b>Rollout Type:</b> ${e(s2.rolloutType)}${s2.rolloutType==='Other'&&s2.rolloutTypeOther?' - '+e(s2.rolloutTypeOther):''}</p>`},
+    {n:3,title:'Impact & Affected Groups',hasOutstanding:rcSectionOutstanding(plan,3),body:(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>`<div><b>${e(g.name)}</b> - ${e(g.status)}</div>`).join('')||'<p>No groups.</p>'},
+    {n:4,title:'Readiness Actions',hasOutstanding:rcSectionOutstanding(plan,4),body:(plan.readinessActions||[]).map(a=>`<div>${e(a.actionType)}: ${e(a.description)} ${a.reviewed?'(reviewed)':''}</div>`).join('')||'<p>No actions yet.</p>'},
+    {n:5,title:'Launch Recommendation',hasOutstanding:rcSectionOutstanding(plan,5),body:`<p><b>${e(plan.recommendation.override||plan.recommendation.systemValue)}</b></p><p>${e(plan.recommendation.reasoning)}</p>`}
   ];
-  const cards=secDefs.map(s=>`
+  const visited=plan.visitedSections||[];
+  const cards=secDefs.map(s=>{
+    const notVisited=!visited.includes(s.n);
+    const chipClass=notVisited?'rc-chip-neutral':(s.hasOutstanding?'rc-chip-warn':'rc-chip-ok');
+    const chipLabel=notVisited?'Not reviewed':(s.hasOutstanding?'Needs review':'Reviewed');
+    return `
     <div class="rc-accordion-card">
       <div class="rc-accordion-hdr" onclick="rcToggleAccordion(this)">
         <span>${s.n}. ${e(s.title)}</span>
-        <span class="rc-chip ${s.hasOutstanding?'rc-chip-warn':'rc-chip-ok'}">${s.hasOutstanding?'Needs review':'Reviewed'}</span>
+        <span class="rc-chip ${chipClass}">${chipLabel}</span>
       </div>
       <div class="rc-accordion-body" style="display:block;">${s.body}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  const unreviewedCount=secDefs.filter(s=>!visited.includes(s.n)||s.hasOutstanding).length;
   const finalizeBtn=plan.status==='finalized'
     ?'<span class="rc-finalized-label"><i class="ti ti-check" aria-hidden="true"></i> Finalized</span>'
-    :`<button class="modal-confirm-btn" onclick="rcFinalize()">Finalize</button>`;
+    :(unreviewedCount>0
+      ?`<button class="modal-confirm-btn" disabled title="Review all sections before finalizing (${unreviewedCount} not reviewed)">Finalize</button>`
+      :`<button class="modal-confirm-btn" onclick="rcFinalize()">Finalize</button>`);
   return `
     ${cards}
     <div class="rc-summary-footer">${finalizeBtn}</div>
