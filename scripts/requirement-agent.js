@@ -159,6 +159,116 @@ function _raDetectsQuestionsOptOut(text){
     || /\bi(?:'?ll| will) (just )?tell you\b/i.test(text||'')
     || /\bwithout (choices|options)\b/i.test(text||'');
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// Section-patch merge (live PM feedback fix — was "return the FULL draft
+// every turn", confirmed the actual cause of both the opening-turn
+// hallucination bug (the model had to invent something for every one of
+// 11 sections just to have a complete document to hand back) and the
+// 30-90s-per-turn latency (regenerating the entire document from scratch
+// every single turn, even for a one-line answer). Now the model only
+// returns sectionUpdates for what it actually has real content for
+// (prompts.js's buildRequirementAgentTurnPrompt()/DMOpeningPrompt()); the
+// client owns the document's structure entirely — numbering, headings, and
+// the placeholder text for anything never yet discussed — so the model
+// never needs to touch, or even see the exact heading format of, a section
+// it isn't updating.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Single source of truth for the 11 canonical section names, in order —
+// must stay a bare name (no numbering) since _raBuildDraftMd() is the only
+// place that ever writes "## N. Name". The model refers to these same 11
+// bare names via prompts.js's "section" field.
+var _RA_SECTION_NAMES=['Requirement Summary','Problem Statement','Success Criteria','Capabilities','Features','Target Users','User Journeys','Non-Functional Requirements','Out of Scope','Assumptions','Open Questions'];
+// Shown for any section with no real content yet — deliberately reads as a
+// placeholder, not a guess dressed up as an answer, so a PM never mistakes
+// "nothing written" for "the AI looked and found nothing."
+var _RA_EMPTY_SECTION_BODY='_Not yet discussed_';
+
+// Parses an existing liveDraftMd string (as produced by _raBuildDraftMd()
+// below) back into a {name: body} map, keyed by the bare canonical name.
+// Tolerates a missing/empty string (the opening turn's conv.liveDraftMd
+// starts as '') by simply returning {} — every section then falls back to
+// the empty-body placeholder in _raBuildDraftMd(). Heading match tolerates
+// an optional "N. " numeric prefix, matching the same convention already
+// used by _raParseTouchedCapabilities()/_raParseFeatureNarratives() below.
+function _raSplitSectionsMd(md){
+  var out={};
+  if(!md)return out;
+  var lines=md.split('\n');
+  var current=null,buf=[];
+  function flush(){
+    if(current)out[current]=buf.join('\n').replace(/^\n+|\n+$/g,'');
+    buf=[];
+  }
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    var m=line.match(/^##\s*(?:\d+\.\s*)?(.+?)\s*$/);
+    var matchedName=null;
+    if(m){
+      var candidate=m[1].trim();
+      for(var j=0;j<_RA_SECTION_NAMES.length;j++){
+        if(_RA_SECTION_NAMES[j].toLowerCase()===candidate.toLowerCase()){matchedName=_RA_SECTION_NAMES[j];break;}
+      }
+    }
+    if(matchedName){
+      flush();
+      current=matchedName;
+      continue;
+    }
+    if(current)buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+// Rebuilds the full liveDraftMd string from a {name: body} map, in
+// canonical order, synthesizing every heading (numbering can never drift
+// since the client generates it, never the model) and the H1 title from
+// conv.title (removing the old latent risk of the model's own embedded H1
+// disagreeing with conv.title, back when the model wrote the whole doc).
+// Any name missing from sectionBodyMap gets _RA_EMPTY_SECTION_BODY, so the
+// PM always sees an explicit "not yet discussed" rather than a blank gap.
+function _raBuildDraftMd(title,sectionBodyMap){
+  var map=sectionBodyMap||{};
+  var lines=['# '+(title||'Requirements Brief'),''];
+  _RA_SECTION_NAMES.forEach(function(name,i){
+    lines.push('## '+(i+1)+'. '+name);
+    lines.push('');
+    lines.push((map[name]&&String(map[name]).trim())?String(map[name]).trim():_RA_EMPTY_SECTION_BODY);
+    lines.push('');
+  });
+  return lines.join('\n').replace(/\n+$/,'\n');
+}
+
+// The actual merge step, called once per turn. Splits whatever's currently
+// stored, defensively validates and overlays each update (case-insensitive
+// name match, tolerating a stray "## N. " prefix if the model includes one
+// despite being told not to — same defensive posture as
+// _raSanitizeClarifyingQuestions() above; unrecognized names are dropped
+// with a console.warn rather than silently eaten, so a real prompt/model
+// mismatch is visible in the console instead of just quietly losing
+// content), then rebuilds. A section never named in sectionUpdates simply
+// keeps whatever was already in the map (or the placeholder if it was
+// never there) - this is the whole point, the model only pays for what it
+// actually changes.
+function _raApplySectionUpdates(conv,sectionUpdates){
+  var map=_raSplitSectionsMd(conv&&conv.liveDraftMd);
+  (sectionUpdates||[]).forEach(function(u){
+    if(!u||typeof u!=='object')return;
+    var rawName=String(u.section||'').trim().replace(/^#{1,6}\s*(?:\d+\.\s*)?/,'');
+    var body=String(u.body||'').trim();
+    if(!rawName||!body)return;
+    var matched=null;
+    for(var i=0;i<_RA_SECTION_NAMES.length;i++){
+      if(_RA_SECTION_NAMES[i].toLowerCase()===rawName.toLowerCase()){matched=_RA_SECTION_NAMES[i];break;}
+    }
+    if(!matched){console.warn('[requirement-agent] sectionUpdates: unrecognized section name, dropped',u.section);return;}
+    map[matched]=body;
+  });
+  return _raBuildDraftMd(conv&&conv.title,map);
+}
+
 // Parse the Live Draft's "## 4. Capabilities" section into structured
 // {key,name,isNew} entries. This is the ONLY source of truth for
 // conv.touchedCapabilityKeys — the model returns capability info solely as
@@ -723,27 +833,30 @@ async function raRunOpeningTurn(conv){
     var parsed=_raParseJSON(raw);
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
-    if(!parsed||!parsed.liveDraftMd){
+    if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I had trouble putting together an opening summary just now. Try typing a message below and I’ll pick this up from there.');
       return;
     }
-    conv.liveDraftMd=parsed.liveDraftMd;
-    conv.draftVersion=1;
-    conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
-    conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
-    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     // QA issue #7 — use the AI's own contextual suggestedTitle if still on
     // the default placeholder (never overwrite a conversation the user has
     // already renamed). Falls back to the old boilerplate only if the model
     // omitted the field entirely — never leaves the title un-set. Only a
     // genuine model suggestion clears titleIsPlaceholder — the boilerplate
     // fallback keeps it true so a later turn (see _raRunTurn()) can still
-    // retitle once the conversation gets more specific.
+    // retitle once the conversation gets more specific. Set BEFORE
+    // _raApplySectionUpdates() below, since _raBuildDraftMd() reads
+    // conv.title for the brief's H1 — otherwise the H1 would lag one turn
+    // behind the actual title.
     if(conv.titleIsPlaceholder){
       var _suggested=(parsed.suggestedTitle||'').trim();
       if(_suggested){conv.title=_suggested;conv.titleIsPlaceholder=false;}
       else conv.title='Release requirements'; // product-name-free fallback — titleIsPlaceholder stays true so a later turn can still replace this
     }
+    conv.liveDraftMd=_raApplySectionUpdates(conv,parsed.sectionUpdates);
+    conv.draftVersion=1;
+    conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
+    conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
+    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
     raRenderConvList();
@@ -817,25 +930,27 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var parsed=_raParseJSON(raw);
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
-    if(!parsed||!parsed.liveDraftMd){
+    if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I couldn’t process that update. Could you rephrase, or try again?');
       return;
     }
-    conv.liveDraftMd=parsed.liveDraftMd;
+    // QA fix — the opening turn's suggestedTitle falls back to generic
+    // boilerplate when the model omits it on turn 1; without this, a
+    // conversation stuck on that boilerplate could never improve as later
+    // turns made its scope more specific (titleIsPlaceholder stays true
+    // until a real suggestion lands, from either turn). Set BEFORE
+    // _raApplySectionUpdates() below — see raRunOpeningTurn()'s matching
+    // comment for why the ordering matters (conv.title feeds the brief's H1).
+    if(conv.titleIsPlaceholder){
+      var _suggestedTurn=(parsed.suggestedTitle||'').trim();
+      if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
+    }
+    conv.liveDraftMd=_raApplySectionUpdates(conv,parsed.sectionUpdates);
     conv.draftVersion=(conv.draftVersion||1)+1;
     conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
     var existingResolved={};
     (conv.openQuestions||[]).forEach(function(q){existingResolved[q.id]=q.resolved;});
     conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){var id='oq'+i;return {id:id,type:'clarification',resolved:!!existingResolved[id],messageIndex:(conv.messages||[]).length};});
-    // QA fix — the opening turn's suggestedTitle falls back to generic
-    // boilerplate when the model omits it on turn 1; without this, a
-    // conversation stuck on that boilerplate could never improve as later
-    // turns made its scope more specific (titleIsPlaceholder stays true
-    // until a real suggestion lands, from either turn).
-    if(conv.titleIsPlaceholder){
-      var _suggestedTurn=(parsed.suggestedTitle||'').trim();
-      if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
-    }
     raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
