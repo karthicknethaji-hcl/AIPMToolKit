@@ -121,12 +121,24 @@ function _glHashContext(companyProfile,productProfile){
   return 'h'+h;
 }
 
+// Inline emphasis - **bold** and _italic_ - applied AFTER e() escapes the
+// raw text, since * and _ are plain ASCII untouched by HTML-escaping, so
+// this ordering is safe. Confirmed via live testing that neither ever
+// actually rendered before this: requirement-agent.js's "**Assumed:**"/
+// "**Risk:**" prefixes and _RA_EMPTY_SECTION_BODY's "_Yet to be
+// discussed_" placeholder were both showing literal asterisks/underscores
+// in the UI instead of bold/italic - _glMdToHtml() only ever handled
+// block-level structure (headings, bullets, paragraphs), never inline
+// markers, for any caller.
+function _glInlineMd(text){
+  return e(text).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/_(.+?)_/g,'<em>$1</em>');
+}
 // ── Minimal markdown -> HTML ──
 // No markdown library is loaded anywhere in this app (confirmed via grep) —
 // this covers exactly what the AI is instructed to produce (H1/H2/H3,
-// paragraphs, "- " bullet lists). flashHeading, when it matches an H2's text
-// (case-insensitive), wraps that section in .gl-flash for the one render
-// that follows a revision turn.
+// paragraphs, "- " bullet lists, **bold**/_italic_ inline). flashHeading,
+// when it matches an H2's text (case-insensitive), wraps that section in
+// .gl-flash for the one render that follows a revision turn.
 function _glMdToHtml(md,flashHeading){
   if(!md)return '';
   var lines=md.split('\n');
@@ -145,15 +157,15 @@ function _glMdToHtml(md,flashHeading){
       if(flashOpen){ html+='</div>'; flashOpen=false; }
       var isFlash=flashHeading && h2[1].trim().toLowerCase()===String(flashHeading).trim().toLowerCase();
       if(isFlash){ html+='<div class="gl-flash">'; flashOpen=true; }
-      html+='<h2>'+e(h2[1])+'</h2>';
+      html+='<h2>'+_glInlineMd(h2[1])+'</h2>';
       continue;
     }
-    if(h1){ closeList(); html+='<h1>'+e(h1[1])+'</h1>'; continue; }
-    if(h3){ closeList(); html+='<h3>'+e(h3[1])+'</h3>'; continue; }
-    if(li){ if(!openList){html+='<ul>';openList=true;} html+='<li>'+e(li[1])+'</li>'; continue; }
+    if(h1){ closeList(); html+='<h1>'+_glInlineMd(h1[1])+'</h1>'; continue; }
+    if(h3){ closeList(); html+='<h3>'+_glInlineMd(h3[1])+'</h3>'; continue; }
+    if(li){ if(!openList){html+='<ul>';openList=true;} html+='<li>'+_glInlineMd(li[1])+'</li>'; continue; }
     closeList();
     if(line.trim()===''){ continue; }
-    html+='<p>'+e(line)+'</p>';
+    html+='<p>'+_glInlineMd(line)+'</p>';
   }
   closeList();
   if(flashOpen)html+='</div>';

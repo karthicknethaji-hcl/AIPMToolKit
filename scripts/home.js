@@ -769,11 +769,22 @@ function homeClearSession(){
   piMode=false;
   piFirstBuilt=false;
   piPlan=null;
+  // piPlans/piBacklogStoryIds/_piActivePlanId (Release Canvas) and
+  // piReadinessPlans (Adoption Readiness) were missing from this reset —
+  // _sessionStoreBuildSnapshot() reads these live globals unconditionally
+  // when a new session is created, so a previous session's release/readiness
+  // data got baked into the brand-new session's own snapshot before the user
+  // had ever touched those tabs.
+  piPlans=[];
+  piBacklogStoryIds=[];
+  _piActivePlanId=null;
+  piReadinessPlans=[];
   piSquads=[{name:(appSettings.defaultSquadName||'Squad')+' 1',capacity:appSettings.defaultSquadCapacity||80}];
   piScVersion=null;
   piInputs={type:'caps-only',piGoal:'',constraints:'',parsedCaps:[],parsedFeatures:[],carryForwardItems:[],overlapResolutions:{}};
   mmBannerCollapsed=false;
   ddGenerated=false;
+  if(typeof window!=='undefined') window._ddRows=[];
   // feature-canvas.js globals
   scCanvas=[];
   if(typeof protoStore!=='undefined') protoStore={};
@@ -859,6 +870,12 @@ function homeClearSession(){
   // Re-show lock message
   const lock=document.getElementById('home-tab-lock');
   if(lock) lock.style.display='flex';
+
+  // Leak-detection regression guard (session-store.js) — verifies every
+  // session-content field the resets above are supposed to have zeroed is
+  // actually empty; console.errors by name if not, catching the exact class
+  // of bug that shipped piPlans/piReadinessPlans/window._ddRows with no reset.
+  if(typeof _ssAssertCleanSlate==='function') _ssAssertCleanSlate();
 
   console.log('Session cleared — ready for new launch');
 }
@@ -1475,10 +1492,13 @@ function _homeRenderSessionCard(sess, isLastActive){
 
 function _homeGetStagePill(stage){
   const map={
+    'Outcome Pulse':     ['home-sess-pill-stage-op','ti-activity'],
+    'Adoption Readiness':['home-sess-pill-stage-arp','ti-checklist'],
     'Release Canvas':    ['home-sess-pill-stage-pi','ti-calendar-event'],
     'Story Canvas': ['home-sess-pill-stage-sc','ti-list-details'],
     'Feature Canvas':['home-sess-pill-stage-fc','ti-writing'],
     'Capability Canvas':['home-sess-pill-stage-cc','ti-layers-subtract'],
+    'Requirement Agent':['home-sess-pill-stage-ra','ti-clipboard-text'],
     'Discovery Map':['home-sess-pill-stage-dm','ti-hierarchy-2'],
     'Market Intelligence':['home-sess-pill-stage-mi','ti-world-search'],
     'Guided Launch':['home-sess-pill-stage-gl','ti-message-2']

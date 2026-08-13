@@ -125,7 +125,151 @@ function _raDedupeQuestions(arr){
     return true;
   });
 }
-// Parse the Live Draft's "## Capabilities Touched" section into structured
+// Defensive parse of the model's clarifyingQuestions field (prompts.js's
+// _raClarifyingQuestionsRules()) into the shape _raQuickReplyHtml() renders.
+// Mirrors _raDedupeQuestions()'s defensive style, but operates on richer
+// {question,targetSection,options} objects rather than plain strings, so
+// it can't reuse that helper directly. Drops any entry missing question/
+// targetSection, clamps options to 2-4, caps the whole array to 1 entry -
+// confirmed via live testing that the model returned 2 questions on an
+// opening turn despite the prompt's own "never more than 1 per turn" rule,
+// so this is the actual enforcement point, not the prompt text.
+function _raSanitizeClarifyingQuestions(arr){
+  return (arr||[]).filter(function(q){
+    return q&&typeof q==='object'&&String(q.question||'').trim()&&String(q.targetSection||'').trim()&&Array.isArray(q.options)&&q.options.length>=2;
+  }).map(function(q){
+    return {
+      question:String(q.question).trim(),
+      targetSection:String(q.targetSection).trim(),
+      options:q.options.map(function(o){return String(o||'').trim();}).filter(Boolean).slice(0,4)
+    };
+  }).filter(function(q){return q.options.length>=2;}).slice(0,1);
+}
+// Client-side backstop for the PM opt-out (prompts.js's
+// _raClarifyingQuestionsRules() STEP 1) — confirmed via live testing that
+// the model can say "Noted - I will not offer choices" in chatReply while
+// still populating clarifyingQuestions in the SAME JSON response, so the
+// prompt instruction alone is not reliable enough on its own. Once any
+// message in this conversation matches, conv.raQuestionsOptedOut is set
+// and _raRunTurn()/raRunOpeningTurn() force clarifyingQuestions to empty
+// from then on regardless of what the model returns, guaranteeing the PM's
+// request is honored even if the model slips again.
+function _raDetectsQuestionsOptOut(text){
+  return /\b(don'?t|do not|stop|no more)\b[^.!?\n]{0,40}\b(ask|question|choice|option)/i.test(text||'')
+    || /\bi(?:'?ll| will) (just )?tell you\b/i.test(text||'')
+    || /\bwithout (choices|options)\b/i.test(text||'');
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Section-patch merge (live PM feedback fix — was "return the FULL draft
+// every turn", confirmed the actual cause of both the opening-turn
+// hallucination bug (the model had to invent something for every one of
+// 11 sections just to have a complete document to hand back) and the
+// 30-90s-per-turn latency (regenerating the entire document from scratch
+// every single turn, even for a one-line answer). Now the model only
+// returns sectionUpdates for what it actually has real content for
+// (prompts.js's buildRequirementAgentTurnPrompt()/DMOpeningPrompt()); the
+// client owns the document's structure entirely — numbering, headings, and
+// the placeholder text for anything never yet discussed — so the model
+// never needs to touch, or even see the exact heading format of, a section
+// it isn't updating.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Single source of truth for the 11 canonical section names, in order —
+// must stay a bare name (no numbering) since _raBuildDraftMd() is the only
+// place that ever writes "## N. Name". The model refers to these same 11
+// bare names via prompts.js's "section" field.
+var _RA_SECTION_NAMES=['Requirement Summary','Problem Statement','Success Criteria','Capabilities','Features','Target Users','User Journeys','Non-Functional Requirements','Out of Scope','Assumptions','Open Questions'];
+// Shown for any section with no real content yet — deliberately reads as a
+// placeholder, not a guess dressed up as an answer, so a PM never mistakes
+// "nothing written" for "the AI looked and found nothing."
+var _RA_EMPTY_SECTION_BODY='_Yet to be discussed_';
+
+// Parses an existing liveDraftMd string (as produced by _raBuildDraftMd()
+// below) back into a {name: body} map, keyed by the bare canonical name.
+// Tolerates a missing/empty string (the opening turn's conv.liveDraftMd
+// starts as '') by simply returning {} — every section then falls back to
+// the empty-body placeholder in _raBuildDraftMd(). Heading match tolerates
+// an optional "N. " numeric prefix, matching the same convention already
+// used by _raParseTouchedCapabilities()/_raParseFeatureNarratives() below.
+function _raSplitSectionsMd(md){
+  var out={};
+  if(!md)return out;
+  var lines=md.split('\n');
+  var current=null,buf=[];
+  function flush(){
+    if(current)out[current]=buf.join('\n').replace(/^\n+|\n+$/g,'');
+    buf=[];
+  }
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    var m=line.match(/^##\s*(?:\d+\.\s*)?(.+?)\s*$/);
+    var matchedName=null;
+    if(m){
+      var candidate=m[1].trim();
+      for(var j=0;j<_RA_SECTION_NAMES.length;j++){
+        if(_RA_SECTION_NAMES[j].toLowerCase()===candidate.toLowerCase()){matchedName=_RA_SECTION_NAMES[j];break;}
+      }
+    }
+    if(matchedName){
+      flush();
+      current=matchedName;
+      continue;
+    }
+    if(current)buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+// Rebuilds the full liveDraftMd string from a {name: body} map, in
+// canonical order, synthesizing every heading (numbering can never drift
+// since the client generates it, never the model) and the H1 title from
+// conv.title (removing the old latent risk of the model's own embedded H1
+// disagreeing with conv.title, back when the model wrote the whole doc).
+// Any name missing from sectionBodyMap gets _RA_EMPTY_SECTION_BODY, so the
+// PM always sees an explicit "not yet discussed" rather than a blank gap.
+function _raBuildDraftMd(title,sectionBodyMap){
+  var map=sectionBodyMap||{};
+  var lines=['# '+(title||'Requirements Brief'),''];
+  _RA_SECTION_NAMES.forEach(function(name,i){
+    lines.push('## '+(i+1)+'. '+name);
+    lines.push('');
+    lines.push((map[name]&&String(map[name]).trim())?String(map[name]).trim():_RA_EMPTY_SECTION_BODY);
+    lines.push('');
+  });
+  return lines.join('\n').replace(/\n+$/,'\n');
+}
+
+// The actual merge step, called once per turn. Splits whatever's currently
+// stored, defensively validates and overlays each update (case-insensitive
+// name match, tolerating a stray "## N. " prefix if the model includes one
+// despite being told not to — same defensive posture as
+// _raSanitizeClarifyingQuestions() above; unrecognized names are dropped
+// with a console.warn rather than silently eaten, so a real prompt/model
+// mismatch is visible in the console instead of just quietly losing
+// content), then rebuilds. A section never named in sectionUpdates simply
+// keeps whatever was already in the map (or the placeholder if it was
+// never there) - this is the whole point, the model only pays for what it
+// actually changes.
+function _raApplySectionUpdates(conv,sectionUpdates){
+  var map=_raSplitSectionsMd(conv&&conv.liveDraftMd);
+  (sectionUpdates||[]).forEach(function(u){
+    if(!u||typeof u!=='object')return;
+    var rawName=String(u.section||'').trim().replace(/^#{1,6}\s*(?:\d+\.\s*)?/,'');
+    var body=String(u.body||'').trim();
+    if(!rawName||!body)return;
+    var matched=null;
+    for(var i=0;i<_RA_SECTION_NAMES.length;i++){
+      if(_RA_SECTION_NAMES[i].toLowerCase()===rawName.toLowerCase()){matched=_RA_SECTION_NAMES[i];break;}
+    }
+    if(!matched){console.warn('[requirement-agent] sectionUpdates: unrecognized section name, dropped',u.section);return;}
+    map[matched]=body;
+  });
+  return _raBuildDraftMd(conv&&conv.title,map);
+}
+
+// Parse the Live Draft's "## 4. Capabilities" section into structured
 // {key,name,isNew} entries. This is the ONLY source of truth for
 // conv.touchedCapabilityKeys — the model returns capability info solely as
 // markdown sub-headings inside liveDraftMd (see buildRequirementAgent*
@@ -162,7 +306,7 @@ function _raParseTouchedCapabilities(md){
   }
   for(var i=0;i<lines.length;i++){
     var line=lines[i];
-    if(/^##\s+Capabilities Touched\s*$/i.test(line)){inSection=true;continue;}
+    if(/^##\s*(?:\d+\.\s*)?Capabilities\s*$/i.test(line)){inSection=true;continue;}
     if(inSection&&/^##\s+/.test(line)){break;} // next top-level "## " section ends it
     if(!inSection)continue;
     var m=line.match(/^#{2,6}\s*\**\s*(.+?)\s*\**\s*\((existing|will be created)(?:\s*[—-]\s*under:\s*(.+?))?\)\s*$/i);
@@ -186,7 +330,7 @@ function _raParseTouchedCapabilities(md){
   _flushDesc();
   return out;
 }
-// Parse the Live Draft's "## Recommended Features" section into per-
+// Parse the Live Draft's "## 5. Features" section into per-
 // capability feature detail: {name, isNew, narrative}. Extends the same
 // exact-copy tagging convention _raParseTouchedCapabilities() already keys
 // off ("(existing)"/"(will be created)" on capability sub-headings) down to
@@ -205,7 +349,7 @@ function _raParseFeatureNarratives(md){
   var out={}; // capName.toLowerCase() -> [{name,isNew,narrative}]
   for(var i=0;i<lines.length;i++){
     var line=lines[i];
-    if(/^##\s+Recommended Features\s*$/i.test(line)){inSection=true;continue;}
+    if(/^##\s*(?:\d+\.\s*)?Features\s*$/i.test(line)){inSection=true;continue;}
     if(inSection&&/^##\s+/.test(line)){break;}
     if(!inSection)continue;
     var capHead=line.match(/^#{2,6}\s*\**\s*(.+?)\s*\**\s*$/);
@@ -227,8 +371,8 @@ function _raParseFeatureNarratives(md){
 // extraction §6.5 and §10 both require instead of passing the entire
 // liveDraftMd blob into a generation prompt. Includes the capability's
 // feature list (name/new-or-existing/narrative) plus the release-level
-// Objectives & Success Criteria section (shared across all capabilities
-// this brief touches — there is no per-capability split for that section).
+// Success Criteria section (shared across all capabilities this brief
+// touches — there is no per-capability split for that section).
 function _raGetCapabilityBriefExcerpt(conv,capName){
   if(!conv||!conv.liveDraftMd||!capName)return'';
   var md=conv.liveDraftMd;
@@ -239,17 +383,20 @@ function _raGetCapabilityBriefExcerpt(conv,capName){
       return '- '+f.name+' ('+(f.isNew?'new':'existing')+')'+(f.narrative?(': '+f.narrative):'');
     }).join('\n'));
   }
-  var objectives=_raExtractSection(md,'Objectives & Success Criteria');
-  if(objectives)parts.push('Release objectives & success criteria:\n'+objectives);
+  var successCriteria=_raExtractSection(md,'Success Criteria');
+  if(successCriteria)parts.push('Release success criteria:\n'+successCriteria);
   return parts.join('\n\n');
 }
 // Extract one "## <headingText>" section's body (everything up to the next
 // "## " heading) from a liveDraftMd blob. Small shared helper for the
 // targeted-extraction requirement in §6.5/§10 — never used to pass the
-// whole document, only a single named section.
+// whole document, only a single named section. headingText is the bare
+// section name (e.g. "Success Criteria") — the numbered-heading prefix
+// ("## 3. Success Criteria") is matched via the optional (?:\d+\.\s*)?
+// group below, so callers never need to know/pass the current number.
 function _raExtractSection(md,headingText){
   var lines=(md||'').split('\n');
-  var re=new RegExp('^##\\s+'+headingText.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*$','i');
+  var re=new RegExp('^##\\s*(?:\\d+\\.\\s*)?'+headingText.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\s*$','i');
   var inSection=false;
   var out=[];
   for(var i=0;i<lines.length;i++){
@@ -540,38 +687,77 @@ function raOpenConversation(id){
   _raPersist();
 }
 
-function _raBubbleHtml(m,idx){
+// Quick-select chip block — rendered under the newest agent message only
+// (never on history), so an answered/superseded turn never shows a stale
+// set of options. targetSection/question/options come straight from the
+// model's clarifyingQuestions field (prompts.js's _raClarifyingQuestionsRules()),
+// already sanitized by _raSanitizeClarifyingQuestions() before storage.
+function _raQuickReplyHtml(cq){
+  return (cq||[]).map(function(q){
+    return '<div class="ra-quick-reply-block">'
+      +'<span class="ra-quick-reply-target-tag">'+e(q.targetSection)+'</span>'
+      +'<div class="ra-quick-reply-q">'+e(q.question)+'</div>'
+      +'<div class="ra-quick-reply-row">'
+        +(q.options||[]).map(function(opt){
+          return '<button type="button" class="ra-quick-reply-chip" data-answer="'+e(opt)+'" onclick="raQuickReplyClick(this)">'+e(opt)+'</button>';
+        }).join('')
+      +'</div>'
+    +'</div>';
+  }).join('');
+}
+function _raBubbleHtml(m,idx,total){
   var isUser=m.role==='user';
   var highlightId='ra-msg-'+idx;
+  var conv=_raActiveConv();
+  var showChips=!isUser&&idx===(total-1)&&conv&&conv.status==='draft'&&m.clarifyingQuestions&&m.clarifyingQuestions.length>0;
   return '<div class="gl-msg-row '+(isUser?'user':'agent')+'" id="'+highlightId+'">'
     +'<div class="gl-avatar '+(isUser?'user-av':'agent-av')+'">'+(isUser?e((typeof _glUserInitials==='function')?_glUserInitials():'You'):'AI')+'</div>'
-    +'<div class="gl-bubble">'+(typeof _glFormatChatText==='function'?_glFormatChatText(m.text):e(m.text||''))+'</div>'
+    +'<div class="gl-bubble">'+(typeof _glFormatChatText==='function'?_glFormatChatText(m.text):e(m.text||''))
+      +(showChips?_raQuickReplyHtml(m.clarifyingQuestions):'')
+    +'</div>'
   +'</div>';
 }
 function raRenderChatHistory(){
   var body=document.getElementById('ra-chat-body');
   var conv=_raActiveConv();
   if(!body||!conv)return;
-  body.innerHTML=(conv.messages||[]).map(function(m,idx){return _raBubbleHtml(m,idx);}).join('');
+  var total=(conv.messages||[]).length;
+  body.innerHTML=(conv.messages||[]).map(function(m,idx){return _raBubbleHtml(m,idx,total);}).join('');
   body.scrollTop=body.scrollHeight;
 }
-function raAppendMessage(conv,role,text){
+function raAppendMessage(conv,role,text,extra){
   conv.messages=conv.messages||[];
-  conv.messages.push({role:role,text:text,timestamp:new Date().toISOString()});
+  conv.messages.push(Object.assign({role:role,text:text,timestamp:new Date().toISOString()},extra||{}));
   var body=document.getElementById('ra-chat-body');
   if(body){
-    body.insertAdjacentHTML('beforeend',_raBubbleHtml(conv.messages[conv.messages.length-1],conv.messages.length-1));
+    // Stale quick-reply block(s) from the previous agent turn must not
+    // linger once ANY new message lands (typed or chip-driven) — otherwise
+    // a PM could click an old, already-superseded option. querySelectorAll,
+    // not querySelector: confirmed via live testing that when a turn ever
+    // surfaces more than one question block, querySelector's single-match
+    // removal left the second block's chips clickable after the first was
+    // answered, silently discarding that question with no way to answer it
+    // (clarifyingQuestions is now capped to 1/turn client-side specifically
+    // to avoid this, but this cleanup should never depend on that cap).
+    var oldQrs=body.querySelectorAll('.ra-quick-reply-block');
+    oldQrs.forEach(function(el){el.remove();});
+    var total=conv.messages.length;
+    body.insertAdjacentHTML('beforeend',_raBubbleHtml(conv.messages[total-1],total-1,total));
     body.scrollTop=body.scrollHeight;
   }
 }
 function _raSetBusy(busy){
   raBusy=busy;
   var sendBtn=document.getElementById('ra-send-btn');
-  var input=document.getElementById('ra-chat-input');
   var uploadChip=document.getElementById('ra-upload-chip');
   if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',busy);
   if(sendBtn)sendBtn.disabled=busy;
-  if(input)input.disabled=busy;
+  // The textarea itself deliberately stays enabled while busy (PM feedback:
+  // a turn can take a minute or more, so the PM should be able to type their
+  // next message while waiting instead of staring at a disabled box) - only
+  // sending/uploading is blocked. raSendMessage() checks raBusy before
+  // touching the textarea's value, so an Enter press mid-generation is a
+  // safe no-op that leaves whatever the PM was typing intact.
 }
 function _raTypingRowHtml(){
   return '<div class="gl-msg-row agent" id="ra-typing-row"><div class="gl-avatar agent-av">AI</div><div class="gl-bubble gl-typing-bubble"><div class="gl-typing-dots"><span></span><span></span><span></span></div></div></div>';
@@ -587,15 +773,20 @@ function _raHideTyping(){
 
 async function _raCallModel(sys,usr,signal){
   var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
-  // Confirmed root cause of the recurring "I couldn't process that update"
-  // failures: captured a live raw response that was cut off mid-string at
-  // ~13.7k characters with no closing braces - not malformed JSON, a
-  // genuinely truncated one, because a large recommended-capability-set
-  // liveDraftMd (several capabilities x features x markdown) exceeds the
-  // previous 3000-token cap before the model finishes. Raised to 8000,
-  // matching the token budget already used elsewhere in this codebase for
-  // similarly large structured generations (metrics-definition.js).
-  return await callAPI(sys,usr,8000,signal||null,null,'requirement-agent',null,extra);
+  // v-next: lowered back from 8000 - that cap was raised for the OLD
+  // return-the-FULL-document-every-turn design, where a large capability
+  // set easily produced ~13.7k characters. Now that turns return
+  // sectionUpdates (only what changed, see _raApplySectionUpdates()), a
+  // typical turn needs a fraction of that - but confirmed via a live
+  // "[AI TIMEOUT] ... timeoutMs: 120000" proxy log that the model can still,
+  // on a rich multi-section PM answer, generate enough output to run past
+  // the PROXY'S OWN hard 120s timeout - which loses the entire turn with no
+  // recovery, unlike hitting max_tokens, which _raParseJSON()'s truncation
+  // recovery can often salvage. 4000 bounds worst-case generation length
+  // (and so worst-case time) to roughly half of the old ceiling, while still
+  // comfortably covering a turn that legitimately updates several sections
+  // at once.
+  return await callAPI(sys,usr,4000,signal||null,null,'requirement-agent',null,extra);
 }
 
 // ── New conversation ──
@@ -647,27 +838,30 @@ async function raRunOpeningTurn(conv){
     var parsed=_raParseJSON(raw);
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
-    if(!parsed||!parsed.liveDraftMd){
+    if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I had trouble putting together an opening summary just now. Try typing a message below and I’ll pick this up from there.');
       return;
     }
-    conv.liveDraftMd=parsed.liveDraftMd;
-    conv.draftVersion=1;
-    conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
-    conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
-    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.');
     // QA issue #7 — use the AI's own contextual suggestedTitle if still on
     // the default placeholder (never overwrite a conversation the user has
     // already renamed). Falls back to the old boilerplate only if the model
     // omitted the field entirely — never leaves the title un-set. Only a
     // genuine model suggestion clears titleIsPlaceholder — the boilerplate
     // fallback keeps it true so a later turn (see _raRunTurn()) can still
-    // retitle once the conversation gets more specific.
+    // retitle once the conversation gets more specific. Set BEFORE
+    // _raApplySectionUpdates() below, since _raBuildDraftMd() reads
+    // conv.title for the brief's H1 — otherwise the H1 would lag one turn
+    // behind the actual title.
     if(conv.titleIsPlaceholder){
       var _suggested=(parsed.suggestedTitle||'').trim();
       if(_suggested){conv.title=_suggested;conv.titleIsPlaceholder=false;}
       else conv.title='Release requirements'; // product-name-free fallback — titleIsPlaceholder stays true so a later turn can still replace this
     }
+    conv.liveDraftMd=_raApplySectionUpdates(conv,parsed.sectionUpdates);
+    conv.draftVersion=1;
+    conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
+    conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
+    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
     raRenderConvList();
@@ -683,16 +877,46 @@ async function raRunOpeningTurn(conv){
   }
 }
 
+// Shared tail for "the user has answered/said something, submit it as the
+// next turn" - used by both the free-text textarea (raSendMessage()) and
+// the quick-select chip click (raQuickReplyClick()) so there is exactly one
+// place that appends the user message and runs the turn, not two competing
+// copies of the same three lines.
+async function _raSubmitUserMessage(conv,text){
+  if(!conv||raBusy||conv.status!=='draft'||!text)return;
+  if(_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
+  raAppendMessage(conv,'user',text);
+  await _raRunTurn(conv,text);
+}
 async function raSendMessage(){
+  // Checked first, before ever touching the textarea's value - the
+  // textarea now stays enabled while a turn is in flight (see
+  // _raSetBusy()) so the PM can keep typing during the ~minute a turn
+  // takes, so an Enter press or stray Send click mid-generation must be a
+  // pure no-op that leaves whatever they were typing untouched, not
+  // silently clear it out from under them.
+  if(raBusy)return;
   var conv=_raActiveConv();
-  if(!conv||raBusy||conv.status!=='draft')return;
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
   var text=input.value.trim();
   if(!text)return;
   input.value='';
-  raAppendMessage(conv,'user',text);
-  await _raRunTurn(conv,text);
+  await _raSubmitUserMessage(conv,text);
+}
+// Handles a click on a quick-select chip (_raQuickReplyHtml()) - forwards
+// the chosen option text through the same submit path as typing it would,
+// so the model's next turn sees it exactly like any other user message.
+function raQuickReplyClick(btnEl){
+  var conv=_raActiveConv();
+  if(!conv||raBusy||conv.status!=='draft')return;
+  var answer=btnEl.dataset.answer;
+  if(!answer)return;
+  // Remove the whole quick-reply block immediately - confirms the pick
+  // visually and prevents a double-click submitting the same answer twice.
+  var block=btnEl.closest('.ra-quick-reply-block');
+  if(block)block.remove();
+  _raSubmitUserMessage(conv,answer);
 }
 
 // uploadedDocText/uploadedDocName (optional) — a document dropped via the
@@ -711,26 +935,28 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var parsed=_raParseJSON(raw);
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
-    if(!parsed||!parsed.liveDraftMd){
+    if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I couldn’t process that update. Could you rephrase, or try again?');
       return;
     }
-    conv.liveDraftMd=parsed.liveDraftMd;
+    // QA fix — the opening turn's suggestedTitle falls back to generic
+    // boilerplate when the model omits it on turn 1; without this, a
+    // conversation stuck on that boilerplate could never improve as later
+    // turns made its scope more specific (titleIsPlaceholder stays true
+    // until a real suggestion lands, from either turn). Set BEFORE
+    // _raApplySectionUpdates() below — see raRunOpeningTurn()'s matching
+    // comment for why the ordering matters (conv.title feeds the brief's H1).
+    if(conv.titleIsPlaceholder){
+      var _suggestedTurn=(parsed.suggestedTitle||'').trim();
+      if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
+    }
+    conv.liveDraftMd=_raApplySectionUpdates(conv,parsed.sectionUpdates);
     conv.draftVersion=(conv.draftVersion||1)+1;
     conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
     var existingResolved={};
     (conv.openQuestions||[]).forEach(function(q){existingResolved[q.id]=q.resolved;});
     conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){var id='oq'+i;return {id:id,type:'clarification',resolved:!!existingResolved[id],messageIndex:(conv.messages||[]).length};});
-    // QA fix — the opening turn's suggestedTitle falls back to generic
-    // boilerplate when the model omits it on turn 1; without this, a
-    // conversation stuck on that boilerplate could never improve as later
-    // turns made its scope more specific (titleIsPlaceholder stays true
-    // until a real suggestion lands, from either turn).
-    if(conv.titleIsPlaceholder){
-      var _suggestedTurn=(parsed.suggestedTitle||'').trim();
-      if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
-    }
-    raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.');
+    raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
     raRenderConvList();
@@ -804,8 +1030,8 @@ function raRenderLiveDraft(){
     // previous pass) — "LIVE DRAFT" eyebrow + the conversation's own
     // contextualized title (never the product name) + version badge, with
     // Export living here only (top-right), not duplicated in the footer.
-    // The markdown body still starts directly at "## Summary" — only the
-    // body's own redundant "# H1" line is stripped, not this banner.
+    // The markdown body still starts directly at "## 1. Requirement Summary"
+    // — only the body's own redundant "# H1" line is stripped, not this banner.
     '<div class="ra-md-hdr"><div class="ra-md-hdr-text"><div class="ra-md-hdr-eyebrow">Live Draft</div><div class="ra-md-hdr-title">'+e(conv.title||'Requirements Brief')+'<span class="ra-md-hdr-ver">'+verLabel+'</span></div></div>'
       +'<div class="ra-md-hdr-actions">'
       +(hasDraftContent?exportBtn:'')
@@ -824,8 +1050,8 @@ function raRenderLiveDraft(){
 // Strips the live draft's own leading "# H1 title" line, since the banner
 // above #ra-md-body already shows the conversation's contextualized title —
 // keeping both would reintroduce the duplicate the earlier QA pass flagged.
-// Only the first line is touched; everything from "## Summary" onward is
-// untouched.
+// Only the first line is touched; everything from "## 1. Requirement
+// Summary" onward is untouched.
 function _raStripLeadingH1(md){
   if(!md)return md;
   return md.replace(/^\s*#\s[^\n]*\n+/,'');

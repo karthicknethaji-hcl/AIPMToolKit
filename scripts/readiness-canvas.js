@@ -344,66 +344,133 @@ function rcBuildStoryContext(plan){
 function rcParseAiJson(txt){
   return JSON.parse((txt||'').replace(/```json|```/g,'').trim());
 }
+// Loader-then-reveal (live PM feedback fix) — full-section replacement
+// shown WHILE an _aiEnhance*Pending flag is true, instead of the previous
+// pattern of showing the deterministic draft immediately and silently
+// swapping it for the AI result a few seconds later. Purple-pale
+// background, purple-deep text, static ti-sparkles icon per live PM
+// feedback (this used to be a plain spinner, and there used to also be a
+// separate canvas-level banner using this same look - removed as
+// redundant once every section using this loader shows the message right
+// where its own content will appear).
+function rcAiLoadingBlock(title){
+  return `<div class="rc-ai-loading"><i class="ti ti-sparkles" aria-hidden="true"></i><div class="rc-ai-loading-title">${e(title)}</div></div>`;
+}
+// Shown instead of (never alongside) the pending loader once an AI call has
+// failed — the deterministic content stays visible underneath this note,
+// it is never hidden, matching the explicit "show the template, just
+// indicate AI couldn't generate it" requirement. Same shape as the
+// existing .rc-ai-pending-note (icon + italic text) but red, not purple.
+function rcAiFailedNote(message){
+  return `<div class="rc-ai-failed-note"><i class="ti ti-alert-circle" aria-hidden="true"></i> ${e(message)}</div>`;
+}
 const RC_SYS_CHANGE_OVERVIEW='You are a senior product manager writing a release readiness brief for other PMs and stakeholders. Respond ONLY with valid JSON: {"whatsChanging":"...","whyNeeded":"..."}. whatsChanging is 1-2 factual sentences naming what ships. whyNeeded is a coherent 2-4 sentence narrative explaining why this work matters, referencing the outcome metrics by name where relevant. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 const RC_SYS_IMPACT_GROUPS='You are a senior product manager identifying every real user or stakeholder group affected by this release, including groups never explicitly named in the stories (e.g. support, ops, other internal teams) when the change realistically affects them. Respond ONLY with valid JSON: an array of up to 6 objects, each {"name":"...","currentState":"...","futureState":"...","requiredBehavior":"..."}. name is a short role/title. currentState and futureState are each 1-2 plain-language sentences (not raw Given/Then fragments). requiredBehavior is a complete sentence stating specifically what this group needs to do differently, tailored to the rollout type given. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 const RC_SYS_READINESS_ACTIONS='You are a senior product manager planning launch readiness actions for one specific affected group. Given the group\'s current state, future state, and required behavior, propose 2-4 specific, concrete readiness actions (not generic communication/support boilerplate) - e.g. training, documentation updates, monitoring setup, a rollback rehearsal, whatever genuinely fits this change. Respond ONLY with valid JSON: an array of objects, each {"actionType":"...","description":"..."}. actionType is a short 1-3 word label. description is 1-2 complete sentences. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 const RC_SYS_LAUNCH_NARRATIVE='You are a senior product manager writing a short launch risk narrative for stakeholders. The launch decision (Ready/Conditional/Hold) is already fixed by the system - do not change or contradict it. Respond ONLY with valid JSON: {"narrative":"..."}. narrative is 2-4 sentences explaining, in plain business language, specifically which groups/actions (by name) still need attention and why this matters for this release, or if nothing is outstanding, why the release is genuinely ready. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 
 // Fires once, right after plan creation, for Change Overview + Impact
-// Groups together (both need the same story/feature context). Runs in the
-// background — the plan is already visible with its deterministic draft
-// before this resolves; a subtle banner (rcRenderCanvas) shows while
-// plan._aiEnhancePending is true, and success silently replaces the draft
-// in place. A failed/offline call just leaves the deterministic draft as
-// the final content, with plan._aiEnhancePending cleared either way.
+// Groups (both need the same story/feature context, built once as ctx
+// below, but the two AI calls themselves run fully independently - see the
+// round-2 fix inside). While plan._aiEnhancePending.changeOverview /
+// .impactGroups is true, Sections 1 and 3 (rcRenderSection1()/
+// rcRenderSection3()) each show a full loading block instead of the
+// deterministic draft (live PM feedback fix: the draft used to render
+// immediately and get silently swapped for the AI result a few seconds
+// later, which read as random content appearing out of nowhere) - and each
+// section reveals as soon as ITS OWN call resolves, not both at once. On
+// success the deterministic draft is replaced with the AI result before
+// it's ever shown; on failure (tracked per-field in plan._aiEnhanceFailed)
+// the deterministic draft is what gets revealed, with an inline note that
+// AI enhancement failed for that field.
 function rcAiEnhanceNewPlan(planId){
   const plan=(piReadinessPlans||[]).find(p=>p.id===planId);
   if(!plan)return;
   const ctx=rcBuildStoryContext(plan);
   if(!ctx.features.length)return; // nothing to reason over yet — keep the deterministic empty-state copy
-  plan._aiEnhancePending=true;
-  Promise.allSettled([
-    callAPI(RC_SYS_CHANGE_OVERVIEW,JSON.stringify(ctx),800,undefined,undefined,'arp-change-overview'),
-    callAPI(RC_SYS_IMPACT_GROUPS,JSON.stringify(ctx),1500,undefined,undefined,'arp-impact-groups')
-  ]).then(([coRes,igRes])=>{
+  // Loader-then-reveal fix, round 2 (live PM feedback): these two calls
+  // used to be joined via Promise.allSettled, so NEITHER section could
+  // reveal until BOTH resolved - Section 1 (the smaller, usually-faster
+  // Change Overview call, 800 max_tokens) sat waiting on Section 3's
+  // slower Impact Groups call (1500 max_tokens) for no real reason, once
+  // both sections started showing a real loader instead of instant
+  // (fake) content. Fired as two fully independent chains now, each
+  // clearing only its own plan._aiEnhancePending.* flag the moment it
+  // personally resolves - whichever section's call finishes first reveals
+  // first, same as it would if they were two unrelated features.
+  plan._aiEnhancePending={changeOverview:true,impactGroups:true};
+  callAPI(RC_SYS_CHANGE_OVERVIEW,JSON.stringify(ctx),800,undefined,undefined,'arp-change-overview').then(txt=>{
     const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
     if(!p2)return;
-    if(coRes.status==='fulfilled'){
-      try{
-        const parsed=rcParseAiJson(coRes.value);
-        if(parsed&&parsed.whatsChanging&&parsed.whyNeeded){
-          p2.changeOverview.whatsChanging=String(parsed.whatsChanging).trim();
-          p2.changeOverview.whyNeeded=String(parsed.whyNeeded).trim();
-          p2.changeOverview.aiEnhanced=true;
-        }
-      }catch(err){/* keep deterministic draft */}
-    }
-    if(igRes.status==='fulfilled'){
-      try{
-        const parsed=rcParseAiJson(igRes.value);
-        if(Array.isArray(parsed)&&parsed.length){
-          p2.impactGroups=parsed.filter(g=>g&&g.name).map(g=>({
-            id:'ig-'+Math.random().toString(36).slice(2),
-            name:String(g.name).trim(),
-            currentState:String(g.currentState||'').trim(),
-            futureState:String(g.futureState||'').trim(),
-            requiredBehavior:String(g.requiredBehavior||'').trim(),
-            status:'draft',
-            origin:'ai'
-          }));
-        }
-      }catch(err){/* keep deterministic draft */}
-    }
-    p2._aiEnhancePending=false;
+    if(!p2._aiEnhanceFailed)p2._aiEnhanceFailed={};
+    let ok=false;
+    try{
+      const parsed=rcParseAiJson(txt);
+      if(parsed&&parsed.whatsChanging&&parsed.whyNeeded){
+        p2.changeOverview.whatsChanging=String(parsed.whatsChanging).trim();
+        p2.changeOverview.whyNeeded=String(parsed.whyNeeded).trim();
+        p2.changeOverview.aiEnhanced=true;
+        ok=true;
+      }
+    }catch(err){/* keep deterministic draft */}
+    p2._aiEnhanceFailed.changeOverview=!ok;
+    if(p2._aiEnhancePending)p2._aiEnhancePending.changeOverview=false;
     rcPersist();
     if(rcGetActivePlan()===p2)rcRenderCanvas();
+  }).catch(()=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(p2){
+      if(!p2._aiEnhanceFailed)p2._aiEnhanceFailed={};
+      p2._aiEnhanceFailed.changeOverview=true;
+      if(p2._aiEnhancePending)p2._aiEnhancePending.changeOverview=false;
+    }
+    if(p2&&rcGetActivePlan()===p2)rcRenderCanvas();
+  });
+  callAPI(RC_SYS_IMPACT_GROUPS,JSON.stringify(ctx),1500,undefined,undefined,'arp-impact-groups').then(txt=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(!p2)return;
+    if(!p2._aiEnhanceFailed)p2._aiEnhanceFailed={};
+    let ok=false;
+    try{
+      const parsed=rcParseAiJson(txt);
+      if(Array.isArray(parsed)&&parsed.length){
+        p2.impactGroups=parsed.filter(g=>g&&g.name).map(g=>({
+          id:'ig-'+Math.random().toString(36).slice(2),
+          name:String(g.name).trim(),
+          currentState:String(g.currentState||'').trim(),
+          futureState:String(g.futureState||'').trim(),
+          requiredBehavior:String(g.requiredBehavior||'').trim(),
+          status:'draft',
+          origin:'ai'
+        }));
+        ok=true;
+      }
+    }catch(err){/* keep deterministic draft */}
+    p2._aiEnhanceFailed.impactGroups=!ok;
+    if(p2._aiEnhancePending)p2._aiEnhancePending.impactGroups=false;
+    rcPersist();
+    if(rcGetActivePlan()===p2)rcRenderCanvas();
+  }).catch(()=>{
+    const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
+    if(p2){
+      if(!p2._aiEnhanceFailed)p2._aiEnhanceFailed={};
+      p2._aiEnhanceFailed.impactGroups=true;
+      if(p2._aiEnhancePending)p2._aiEnhancePending.impactGroups=false;
+    }
+    if(p2&&rcGetActivePlan()===p2)rcRenderCanvas();
   });
 }
 // Fires when a group is confirmed (rcConfirmGroup), replacing that group's
-// just-created deterministic actions with tailored ones. Skipped if the PM
-// already reviewed one of the deterministic actions before this resolves
-// (a few-second window at most) — their review shouldn't be silently
-// discarded by a background upgrade.
+// just-created deterministic actions with tailored ones. While
+// plan._aiActionsPending[gid] is true, rcRenderSection4() shows a loading
+// row for just this group instead of its deterministic rows (other groups
+// render normally). Skipped if the PM already reviewed one of the
+// deterministic actions before this resolves (a few-second window at most)
+// — their review shouldn't be silently discarded by a background upgrade;
+// that skip is deliberate, not a failure, so it does not set
+// plan._aiActionsFailed[gid]. A genuine failure (rejection or malformed
+// response) does set it, and rcRenderSection4() shows the deterministic
+// rows plus an inline "AI could not tailor this" note instead.
 function rcAiEnhanceActionsForGroup(planId,gid){
   const plan=(piReadinessPlans||[]).find(p=>p.id===planId);
   if(!plan)return;
@@ -418,28 +485,49 @@ function rcAiEnhanceActionsForGroup(planId,gid){
     const g2=(p2.impactGroups||[]).find(x=>x.id===gid);
     const existing=(p2.readinessActions||[]).filter(a=>a.groupId===gid);
     if(g2&&g2.status==='confirmed'&&!existing.some(a=>a.reviewed)){
-      const parsed=rcParseAiJson(txt);
-      if(Array.isArray(parsed)&&parsed.length){
-        const fresh=parsed.filter(a=>a&&a.description).map(a=>({
-          id:'ra-'+Math.random().toString(36).slice(2),
-          groupId:gid,
-          groupName:g2.name,
-          actionType:String(a.actionType||'Action').trim(),
-          description:String(a.description).trim(),
-          reviewed:false
-        }));
-        p2.readinessActions=(p2.readinessActions||[]).filter(a=>a.groupId!==gid).concat(fresh);
-        const rec=rcComputeRecommendation(p2);
-        p2.recommendation.systemValue=rec.value;
-        p2.recommendation.reasoning=rec.reason;
+      // Loader-then-reveal fix: wrap the parse (previously unwrapped — a
+      // malformed-but-resolved response would throw here uncaught by
+      // anything except the chained .catch() below, clearing pending with
+      // no failure recorded) so a parse failure is tracked exactly like a
+      // network rejection.
+      try{
+        const parsed=rcParseAiJson(txt);
+        if(Array.isArray(parsed)&&parsed.length){
+          const fresh=parsed.filter(a=>a&&a.description).map(a=>({
+            id:'ra-'+Math.random().toString(36).slice(2),
+            groupId:gid,
+            groupName:g2.name,
+            actionType:String(a.actionType||'Action').trim(),
+            description:String(a.description).trim(),
+            reviewed:false
+          }));
+          p2.readinessActions=(p2.readinessActions||[]).filter(a=>a.groupId!==gid).concat(fresh);
+          const rec=rcComputeRecommendation(p2);
+          p2.recommendation.systemValue=rec.value;
+          p2.recommendation.reasoning=rec.reason;
+          if(p2._aiActionsFailed)delete p2._aiActionsFailed[gid];
+        }else{
+          if(!p2._aiActionsFailed)p2._aiActionsFailed={};
+          p2._aiActionsFailed[gid]=true;
+        }
+      }catch(err){
+        if(!p2._aiActionsFailed)p2._aiActionsFailed={};
+        p2._aiActionsFailed[gid]=true;
       }
     }
+    // else: the group was un-confirmed or the PM already reviewed one of
+    // the deterministic actions before this resolved - a deliberate skip,
+    // not a failure, so _aiActionsFailed is untouched (no note needed).
     if(p2._aiActionsPending)delete p2._aiActionsPending[gid];
     rcPersist();
     if(rcGetActivePlan()===p2)rcRenderCanvas();
   }).catch(()=>{
     const p2=(piReadinessPlans||[]).find(p=>p.id===planId);
-    if(p2&&p2._aiActionsPending)delete p2._aiActionsPending[gid];
+    if(p2){
+      if(p2._aiActionsPending)delete p2._aiActionsPending[gid];
+      if(!p2._aiActionsFailed)p2._aiActionsFailed={};
+      p2._aiActionsFailed[gid]=true;
+    }
     if(p2&&rcGetActivePlan()===p2)rcRenderCanvas();
   });
 }
@@ -819,7 +907,10 @@ function rcRenderCanvas(){
   // the fetch's own .then/.catch) to avoid re-entrant rendering.
   if(rcActiveSection===5)rcMaybeTriggerLaunchNarrative(plan);
   const staleBanner=plan.staleFlag?`<div class="rc-stale-banner"><i class="ti ti-alert-triangle" aria-hidden="true"></i> This release plan was regenerated. Review this Readiness Plan against its new scope before finalizing again.</div>`:'';
-  const enhanceBanner=plan._aiEnhancePending?`<div class="rc-ai-enhance-banner"><i class="ti ti-sparkles" aria-hidden="true"></i> Enhancing Change Overview and Impact & Affected Groups with AI...</div>`:'';
+  // Loader-then-reveal fix, round 2 (live PM feedback): removed the
+  // canvas-level "Enhancing..." banner entirely - now redundant and
+  // confusing alongside Section 1/3's own full loading blocks, which show
+  // the exact same message where the content itself will appear.
   const sec=RC_SECTIONS.find(s=>s.n===rcActiveSection)||RC_SECTIONS[0];
   let sectionHtml='';
   switch(rcActiveSection){
@@ -832,7 +923,6 @@ function rcRenderCanvas(){
   }
   container.innerHTML=`
     ${staleBanner}
-    ${enhanceBanner}
     <div class="rc-body">
       <div class="rc-left-panel${rcPanelOpen?'':' collapsed'}" id="rc-left-panel">${rcLeftPanelHtml(plan)}</div>
       <div class="rc-main">
@@ -856,6 +946,22 @@ function rcRenderCanvas(){
 
 // ── Section 1 — Change Overview ─────────────────────────────────────────
 function rcRenderSection1(plan){
+  // Loader-then-reveal fix, round 3 (live PM feedback): field-level gating,
+  // matching Section 5's own AI Risk Narrative pattern (rcRenderSection5())
+  // instead of a full-section loading block - the card labels ("What's
+  // Changing"/"Why It's Needed") and the metrics table (never AI-touched
+  // at all - RC_SYS_CHANGE_OVERVIEW only ever returns whatsChanging/
+  // whyNeeded) render immediately; only the two AI-enhanced field VALUES
+  // themselves show the inline "...with AI" note while pending, or the
+  // deterministic value plus a failure note if AI enhancement failed.
+  const pending=(plan._aiEnhancePending&&plan._aiEnhancePending.changeOverview);
+  const failed=(plan._aiEnhanceFailed&&plan._aiEnhanceFailed.changeOverview);
+  const whatsChangingField=pending
+    ?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Writing this with AI...</div>`
+    :(failed?rcAiFailedNote('AI could not enhance this - showing the baseline summary.'):'')+rcFieldHtml('whatsChanging','changeOverview.whatsChanging',true);
+  const whyNeededField=pending
+    ?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Writing this with AI...</div>`
+    :(failed?rcAiFailedNote('AI could not enhance this - showing the baseline summary.'):'')+rcFieldHtml('whyNeeded','changeOverview.whyNeeded',true);
   const rows=(plan.changeOverview.metrics||[]).map((m,i)=>`
     <tr>
       <td>${rcFieldHtml('m-name-'+i,'changeOverview.metrics.'+i+'.metricName',false,'Metric name')}</td>
@@ -866,11 +972,11 @@ function rcRenderSection1(plan){
   return `
     <div class="rc-card">
       <div class="rc-field-label">What's Changing</div>
-      ${rcFieldHtml('whatsChanging','changeOverview.whatsChanging',true)}
+      ${whatsChangingField}
     </div>
     <div class="rc-card">
       <div class="rc-field-label">Why It's Needed</div>
-      ${rcFieldHtml('whyNeeded','changeOverview.whyNeeded',true)}
+      ${whyNeededField}
     </div>
     <div class="rc-card">
       <div class="rc-field-label">What It Improves</div>
@@ -924,6 +1030,13 @@ function rcSetRolloutType(v){
 
 // ── Section 3 — Impact & Affected Groups ────────────────────────────────
 function rcRenderSection3(plan){
+  // Loader-then-reveal fix: same idea as rcRenderSection1() (both come
+  // from rcAiEnhanceNewPlan(), which now fires Change Overview and Impact
+  // Groups as two independent calls) - show a full loading block instead
+  // of the deterministic candidate groups while THIS section's own AI call
+  // is in flight, regardless of whether Change Overview's call has
+  // finished yet.
+  if(plan._aiEnhancePending&&plan._aiEnhancePending.impactGroups)return rcAiLoadingBlock('Identifying affected groups with AI...');
   const canEdit=(typeof canEditSession!=='function')||canEditSession();
   const locked=plan.status==='finalized';
   const cards=(plan.impactGroups||[]).filter(g=>g.status!=='removed').map(g=>{
@@ -955,14 +1068,14 @@ function rcRenderSection3(plan){
         ${actions}
       </div>`;
   }).join('');
-  const enhancePendingNote=plan._aiEnhancePending?`<div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Identifying additional affected groups with AI...</div>`:'';
+  const failedNote=(plan._aiEnhanceFailed&&plan._aiEnhanceFailed.impactGroups)?rcAiFailedNote('AI could not identify additional affected groups - showing the baseline candidates below.'):'';
   const addTile=(canEdit&&!locked)?`
     <div class="rc-add-group-tile" onclick="rcOpenAddGroupModal()">
       <i class="ti ti-plus" aria-hidden="true"></i>
       <span>Add group</span>
     </div>`:'';
   return `
-    ${enhancePendingNote}
+    ${failedNote}
     ${cards?'':'<div class="rc-empty">No candidate groups were drafted - add one below.</div>'}
     <div class="rc-groups-grid">${cards}${addTile}</div>
   `;
@@ -1161,23 +1274,36 @@ function rcRenderSection4(plan){
   const groupsById={};(plan.impactGroups||[]).forEach(g=>{groupsById[g.id]=g;});
   const actions=plan.readinessActions||[];
   const pending=plan._aiActionsPending||{};
+  const failed=plan._aiActionsFailed||{};
   const pendingShown=new Set();
+  const failedShown=new Set();
   let sn=0;
   const rows=actions.map(a=>{
     const g=groupsById[a.groupId];
-    sn++;
-    let pendingRow='';
-    if(g&&pending[g.id]&&!pendingShown.has(g.id)){
-      pendingShown.add(g.id);
-      pendingRow=`<tr><td colspan="6" class="rc-ai-pending-note-cell"><div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Tailoring ${e(g.name)}'s readiness actions with AI...</div></td></tr>`;
+    const gid=g?g.id:null;
+    // Loader-then-reveal fix: while a group's actions are being tailored,
+    // suppress its real (deterministic) rows entirely and show one loading
+    // row in their place instead of rendering both together - previously
+    // the deterministic rows stayed fully visible/editable right alongside
+    // the "Tailoring..." note, then got silently replaced a moment later.
+    if(gid&&pending[gid]){
+      if(pendingShown.has(gid))return '';
+      pendingShown.add(gid);
+      return `<tr><td colspan="6" class="rc-ai-pending-note-cell"><div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Tailoring ${e(g.name)}'s readiness actions with AI...</div></td></tr>`;
     }
+    let failedRow='';
+    if(gid&&failed[gid]&&!failedShown.has(gid)){
+      failedShown.add(gid);
+      failedRow=`<tr><td colspan="6" class="rc-ai-failed-note-cell"><div class="rc-ai-failed-note"><i class="ti ti-alert-circle" aria-hidden="true"></i> AI could not tailor ${e(g.name)}'s readiness actions - showing the baseline actions below.</div></td></tr>`;
+    }
+    sn++;
     const groupLabel=(a.groupName!=null?a.groupName:(g?g.name:''));
     // Can't meaningfully "review" a row that isn't even filled in yet —
     // require user group, action title, and details before the checkbox
     // is usable, rather than letting an empty placeholder row get ticked.
     const canReview=rcActionCanReview(a,groupLabel);
     const reviewedDisabled=(!canReview&&!a.reviewed);
-    return `${pendingRow}
+    return `${failedRow}
       <tr>
         <td class="rc-action-sn">${sn}</td>
         <td><div class="ra-field-wrap"><div class="ra-field-text" id="rc-ft-action-group-${a.id}">${e(groupLabel)||'<span class="ra-field-empty">User group</span>'}</div><button class="ra-field-pencil" onclick="rcEditActionGroup('${a.id}')" title="Edit"><i class="ti ti-pencil" aria-hidden="true"></i></button></div></td>
@@ -1291,9 +1417,19 @@ function rcRenderSection5(plan){
     ?`<div class="rc-field-label">Rationale <span class="rc-required">*</span></div><textarea class="ra-field-input" id="rc-override-rationale" onblur="rcSaveField('overrideRationale','recommendation.overrideRationale',this.value)" placeholder="Explain why this recommendation was overridden.">${e(rec.overrideRationale)}</textarea>`
     :'';
   const overrideNote=isOverridden?`<div class="rc-rec-override-note"><i class="ti ti-user-edit" aria-hidden="true"></i> Overridden by PM &middot; system value is ${e(rec.systemValue)}</div>`:'';
+  // Loader-then-reveal fix: this block was already correctly gated
+  // (loader OR result, never both at once) since the narrative has no
+  // deterministic draft to prematurely show - it just had no failure
+  // indicator. plan._aiNarrativeFailedSig already existed (set by
+  // rcMaybeTriggerLaunchNarrative()) but was never read here.
+  const currentSig=rcRecommendationSignature(plan);
+  const narrativeCurrent=rec.aiNarrativeSig===currentSig;
+  const narrativeFailed=!narrativeCurrent&&plan._aiNarrativeFailedSig===currentSig;
   const narrativeBlock=plan._aiNarrativePending
     ?`<div class="rc-field-label">AI Risk Narrative</div><div class="rc-ai-pending-note"><i class="ti ti-sparkles" aria-hidden="true"></i> Writing risk narrative with AI...</div>`
-    :(rec.aiNarrative?`<div class="rc-field-label">AI Risk Narrative</div><div class="rc-readonly-block">${e(rec.aiNarrative)}</div>`:'');
+    :narrativeFailed
+      ?`<div class="rc-field-label">AI Risk Narrative</div>${rcAiFailedNote('AI could not generate a risk narrative for this release.')}${rec.aiNarrative?`<div class="rc-readonly-block">${e(rec.aiNarrative)}</div><div class="rc-ai-pending-note" style="font-style:normal;">This is the last narrative generated - it may be out of date.</div>`:''}`
+      :(rec.aiNarrative?`<div class="rc-field-label">AI Risk Narrative</div><div class="rc-readonly-block">${e(rec.aiNarrative)}</div>`:'');
   return `
     <div class="rc-card">
       <div class="rc-rec-value ${valueClass}${isOverridden?' rc-rec-overridden':''}">${e(displayValue)}</div>
