@@ -639,11 +639,15 @@ function raAppendMessage(conv,role,text,extra){
 function _raSetBusy(busy){
   raBusy=busy;
   var sendBtn=document.getElementById('ra-send-btn');
-  var input=document.getElementById('ra-chat-input');
   var uploadChip=document.getElementById('ra-upload-chip');
   if(uploadChip)uploadChip.classList.toggle('gl-upload-chip-disabled',busy);
   if(sendBtn)sendBtn.disabled=busy;
-  if(input)input.disabled=busy;
+  // The textarea itself deliberately stays enabled while busy (PM feedback:
+  // a turn can take a minute or more, so the PM should be able to type their
+  // next message while waiting instead of staring at a disabled box) - only
+  // sending/uploading is blocked. raSendMessage() checks raBusy before
+  // touching the textarea's value, so an Enter press mid-generation is a
+  // safe no-op that leaves whatever the PM was typing intact.
 }
 function _raTypingRowHtml(){
   return '<div class="gl-msg-row agent" id="ra-typing-row"><div class="gl-avatar agent-av">AI</div><div class="gl-bubble gl-typing-bubble"><div class="gl-typing-dots"><span></span><span></span><span></span></div></div></div>';
@@ -767,6 +771,13 @@ async function _raSubmitUserMessage(conv,text){
   await _raRunTurn(conv,text);
 }
 async function raSendMessage(){
+  // Checked first, before ever touching the textarea's value - the
+  // textarea now stays enabled while a turn is in flight (see
+  // _raSetBusy()) so the PM can keep typing during the ~minute a turn
+  // takes, so an Enter press or stray Send click mid-generation must be a
+  // pure no-op that leaves whatever they were typing untouched, not
+  // silently clear it out from under them.
+  if(raBusy)return;
   var conv=_raActiveConv();
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
