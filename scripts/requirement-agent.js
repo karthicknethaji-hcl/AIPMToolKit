@@ -183,7 +183,7 @@ var _RA_SECTION_NAMES=['Requirement Summary','Problem Statement','Success Criter
 // Shown for any section with no real content yet — deliberately reads as a
 // placeholder, not a guess dressed up as an answer, so a PM never mistakes
 // "nothing written" for "the AI looked and found nothing."
-var _RA_EMPTY_SECTION_BODY='_Not yet discussed_';
+var _RA_EMPTY_SECTION_BODY='_Yet to be discussed_';
 
 // Parses an existing liveDraftMd string (as produced by _raBuildDraftMd()
 // below) back into a {name: body} map, keyed by the bare canonical name.
@@ -773,15 +773,20 @@ function _raHideTyping(){
 
 async function _raCallModel(sys,usr,signal){
   var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
-  // Confirmed root cause of the recurring "I couldn't process that update"
-  // failures: captured a live raw response that was cut off mid-string at
-  // ~13.7k characters with no closing braces - not malformed JSON, a
-  // genuinely truncated one, because a large recommended-capability-set
-  // liveDraftMd (several capabilities x features x markdown) exceeds the
-  // previous 3000-token cap before the model finishes. Raised to 8000,
-  // matching the token budget already used elsewhere in this codebase for
-  // similarly large structured generations (metrics-definition.js).
-  return await callAPI(sys,usr,8000,signal||null,null,'requirement-agent',null,extra);
+  // v-next: lowered back from 8000 - that cap was raised for the OLD
+  // return-the-FULL-document-every-turn design, where a large capability
+  // set easily produced ~13.7k characters. Now that turns return
+  // sectionUpdates (only what changed, see _raApplySectionUpdates()), a
+  // typical turn needs a fraction of that - but confirmed via a live
+  // "[AI TIMEOUT] ... timeoutMs: 120000" proxy log that the model can still,
+  // on a rich multi-section PM answer, generate enough output to run past
+  // the PROXY'S OWN hard 120s timeout - which loses the entire turn with no
+  // recovery, unlike hitting max_tokens, which _raParseJSON()'s truncation
+  // recovery can often salvage. 4000 bounds worst-case generation length
+  // (and so worst-case time) to roughly half of the old ceiling, while still
+  // comfortably covering a turn that legitimately updates several sections
+  // at once.
+  return await callAPI(sys,usr,4000,signal||null,null,'requirement-agent',null,extra);
 }
 
 // ── New conversation ──

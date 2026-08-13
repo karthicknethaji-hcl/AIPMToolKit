@@ -1251,7 +1251,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
     // me" are equally valid next moves.
     const sys=sharedSys
       + ' This is a PASS 1 (greenfield) conversation - zero capabilities exist yet for this product. '
-      + 'In the opening turn, explicitly name the North Star Metric, every value chain stage, and the metrics/process areas under each stage, then state plainly that no capabilities exist yet. Follow this with an open-ended question offering BOTH "tell me what you want to build" and "I can recommend an initial set" as equally valid paths - never push the PM toward the recommendation path as the default.';
+      + 'The opening message has exactly one real job: get the PM to pick a starting path. Keep the product/Discovery Map context playback to ONE short sentence at most - name the North Star Metric only, never list every value chain stage or its individual metrics one by one, that is a wall of text the PM already saw on the Discovery Map screen seconds ago and does not need replayed. The open-ended question offering BOTH "tell me what you want to build" and "I can recommend an initial set" as equally valid paths is the actual point of this message and must be the clear main event, not an afterthought after a long recap - never push the PM toward the recommendation path as the default.';
 
     const usr='PRODUCT: '+(pp.productName||'Unnamed product')+' - '+(pp.productDesc||'No description provided')+'\n'
       + (cp.companyName?('COMPANY: '+cp.companyName+(cp.industry?(' ('+cp.industry+')'):'')+'\n'):'')
@@ -1259,12 +1259,12 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
       + 'DISCOVERY MAP (every value chain stage, with its metrics/process areas):\n'+dmStr+'\n\n'
       + 'CAPABILITIES: none exist yet for this product - this is a Pass 1 (greenfield) conversation.\n\n'
       + (docContext||'')
-      + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). Explicitly name the North Star Metric, every value chain stage, and its metrics/process areas (e.g. "Your North Star Metric is X, currently tracked across two value chain stages: Y (metric A, metric B) and Z (metric C, metric D). No capabilities exist yet for this product."), then ask an open-ended intent question offering both "tell me what you want to build" and "I can recommend an initial set" as equally valid paths. Do NOT draft any Live Draft section content yet - this is Pass 1, the PM has said nothing about what they want to build, and Discovery Map/product context alone is never enough basis to write a Problem Statement, Success Criteria, or any other section (see the rules below for exactly what counts as real basis). sectionUpdates should almost always be an empty array on this turn - only include an entry if the PM\'s uploaded document (docContext above) already contains enough real detail to genuinely write one, never from Discovery Map context alone.\n\n'
+      + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). ONE short sentence naming the North Star Metric and that no capabilities exist yet (e.g. "Your North Star Metric is X, and no capabilities exist yet for this product.") - never list every value chain stage or its metrics one by one, the PM just saw that on the Discovery Map screen. Then the real content of this message: an open-ended intent question offering both "tell me what you want to build" and "I can recommend an initial set" as equally valid paths - make this the clear focus of the message, not a small line after a long recap. Do NOT draft any Live Draft section content yet - this is Pass 1, the PM has said nothing about what they want to build, and Discovery Map/product context alone is never enough basis to write a Problem Statement, Success Criteria, or any other section (see the rules below for exactly what counts as real basis). sectionUpdates should almost always be an empty array on this turn - only include an entry if the PM\'s uploaded document (docContext above) already contains enough real detail to genuinely write one, never from Discovery Map context alone.\n\n'
       + _raSectionContentRules()+'\n\n'
       + _raClarifyingQuestionsRules()+'\n\n'
       + 'Return ONLY valid JSON with these exact fields:\n'
       + '{\n'
-      + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+      + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one open-ended question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
       + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
       + '  "openQuestions": ["short clarification question text", "..."],\n'
       + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
@@ -1286,7 +1286,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
 
   const sys=sharedSys
     + ' This is a PASS 2 (iterative) conversation - capabilities already exist for this product (listed below, with their existing features at name-level - full detail is pulled turn-by-turn as the conversation narrows). '
-    + 'In the opening turn, state the count and a brief characterization of what already exists (referencing the prior finalized release, e.g. "from RQ01") BEFORE asking intent - never skip straight to "what do you want to build" as if nothing existed yet. '
+    + 'The opening message has exactly one real job: get the PM to say what they want to work on this time. State the count and ONE short sentence characterizing what already exists (referencing the prior finalized release, e.g. "from RQ01") BEFORE asking intent - never skip straight to "what do you want to build" as if nothing existed yet, but never let this recap outweigh the actual question either; the PM can already see the full capability list on Capability Canvas, they do not need it replayed here. '
     + 'When the requirements you go on to discuss do not map to any EXISTING capability listed below, say so in plain conversational text and tag that capability "will be created — under: <Metric or Process Area Name>" in the Live Draft, naming a real existing Discovery Map metric/process area when one fits, else a specific new proposed name (never a generic placeholder). Classify new-vs-existing using SEMANTIC SIMILARITY - shared mechanism, shared user problem, shared metric alignment - never exact or fuzzy string-matching on capability names alone.';
 
   const usr='PRODUCT: '+(pp.productName||'Unnamed product')+' - '+(pp.productDesc||'No description provided')+'\n'
@@ -1301,7 +1301,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
     + _raClarifyingQuestionsRules()+'\n\n'
     + 'Return ONLY valid JSON with these exact fields:\n'
     + '{\n'
-    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one intent question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
     + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
     + '  "openQuestions": ["short clarification question text", "..."],\n'
     + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
@@ -1358,7 +1358,7 @@ function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,
     + _raClarifyingQuestionsRules()+'\n\n'
     + 'Return ONLY valid JSON with these exact fields:\n'
     + '{\n'
-    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings",\n'
+    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
     + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
     + '  "openQuestions": ["short clarification question text", "..."],\n'
     + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
