@@ -922,6 +922,105 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
   return data.text||'';
 }
 
+// ── Streaming variant (v-next, Requirement Agent only, opt-in) ──
+// Sibling to callAPI() above, NOT a replacement — every other caller keeps
+// using callAPI() untouched. Same request-building (model resolution, auth
+// headers, body fields) but adds `stream:true` to the body, which is what
+// makes proxy/server.js route into _handleStreamingRequest() instead of its
+// default buffered path (see that file's comment on the opt-in gate).
+// Reads the proxy's own normalized SSE contract (`data: {"delta":"..."}`
+// chunks, ending in `data: {"done":true}` or `data: {"error":true,...}`) —
+// this is NOT the raw provider SSE format, that translation already happened
+// server-side per-adapter, so this function needs zero per-provider logic.
+// onDelta(text) fires once per chunk as it streams in, for live rendering;
+// the function resolves to the full concatenated text once `done` arrives,
+// matching callAPI()'s own return shape (a plain string) so callers can
+// treat the result identically once streaming finishes.
+async function callAPIStream(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideSource,extraFields,onDelta){
+  const key=getKey();
+  const host=window.location.hostname;
+  const isLocal=host===''||host==='localhost'||host==='127.0.0.1';
+  const LOCAL_PROXY_URL='http://localhost:3001/api/anthropic';
+  const hostedProxyUrl=(typeof PROXY_URL!=='undefined'&&PROXY_URL)?PROXY_URL:'https://product-diagnostics-proxy.onrender.com/api/anthropic';
+
+  let authToken = '';
+  try {
+    if(typeof authGetFreshToken==='function'){
+      authToken = await authGetFreshToken();
+    }
+  } catch(e) {
+    console.warn('callAPIStream: could not retrieve session token', e);
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  if(key && key.trim()) headers['Authorization'] = 'Bearer ' + key.trim();
+  if(authToken) headers['X-Auth-Token'] = authToken;
+
+  const _decision = resolveModelDecision(modelOverride, caller, modelOverrideSource);
+  const _clientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
+
+  const body = JSON.stringify({
+    model:_decision.model,
+    max_tokens:maxTok,
+    system:sys,
+    messages:[{role:'user',content:usr}],
+    _caller:caller||'',
+    company_id:(function(){ try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch(e) { return ''; } })(),
+    product_id:(extraFields&&extraFields.product_id!=null)?extraFields.product_id:((typeof activeProfileId!=='undefined')?activeProfileId:null),
+    session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
+    session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
+    client_call_id:_clientCallId,
+    settings_mode:_decision.settingsMode,
+    settings_model:_decision.settingsModel,
+    selection_rule:_decision.selectionRule,
+    prompt_version:(typeof PROMPT_VERSIONS!=='undefined'&&PROMPT_VERSIONS[caller])?PROMPT_VERSIONS[caller]:null,
+    provider:_decision.provider,
+    stream:true
+  });
+
+  const url=isLocal?LOCAL_PROXY_URL:hostedProxyUrl;
+  const r=await fetch(url,{method:'POST',headers,body,signal});
+
+  // Non-streaming error response (e.g. auth/validation failure before the
+  // proxy ever switches to text/event-stream) — same shape callAPI() handles.
+  const contentType=(r.headers.get('content-type')||'');
+  if(contentType.indexOf('text/event-stream')===-1){
+    const data=await r.json().catch(function(){
+      throw new Error('Generation timed out or proxy unavailable. Please try again.');
+    });
+    if(data.error) throw new Error(_pgtAnthropicErrorMessage(data.error));
+    return data.text||'';
+  }
+
+  const reader=r.body.getReader();
+  const decoder=new TextDecoder();
+  let buffer='',fullText='';
+  while(true){
+    const {done,value}=await reader.read();
+    if(done)break;
+    buffer+=decoder.decode(value,{stream:true});
+    const events=buffer.split('\n\n');
+    buffer=events.pop();
+    for(const evt of events){
+      const line=evt.split('\n').find(function(l){return l.indexOf('data:')===0;});
+      if(!line)continue;
+      let parsed;
+      try{ parsed=JSON.parse(line.slice(5).trim()); }catch(e){ continue; }
+      if(parsed.error){
+        throw new Error(parsed.message||'Stream was interrupted. Please try again.');
+      }
+      if(parsed.delta){
+        fullText+=parsed.delta;
+        if(typeof onDelta==='function')onDelta(parsed.delta);
+      }
+      if(parsed.done){
+        return fullText;
+      }
+    }
+  }
+  return fullText;
+}
+
 // Shared between callAPI() and any other direct caller of /api/anthropic
 // (currently just home.js's AI Recommendations, which deliberately uses a
 // separate same-origin Netlify-function call path rather than callAPI()'s

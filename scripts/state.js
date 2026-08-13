@@ -39,6 +39,12 @@ const appSettings={
   // _spModelsByProvider and scripts/api.js's TIER_MODEL_BY_PROVIDER).
   provider:'anthropic',
   model:'optimized',
+  // v-next — Requirement Agent's real token-by-token streaming (see
+  // scripts/requirement-agent.js's _raStreamingEnabled()), shipped as a
+  // dual-mode switch: default OFF, since the streaming path depends on a
+  // different model response contract (prompts.js's streamingMode param)
+  // that's had less real-world mileage than the existing buffered path.
+  aiStreamingEnabled:false,
   // Section 2 — Feature Modules
   featDD:true,
   featCap:true,   // always true — core workflow, not user-configurable

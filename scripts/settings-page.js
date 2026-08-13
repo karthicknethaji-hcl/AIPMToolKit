@@ -398,6 +398,8 @@ async function settingsPageSave() {
   // Section 1 — API & Access
   const modelEl = document.getElementById('sp-model-select');
   if(modelEl) appSettings.model = modelEl.value;
+  const togAis = document.getElementById('sp-tog-ais');
+  if(togAis) appSettings.aiStreamingEnabled = _spTogState('ais');
 
   // Section 2 — Feature Modules (read toggle states)
   const togMd = document.getElementById('sp-tog-md');
@@ -891,7 +893,7 @@ function spTogRow(k) {
 }
 function _spReadTogInit(k) {
   // Read from appSettings for known keys
-  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps' };
+  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled' };
   const key = map[k];
   return key ? appSettings[key] : true;
 }
@@ -1296,6 +1298,14 @@ function spP1() {
     '"Optimized" auto-selects the right tier per task. Or pin a specific model.',
     `<select id="sp-model-select" style="height:28px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;cursor:pointer;width:280px;">${modelOpts}</select>`,
     'If the selected model is unavailable for your key, generation fails with a clear error rather than silently switching models.',
+    true
+  )}
+
+  ${_spRow(
+    'Live AI Streaming',
+    'Requirement Agent replies reveal token-by-token as they generate, instead of appearing all at once when the full response is ready.',
+    _spTog('ais', appSettings.aiStreamingEnabled),
+    'Experimental — off by default.',
     true
   )}`;
 }
