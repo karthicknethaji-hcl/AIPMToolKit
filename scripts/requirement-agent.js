@@ -130,11 +130,10 @@ function _raDedupeQuestions(arr){
 // Mirrors _raDedupeQuestions()'s defensive style, but operates on richer
 // {question,targetSection,options} objects rather than plain strings, so
 // it can't reuse that helper directly. Drops any entry missing question/
-// targetSection, clamps options to 2-4, caps the whole array to 2 entries -
-// matches the "never more than 2 questions, never fewer than 2 or more than
-// 4 options" rule the prompt itself is instructed to follow, but this is
-// the actual enforcement point since the model's output is never trusted
-// blindly.
+// targetSection, clamps options to 2-4, caps the whole array to 1 entry -
+// confirmed via live testing that the model returned 2 questions on an
+// opening turn despite the prompt's own "never more than 1 per turn" rule,
+// so this is the actual enforcement point, not the prompt text.
 function _raSanitizeClarifyingQuestions(arr){
   return (arr||[]).filter(function(q){
     return q&&typeof q==='object'&&String(q.question||'').trim()&&String(q.targetSection||'').trim()&&Array.isArray(q.options)&&q.options.length>=2;
@@ -144,7 +143,21 @@ function _raSanitizeClarifyingQuestions(arr){
       targetSection:String(q.targetSection).trim(),
       options:q.options.map(function(o){return String(o||'').trim();}).filter(Boolean).slice(0,4)
     };
-  }).filter(function(q){return q.options.length>=2;}).slice(0,2);
+  }).filter(function(q){return q.options.length>=2;}).slice(0,1);
+}
+// Client-side backstop for the PM opt-out (prompts.js's
+// _raClarifyingQuestionsRules() STEP 1) — confirmed via live testing that
+// the model can say "Noted - I will not offer choices" in chatReply while
+// still populating clarifyingQuestions in the SAME JSON response, so the
+// prompt instruction alone is not reliable enough on its own. Once any
+// message in this conversation matches, conv.raQuestionsOptedOut is set
+// and _raRunTurn()/raRunOpeningTurn() force clarifyingQuestions to empty
+// from then on regardless of what the model returns, guaranteeing the PM's
+// request is honored even if the model slips again.
+function _raDetectsQuestionsOptOut(text){
+  return /\b(don'?t|do not|stop|no more)\b[^.!?\n]{0,40}\b(ask|question|choice|option)/i.test(text||'')
+    || /\bi(?:'?ll| will) (just )?tell you\b/i.test(text||'')
+    || /\bwithout (choices|options)\b/i.test(text||'');
 }
 // Parse the Live Draft's "## 4. Capabilities" section into structured
 // {key,name,isNew} entries. This is the ONLY source of truth for
@@ -607,11 +620,17 @@ function raAppendMessage(conv,role,text,extra){
   conv.messages.push(Object.assign({role:role,text:text,timestamp:new Date().toISOString()},extra||{}));
   var body=document.getElementById('ra-chat-body');
   if(body){
-    // A stale quick-reply block from the previous agent turn must not
+    // Stale quick-reply block(s) from the previous agent turn must not
     // linger once ANY new message lands (typed or chip-driven) — otherwise
-    // a PM could click an old, already-superseded option.
-    var oldQr=body.querySelector('.ra-quick-reply-block');
-    if(oldQr)oldQr.remove();
+    // a PM could click an old, already-superseded option. querySelectorAll,
+    // not querySelector: confirmed via live testing that when a turn ever
+    // surfaces more than one question block, querySelector's single-match
+    // removal left the second block's chips clickable after the first was
+    // answered, silently discarding that question with no way to answer it
+    // (clarifyingQuestions is now capped to 1/turn client-side specifically
+    // to avoid this, but this cleanup should never depend on that cap).
+    var oldQrs=body.querySelectorAll('.ra-quick-reply-block');
+    oldQrs.forEach(function(el){el.remove();});
     var total=conv.messages.length;
     body.insertAdjacentHTML('beforeend',_raBubbleHtml(conv.messages[total-1],total-1,total));
     body.scrollTop=body.scrollHeight;
@@ -708,7 +727,7 @@ async function raRunOpeningTurn(conv){
     conv.draftVersion=1;
     conv.touchedCapabilityKeys=_raParseTouchedCapabilities(conv.liveDraftMd);
     conv.openQuestions=_raDedupeQuestions(parsed.openQuestions).map(function(q,i){return {id:'oq'+i,type:'clarification',resolved:false,messageIndex:(conv.messages||[]).length};});
-    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.',{clarifyingQuestions:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
+    raAppendMessage(conv,'agent',parsed.chatReply||'Here’s a starting draft — take a look on the right.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     // QA issue #7 — use the AI's own contextual suggestedTitle if still on
     // the default placeholder (never overwrite a conversation the user has
     // already renamed). Falls back to the old boilerplate only if the model
@@ -743,6 +762,7 @@ async function raRunOpeningTurn(conv){
 // copies of the same three lines.
 async function _raSubmitUserMessage(conv,text){
   if(!conv||raBusy||conv.status!=='draft'||!text)return;
+  if(_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
   raAppendMessage(conv,'user',text);
   await _raRunTurn(conv,text);
 }
@@ -805,7 +825,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
       var _suggestedTurn=(parsed.suggestedTitle||'').trim();
       if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
     }
-    raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.',{clarifyingQuestions:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
+    raAppendMessage(conv,'agent',parsed.chatReply||'Updated the draft — take a look.',{clarifyingQuestions:conv.raQuestionsOptedOut?[]:_raSanitizeClarifyingQuestions(parsed.clarifyingQuestions)});
     conv.updatedAt=new Date().toISOString();
     raRenderLiveDraft();
     raRenderConvList();

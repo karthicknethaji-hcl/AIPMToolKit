@@ -1185,17 +1185,22 @@ function _raSectionContentRules(){
     + 'Never write a section as boilerplate filler ("TBD", "N/A", generic platitudes) - if there is genuinely nothing yet for a section, say specifically what is still needed to fill it in one short sentence.';
 }
 
-// Proactive clarifying questions — non-blocking: the Live Draft above still
-// gets every section written/inferred-and-tagged this same turn regardless,
-// but rather than silently inferring and moving on, the agent now actively
-// surfaces a small, targeted, actionable question or two per turn aimed at
-// whichever of the 11 sections is currently weakest. Rendered client-side
-// as clickable quick-select chips (requirement-agent.js's raQuickReplyClick())
-// alongside the existing free-text chat input - options must therefore be
-// complete, standalone candidate answers a PM could pick without typing,
-// never a yes/no or a placeholder.
+// Proactive clarifying questions — RARE by design, not routine. Confirmed
+// via live PM feedback that an earlier version of this rule ("each turn,
+// find the weakest section and ask") asked with quick-select chips on
+// nearly every single turn, felt forced/iterative and never let up, and
+// even kept firing the turn after a PM explicitly said "stop asking me
+// with choices" - the model had verbally agreed to stop in that same
+// chatReply while still populating clarifyingQuestions in the same JSON
+// response. Two hard fixes below: (1) inference is now the default for
+// EVERY section, question-asking is the rare exception, not a per-turn
+// habit; (2) an explicit PM opt-out is durable for the rest of the
+// conversation, checked first, before anything else in this rule.
 function _raClarifyingQuestionsRules(){
-  return 'CLARIFYING QUESTIONS (clarifyingQuestions field): each turn, identify whichever of the 11 Live Draft sections currently has the least real PM-confirmed signal. If there is a genuine gap worth asking about, populate 1 (never more than 2) targeted question(s) there instead of just silently inferring - never block: every section still gets written/inferred-and-tagged in this same turn regardless of whether a question is pending. Each entry needs: "question" (short, specific to this release, never generic), "targetSection" (the exact section name it targets, e.g. "Target Users"), and "options" (2 to 4 short, concrete, complete candidate answers the PM could pick with one click - never yes/no, never a placeholder like "Option A", never fewer than 2 or more than 4). Stop asking about a section once it has enough real PM-confirmed signal and move to the next-weakest one. Every question in clarifyingQuestions must also appear verbatim in the openQuestions array - clarifyingQuestions is a small, actionable subset surfaced with clickable options, not a separate or replacement field. If every section already has enough real signal this turn, return an empty clarifyingQuestions array - do not invent a question just to fill it.';
+  return 'CLARIFYING QUESTIONS (clarifyingQuestions field) - DEFAULT TO INFERRING, ASKING IS THE RARE EXCEPTION:\n'
+    + 'STEP 1 - check for an opt-out FIRST, every turn: scan the conversation so far for the PM ever saying anything like "don\'t ask me questions with choices", "stop asking", "I\'ll tell you what I know", or similar - once said, ALWAYS return an empty clarifyingQuestions array for the REST of this conversation, no matter how thin a section is. Never re-ask, never "just this once", never let a strong opening-turn instinct override this. From that point on, fill every gap by inferring from the Discovery Map, product context, and whatever the PM says in plain chat, tagging each inferred item "(inferred - confirm with PM)" as usual - the PM has told you they will correct anything wrong in their own words, not by picking an option.\n'
+    + 'STEP 2 - if no opt-out has been given, still default to inferring. Populate clarifyingQuestions ONLY when you have genuinely insufficient basis to make ANY reasonable inference for something that materially changes the release (e.g. the Discovery Map context is ambiguous between two fundamentally different directions and guessing wrong would mean redoing real work) - not merely because a section is thin, generic, or you would prefer more detail. A thin section is normal early in a conversation and gets filled by inference and tagged, not by a question. Across the WHOLE conversation, ask no more than a small handful of times total, never more than 1 in any single turn, and never in two turns in a row - if you asked last turn, this turn must be empty regardless of how much signal exists. Never ask about the same section twice, and never ask again about something the PM has already answered in any form, even loosely.\n'
+    + 'When you do ask: "question" (short, specific to this release, never generic), "targetSection" (the exact section name, e.g. "Target Users"), "options" (2 to 4 short, concrete, complete candidate answers the PM could pick with one click - never yes/no, never a placeholder like "Option A"). Every question in clarifyingQuestions must also appear verbatim in the openQuestions array - clarifyingQuestions is a small, occasional, actionable subset surfaced with clickable options, never a routine parallel channel. The Live Draft itself is never blocked by any of this - every section still gets written/inferred-and-tagged this same turn regardless of whether a question is pending.';
 }
 
 // Opening turn — Discovery-First Entry Point redesign (§6.1/§6.2). Triggered

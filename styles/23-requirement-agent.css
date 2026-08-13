@@ -117,13 +117,17 @@
 /* ── Quick-select clarifying-question chips (11-section brief redesign) ──
    Rendered under the newest agent chat message only, when the model
    surfaces a proactive clarifying question (prompts.js's
-   _raClarifyingQuestionsRules()). Deliberately blue, distinct from the
-   purple filter chips (.ra-chip above) and the green/purple new/existing
-   pills (.ra-tag-new/.ra-tag-existing above) — "click to answer" should
-   never look like "filter view" or "status pill" at a glance. */
+   _raClarifyingQuestionsRules()). Chips use a plain white fill with a
+   neutral divider border (option "B" from design review) — only the text
+   stays blue, keeping the block light against the message bubble's own
+   --card background rather than adding another solid color fill on top
+   of it. Distinct from the purple filter chips (.ra-chip above) and the
+   green/purple new/existing pills (.ra-tag-new/.ra-tag-existing above) —
+   "click to answer" should never look like "filter view" or "status pill"
+   at a glance. */
 .ra-quick-reply-block{margin-top:10px;padding-top:10px;border-top:1px dashed var(--divider);}
 .ra-quick-reply-target-tag{display:inline-block;font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:var(--blue);background:var(--blue-pale);border-radius:8px;padding:2px 8px;margin-bottom:6px;}
 .ra-quick-reply-q{font-size:11.5px;font-weight:600;color:var(--t1);margin-bottom:6px;line-height:1.4;}
 .ra-quick-reply-row{display:flex;flex-wrap:wrap;gap:6px;}
-.ra-quick-reply-chip{font-size:11px;font-weight:600;color:var(--blue);background:var(--blue-pale);border:1px solid var(--blue-mid);border-radius:14px;padding:5px 12px;cursor:pointer;font-family:var(--font);}
-.ra-quick-reply-chip:hover{background:var(--blue-mid);}
+.ra-quick-reply-chip{font-size:11px;font-weight:400;color:var(--blue);background:#fff;border:1px solid var(--divider);border-radius:14px;padding:6px 12px;cursor:pointer;font-family:var(--font);text-align:left;}
+.ra-quick-reply-chip:hover{background:var(--card);}
