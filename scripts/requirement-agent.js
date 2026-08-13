@@ -771,6 +771,52 @@ function _raHideTyping(){
   if(row)row.remove();
 }
 
+// ── v-next: dual-mode streaming switch, default OFF ──
+// Now a real, persisted company setting - Settings > Company Profile &
+// Access > API & Access > "Live AI Streaming" (see settings-page.js's spP1()
+// and settingsPageSave()) - rather than a dev-only localStorage flag.
+// Requirement Agent behaves EXACTLY as it did before this feature existed
+// until an admin explicitly turns this on. See the approved plan for why
+// this ships as a runtime switch rather than a one-way cutover: the
+// streaming path depends on a different prompt response contract
+// (prompts.js's streamingMode param), so this same flag gates both sides
+// together, never one without the other.
+function _raStreamingEnabled(){
+  return (typeof appSettings!=='undefined'&&appSettings)?appSettings.aiStreamingEnabled===true:false;
+}
+// Live streaming bubble - a plain DOM element updated as deltas arrive,
+// entirely separate from conv.messages/raAppendMessage() until the stream
+// finishes. Once the full text is known (chatReply + sectionUpdates JSON
+// split apart), this bubble is removed and raAppendMessage() runs exactly
+// as it does on the non-streaming path - so every downstream behavior
+// (quick-reply chips, history re-render, persistence) is unchanged code.
+function _raStreamBubbleShow(){
+  var body=document.getElementById('ra-chat-body');
+  if(!body)return null;
+  body.insertAdjacentHTML('beforeend','<div class="gl-msg-row agent" id="ra-stream-bubble"><div class="gl-avatar agent-av">AI</div><div class="gl-bubble" id="ra-stream-bubble-text"></div></div>');
+  body.scrollTop=body.scrollHeight;
+  return document.getElementById('ra-stream-bubble-text');
+}
+function _raStreamBubbleRemove(){
+  var row=document.getElementById('ra-stream-bubble');
+  if(row)row.remove();
+}
+// Splits a streaming response (plain-text chatReply + sentinel + JSON tail,
+// per prompts.js's streamingMode contract) into the same {chatReply,
+// sectionUpdates, openQuestions, clarifyingQuestions, suggestedTitle} shape
+// _raParseJSON() returns for the non-streaming path, so every call site
+// downstream of parsing can stay identical regardless of which mode ran.
+function _raSplitStreamResponse(raw){
+  var idx=(raw||'').indexOf(_RA_STREAM_SENTINEL);
+  if(idx<0)return null;
+  var chatReply=raw.slice(0,idx).trim();
+  var jsonPart=raw.slice(idx+_RA_STREAM_SENTINEL.length);
+  var parsed=_raParseJSON(jsonPart);
+  if(!parsed)return null;
+  parsed.chatReply=chatReply;
+  return parsed;
+}
+
 async function _raCallModel(sys,usr,signal){
   var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
   // v-next: lowered back from 8000 - that cap was raised for the OLD
@@ -831,11 +877,29 @@ async function raRunOpeningTurn(conv){
   // was never set). Wiring it in here, in _raRunTurn(), and in
   // raRunFinalizeSequence() below.
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is drafting the opening summary. Leaving now discards it, you\'ll need to start over.'):null;
+  var _streaming=_raStreamingEnabled();
   try{
     var _raDocCtx1=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
-    var built=buildRequirementAgentDMOpeningPrompt(typeof sessionContext!=='undefined'?sessionContext:{},_raFirstName(),_raDocCtx1);
-    var raw=await _raCallModel(built.sys,built.usr,_signal);
-    var parsed=_raParseJSON(raw);
+    var built=buildRequirementAgentDMOpeningPrompt(typeof sessionContext!=='undefined'?sessionContext:{},_raFirstName(),_raDocCtx1,_streaming);
+    var raw,parsed;
+    if(_streaming){
+      var _bubbleEl=null;
+      var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+      raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
+        _raHideTyping();
+        if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();
+        if(_bubbleEl){
+          _bubbleEl.textContent=(_bubbleEl.textContent||'')+delta;
+          var _body=document.getElementById('ra-chat-body');
+          if(_body)_body.scrollTop=_body.scrollHeight;
+        }
+      });
+      _raStreamBubbleRemove();
+      parsed=_raSplitStreamResponse(raw);
+    }else{
+      raw=await _raCallModel(built.sys,built.usr,_signal);
+      parsed=_raParseJSON(raw);
+    }
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
     if(!parsed||!Array.isArray(parsed.sectionUpdates)){
@@ -868,6 +932,7 @@ async function raRunOpeningTurn(conv){
     _raPersist();
   }catch(err){
     _raHideTyping();
+    _raStreamBubbleRemove();
     if(typeof endAiGen==='function')endAiGen();
     if(err&&err.name==='AbortError')return; // user chose "Leave anyway" — no error bubble needed
     console.warn('[requirement-agent] opening turn failed',err);
@@ -928,11 +993,29 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
   _raSetBusy(true);
   _raShowTyping();
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is updating the draft. Leaving now discards this update, you\'ll need to resend your message.'):null;
+  var _streaming=_raStreamingEnabled();
   try{
     var _raDocCtx2=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
-    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName);
-    var raw=await _raCallModel(built.sys,built.usr,_signal);
-    var parsed=_raParseJSON(raw);
+    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName,_streaming);
+    var raw,parsed;
+    if(_streaming){
+      var _bubbleEl=null;
+      var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+      raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
+        _raHideTyping();
+        if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();
+        if(_bubbleEl){
+          _bubbleEl.textContent=(_bubbleEl.textContent||'')+delta;
+          var _body=document.getElementById('ra-chat-body');
+          if(_body)_body.scrollTop=_body.scrollHeight;
+        }
+      });
+      _raStreamBubbleRemove();
+      parsed=_raSplitStreamResponse(raw);
+    }else{
+      raw=await _raCallModel(built.sys,built.usr,_signal);
+      parsed=_raParseJSON(raw);
+    }
     _raHideTyping();
     if(typeof endAiGen==='function')endAiGen();
     if(!parsed||!Array.isArray(parsed.sectionUpdates)){
@@ -963,6 +1046,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     _raPersist();
   }catch(err){
     _raHideTyping();
+    _raStreamBubbleRemove();
     if(typeof endAiGen==='function')endAiGen();
     if(err&&err.name==='AbortError')return; // user chose "Leave anyway" — no error bubble needed
     console.warn('[requirement-agent] turn failed',err);

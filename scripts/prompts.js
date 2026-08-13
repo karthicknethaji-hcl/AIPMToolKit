@@ -1229,7 +1229,17 @@ function _raClarifyingQuestionsRules(){
 // vs Pass 2 (iterative, capabilities already exist) — rather than forking
 // into parallel functions, mirroring how other prompt builders in this
 // codebase already branch on session state.
-function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContext){
+// v-next (dual-mode streaming, off by default — see requirement-agent.js's
+// _raStreamingEnabled()): when streamingMode is true, the model must emit
+// chatReply as PLAIN TEXT first (so the client can reveal it token-by-token
+// as it streams), followed by a sentinel line, followed by a JSON object
+// with every other field. When false (the default), behavior is byte-for-
+// byte identical to before this change - one JSON blob including chatReply.
+var _RA_STREAM_SENTINEL='---RA-JSON---';
+function _raStreamFormatInstruction(){
+  return 'Respond in TWO PARTS, in this exact order: (1) the conversational chatReply as PLAIN TEXT - no JSON, no surrounding quotes, no markdown fences, nothing else on this part; (2) on its own line, the exact text "'+_RA_STREAM_SENTINEL+'"; (3) a single valid JSON object containing every OTHER field (never chatReply again - it was already written in part 1). No markdown fences, no commentary, on either part.';
+}
+function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContext,streamingMode){
   const sc=sessionContext||{};
   const pp=sc.productProfile||{};
   const cp=sc.companyProfile||{};
@@ -1241,7 +1251,8 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
 
   const sharedSys='You are a senior product management practitioner running a Requirement Agent conversation - a global, release-scoped requirements intake that PROPOSES the capability list, grounded in real product/metric context, rather than requiring capabilities as a precondition for use. '
     + 'One conversation here always maps to one release scope, symmetric across every capability it touches from the very first turn. '
-    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+    + 'Never use em dashes. Use hyphens or rewrite. '
+    + (streamingMode ? _raStreamFormatInstruction() : 'Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.');
 
   if(!hasCaps){
     // Pass 1 — greenfield. No existing capabilities to default to; the
@@ -1262,14 +1273,22 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
       + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). ONE short sentence naming the North Star Metric and that no capabilities exist yet (e.g. "Your North Star Metric is X, and no capabilities exist yet for this product.") - never list every value chain stage or its metrics one by one, the PM just saw that on the Discovery Map screen. Then the real content of this message: an open-ended intent question offering both "tell me what you want to build" and "I can recommend an initial set" as equally valid paths - make this the clear focus of the message, not a small line after a long recap. Do NOT draft any Live Draft section content yet - this is Pass 1, the PM has said nothing about what they want to build, and Discovery Map/product context alone is never enough basis to write a Problem Statement, Success Criteria, or any other section (see the rules below for exactly what counts as real basis). sectionUpdates should almost always be an empty array on this turn - only include an entry if the PM\'s uploaded document (docContext above) already contains enough real detail to genuinely write one, never from Discovery Map context alone.\n\n'
       + _raSectionContentRules()+'\n\n'
       + _raClarifyingQuestionsRules()+'\n\n'
-      + 'Return ONLY valid JSON with these exact fields:\n'
-      + '{\n'
-      + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one open-ended question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
-      + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
-      + '  "openQuestions": ["short clarification question text", "..."],\n'
-      + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
-      + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
-      + '}';
+      + (streamingMode
+        ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences plus the one open-ended question, no markdown headings, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+          + '{\n'
+          + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+          + '  "openQuestions": ["short clarification question text", "..."],\n'
+          + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+          + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+          + '}')
+        : ('Return ONLY valid JSON with these exact fields:\n'
+          + '{\n'
+          + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one open-ended question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+          + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+          + '  "openQuestions": ["short clarification question text", "..."],\n'
+          + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+          + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation - even at this early stage, name the likely release focus (e.g. \'Consumer Acquisition Push\', \'Onboarding Funnel Revamp\') rather than a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+          + '}'));
 
     return { sys: sys, usr: usr };
   }
@@ -1299,14 +1318,22 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
     + 'TASK: Write a conversational opening message (chatReply) that starts with exactly "Hi '+(firstName||'there')+', " (this literal greeting, then continue naturally). State the capability count and a brief characterization of what already exists, referencing the relevant prior RQ(s) by number, then ask what the PM wants to work on this time - new requirements, or changes to something already built. The Capability Canvas and prior finalized briefs above are BACKGROUND KNOWLEDGE ONLY, so you can characterize what exists and ask an informed intent question - sectionUpdates MUST be an empty array on this turn, regardless of what already exists on the Capability Canvas. Do NOT pre-populate "Capabilities", "Features", Problem Statement, Success Criteria, Target Users, User Journeys, or Non-Functional Requirements yet - the PM has not said anything about this release\'s intent this turn, so there is no real basis yet for ANY section, existing capabilities included; only once the PM says which capability/features this release actually touches should those sections start reflecting it (see the rules below).\n\n'
     + _raSectionContentRules()+'\n\n'
     + _raClarifyingQuestionsRules()+'\n\n'
-    + 'Return ONLY valid JSON with these exact fields:\n'
-    + '{\n'
-    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one intent question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
-    + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
-    + '  "openQuestions": ["short clarification question text", "..."],\n'
-    + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
-    + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
-    + '}';
+    + (streamingMode
+      ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences plus the one intent question, no markdown headings, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+        + '{\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+        + '}')
+      : ('Return ONLY valid JSON with these exact fields:\n'
+        + '{\n'
+        + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences plus the one intent question, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Capabilities\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names above, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title for this conversation naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\', \'Lapsed User Win-Back\') - never a generic placeholder like \'Release Requirements\' or \'New Conversation\'. Never include the product name - the release focus alone is enough."\n'
+        + '}'));
 
   return { sys: sys, usr: usr };
 }
@@ -1317,7 +1344,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
 // message type - that mechanism does not exist in this version) AND tags
 // the new capability "will be created" (exact copy, never "new") in the
 // Live Draft's "## 4. Capabilities" section.
-function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage,docContext,uploadedDocText,uploadedDocName){
+function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage,docContext,uploadedDocText,uploadedDocName,streamingMode){
   const sc=sessionContext||{};
   const historyStr=(chatHistory||[]).map(function(m){
     return (m.role==='user'?'User: ':'You: ')+m.text;
@@ -1341,7 +1368,8 @@ function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,
     + 'CLASSIFICATION RULE: classify each piece of capability-level discussion as belonging to an existing capability or warranting a new one using SEMANTIC SIMILARITY - shared mechanism, shared user problem, shared metric alignment. Do not rely on name similarity alone - consider whether the underlying mechanism, user problem, or metric this addresses is genuinely the same as an existing capability\'s, even if the names differ. Never use exact or fuzzy string-matching on capability names as your basis for this decision. '
     + 'When you cannot confidently classify a piece of discussion as belonging to an existing capability vs. warranting a new one, raise this exactly like any other open question - add it to openQuestions, phrased so the ambiguity itself is clear (e.g. "Should X belong under existing capability Y, or is it its own new capability?"). Do not invent a different mechanism for this - the existing openQuestions/assumption flow is the only mechanism, no new question type. '
     + 'When a document is uploaded mid-conversation, extract and summarize only what is relevant into sectionUpdates - never dump raw file text into any section. '
-    + 'Never use em dashes. Use hyphens or rewrite. Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.';
+    + 'Never use em dashes. Use hyphens or rewrite. '
+    + (streamingMode ? _raStreamFormatInstruction() : 'Respond with ONLY valid JSON, no markdown fences, no commentary outside the JSON.');
 
   const usr='DISCOVERY MAP (every value chain stage, with its metrics/process areas — the only valid source of an EXISTING metric/process area name for the "will be created — under:" tag):\n'+dmStr+'\n\n'
     + 'EXISTING CAPABILITY CANVAS (for matching against - capabilities NOT in this list, if the conversation needs them, must be tagged "will be created — under: <Metric or Process Area Name>"; every capability\'s existing feature NAMES are included too, for new-vs-existing feature classification):\n'+ccStr+'\n\n'
@@ -1356,14 +1384,22 @@ function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,
     + _raSectionContentRules()+'\n\n'
     + 'CRITICAL - openQuestions consistency: the openQuestions array below must be the EXACT set of clarifying questions you are still waiting on the user to answer, no more and no fewer. Never include a question the user\'s latest message already answered. If openQuestions is non-empty, sectionUpdates must include an "Open Questions" entry mirroring it exactly; if openQuestions just became empty this turn (every question got answered), include an "Open Questions" entry too so the stale list is cleared, not left behind. If your chatReply text numbers or lists specific open questions to the user, the openQuestions array must contain exactly those same questions, same count, same order - a mismatch between what you show the user and what you return in this field is treated as a bug.\n\n'
     + _raClarifyingQuestionsRules()+'\n\n'
-    + 'Return ONLY valid JSON with these exact fields:\n'
-    + '{\n'
-    + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
-    + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
-    + '  "openQuestions": ["short clarification question text", "..."],\n'
-    + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
-    + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'), only if this turn has made the scope specific enough to name it and the conversation is still on a generic placeholder title - otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
-    + '}';
+    + (streamingMode
+      ? ('Write chatReply first, as PLAIN TEXT (2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options - long text here is a real cost, it adds directly to how long the PM waits). Then, on its own line, the exact text "'+_RA_STREAM_SENTINEL+'". Then ONLY this valid JSON:\n'
+        + '{\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'), only if this turn has made the scope specific enough to name it and the conversation is still on a generic placeholder title - otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
+        + '}')
+      : ('Return ONLY valid JSON with these exact fields:\n'
+        + '{\n'
+        + '  "chatReply": "conversational message, plain text with \\n for line breaks, no markdown headings. KEEP IT SHORT - 2-4 sentences, get to the point, never a numbered list of strategy options or a brainstorm unless the PM explicitly asked for options. Long chatReply text is a real cost - it adds directly to how long the PM waits for this turn.",\n'
+        + '  "sectionUpdates": [{"section": "one of the 11 exact bare section names, e.g. \'Problem Statement\'", "body": "markdown body only, no heading line"}],\n'
+        + '  "openQuestions": ["short clarification question text", "..."],\n'
+        + '  "clarifyingQuestions": [{"question": "...", "targetSection": "one of the 11 exact section names, e.g. \'Target Users\'", "options": ["short concrete answer 1", "short concrete answer 2", "..."]}],\n'
+        + '  "suggestedTitle": "a short (3-6 word) SPECIFIC title naming the likely release focus (e.g. \'Loyalty Referral Rewards Program\'), only if this turn has made the scope specific enough to name it and the conversation is still on a generic placeholder title - otherwise return an empty string. Never the product name, never a generic placeholder like \'Release Requirements\'. Always include this field, even as an empty string - never omit it."\n'
+        + '}'));
 
   return { sys: sys, usr: usr };
 }
