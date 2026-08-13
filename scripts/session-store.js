@@ -1627,6 +1627,32 @@ function _sessionStoreBuildSnapshot(opts) {
   };
 }
 
+// Regression guard for the exact bug class that shipped piReadinessPlans/
+// piPlans/window._ddRows into _sessionStoreBuildSnapshot() above without a
+// matching reset in homeClearSession() (home.js): every field listed here
+// holds PER-SESSION CONTENT (never cross-session config/flags), so it must
+// be back to empty the instant homeClearSession() finishes. Whenever a new
+// canvas/feature adds a container field to _sessionStoreBuildSnapshot()
+// above, add its name here too — this list is intentionally separate from
+// (not derived from) that function, so a mismatch between "what gets saved"
+// and "what gets reset" surfaces immediately as a console.error during
+// normal use/testing, instead of silently baking one session's data into
+// the next the way this bug did. Called from the end of homeClearSession().
+var _SS_CONTENT_FIELDS = ['capStore','scCanvas','piPlans','piBacklogStoryIds','diagnosticSessions','miCapabilities','ddRows','protoStore','glMessages','raConversations','piReadinessPlans'];
+function _ssAssertCleanSlate() {
+  if (typeof _sessionStoreBuildSnapshot !== 'function') return;
+  var snap = _sessionStoreBuildSnapshot();
+  var leaked = _SS_CONTENT_FIELDS.filter(function(k) {
+    var v = snap[k];
+    if (Array.isArray(v)) return v.length > 0;
+    if (v && typeof v === 'object') return Object.keys(v).length > 0;
+    return false;
+  });
+  if (leaked.length) {
+    console.error('[homeClearSession] leak guard: session-content field(s) still non-empty right after clear: ' + leaked.join(', ') + ' — a new snapshot field was likely added to _sessionStoreBuildSnapshot() without a matching reset in homeClearSession().');
+  }
+}
+
 function _ssComputeLastStage() {
   // v9.15.02 — checked first, before any downstream-content check: while a
   // Guided Launch chat is active, nothing else below exists yet (no gData,
@@ -1647,7 +1673,24 @@ function _ssComputeLastStage() {
   // as well, so this branch only fires for legacy sessions that actually
   // used the old chat.
   if (typeof glStatus !== 'undefined' && glStatus === 'active' && typeof glMessages !== 'undefined' && glMessages && glMessages.length > 0) return 'Guided Launch';
-  if (typeof piPlans !== 'undefined' && Array.isArray(piPlans) && piPlans.length > 0) return 'Release Canvas';
+  // v9.22 — Adoption Readiness and Outcome Pulse extend the value chain past
+  // Release Canvas. Both must be checked before the piPlans check below:
+  // piPlans stays populated once a release exists, so without these a
+  // session that has since finalized a readiness plan (or unlocked Outcome
+  // Pulse) would still match the Release Canvas branch first and never
+  // report having moved further.
+  if (typeof opUnlocked !== 'undefined' && opUnlocked) return 'Outcome Pulse';
+  if (typeof piReadinessPlans !== 'undefined' && Array.isArray(piReadinessPlans) && piReadinessPlans.length > 0) return 'Adoption Readiness';
+  // Matches _ssRevealTabs()'s own hasPiContent convention for tab-pi (below,
+  // ~line 1897): staging stories from Story Canvas pushes their ids into
+  // piBacklogStoryIds and reveals the Release Canvas tab immediately (see
+  // story-canvas-new.js's newScSendToPI()) — well before "Generate Release
+  // Plan" ever creates a piPlans entry. Checking piPlans.length alone here
+  // left the stage label stuck on 'Story Canvas' for the entire time a user
+  // was actually already working in Release Canvas with staged-but-unplanned
+  // stories.
+  if ((typeof piBacklogStoryIds !== 'undefined' && Array.isArray(piBacklogStoryIds) && piBacklogStoryIds.length > 0) ||
+      (typeof piPlans !== 'undefined' && Array.isArray(piPlans) && piPlans.length > 0)) return 'Release Canvas';
   if (typeof scCanvas !== 'undefined' && scCanvas.length > 0) {
     const hasStories = scCanvas.some(function(f) { return f.stories && f.stories.length > 0; });
     if (hasStories) return 'Story Canvas';
