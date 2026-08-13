@@ -1,5 +1,12 @@
 # Changelog — AI PM Toolkit
 
+## v9.23 - 2026-08-13: Requirement Agent brief redesign + Adoption Readiness loader-then-reveal
+
+- Changed - Requirement Agent's intake brief restructured into 11 numbered sections (Requirement Summary, Problem Statement, Success Criteria, Capabilities, Features, Target Users, User Journeys, Non-Functional Requirements, Out of Scope, Assumptions, Open Questions); the model now returns only the section(s) that changed each turn (merged client-side into the stored draft) instead of the full document every time, cutting real per-turn latency, and no longer invents section content without genuine basis from the PM's own chat or an uploaded document. Adds proactive, frequency-capped clarifying-question chips with an explicit PM opt-out, allows typing in the chat while a turn is in flight, and fixes a proxy-timeout regression caused by unbounded response length.
+- Fixed - Home session card's "farthest stage reached" label no longer freezes at "Release Canvas" once a session progresses to Adoption Readiness/Outcome Pulse; fixed a data-integrity bug where clearing a session didn't reset all Release Canvas/Adoption Readiness state, letting a new session's snapshot bake in a previous session's leftover data.
+- Changed - Adoption Readiness Sections 1, 3, and 4 (Change Overview, Impact & Affected Groups, Readiness Actions) now show a loading state while their AI enhancement call is in flight instead of showing deterministic draft content immediately and silently swapping it for the AI result afterward; on failure, the deterministic content shows with a clear inline note instead of no signal at all.
+- Fixed - Shared markdown renderer now actually renders `**bold**`/`_italic_` inline formatting (previously showed literal asterisks/underscores as plain text) - affects Requirement Agent's Assumptions/Risk tags and Adoption Readiness's placeholder/failure notes alike.
+
 ## v9.22 - 2026-08-11: Adoption Readiness becomes a top-nav tab
 
 - Changed - Adoption Readiness is now a real top-nav tab (id `arp`, positioned immediately after Release Canvas), replacing the v9.21 full-frame drawer/overlay (`#rc-canvas` shown/hidden via `.open` class toggle). The tab reveals once at least one readinessPlan exists in the session, following the same convention as Story Canvas/Release Canvas/Requirement Agent. It is still only ever created from Release Canvas's kebab menu ("Readiness Plan" item) once sprint planning is complete - only viewing moved into the tab.
