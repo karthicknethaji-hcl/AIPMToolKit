@@ -172,8 +172,11 @@ const anthropicAdapter = {
   // separated by a blank line. Confidence: HIGH — standard, long-stable
   // wire format, unlike OpenAI/Gemini's adapters below.
   // Takes one raw SSE event block (everything between two blank lines) and
-  // returns {delta, usage, done} — never throws, a malformed/unrecognized
-  // event just yields all-null/false so the caller keeps streaming.
+  // returns {delta, usage, done, resolvedModel} — never throws, a malformed/
+  // unrecognized event just yields all-null/false so the caller keeps
+  // streaming. usage.providerUsageRaw carries the exact upstream usage
+  // object (cache tokens etc.) through untouched, same as the non-streaming
+  // normalizeSuccess() already does for the buffered path.
   parseSSEEvent(eventBlock) {
     let dataLine = null;
     eventBlock.split('\n').forEach(function(l) {
@@ -185,11 +188,16 @@ const anthropicAdapter = {
     if (data.type === 'content_block_delta' && data.delta && data.delta.type === 'text_delta') {
       return { delta: data.delta.text || '', usage: null, done: false };
     }
-    if (data.type === 'message_start' && data.message && data.message.usage) {
-      return { delta: null, usage: { inputTokens: data.message.usage.input_tokens != null ? data.message.usage.input_tokens : null, outputTokens: null, totalTokens: null }, done: false };
+    if (data.type === 'message_start' && data.message) {
+      return {
+        delta: null,
+        usage: data.message.usage ? { inputTokens: data.message.usage.input_tokens != null ? data.message.usage.input_tokens : null, outputTokens: null, totalTokens: null, providerUsageRaw: data.message.usage } : null,
+        done: false,
+        resolvedModel: data.message.model || null
+      };
     }
     if (data.type === 'message_delta' && data.usage) {
-      return { delta: null, usage: { inputTokens: null, outputTokens: data.usage.output_tokens != null ? data.usage.output_tokens : null, totalTokens: null }, done: false };
+      return { delta: null, usage: { inputTokens: null, outputTokens: data.usage.output_tokens != null ? data.usage.output_tokens : null, totalTokens: null, providerUsageRaw: data.usage }, done: false };
     }
     if (data.type === 'message_stop') {
       return { delta: null, usage: null, done: true };
@@ -306,7 +314,12 @@ const openaiAdapter = {
     }
     if (data.type === 'response.completed' && data.response && data.response.usage) {
       const u = data.response.usage;
-      return { delta: null, usage: { inputTokens: u.input_tokens != null ? u.input_tokens : null, outputTokens: u.output_tokens != null ? u.output_tokens : null, totalTokens: u.total_tokens != null ? u.total_tokens : null }, done: true };
+      return {
+        delta: null,
+        usage: { inputTokens: u.input_tokens != null ? u.input_tokens : null, outputTokens: u.output_tokens != null ? u.output_tokens : null, totalTokens: u.total_tokens != null ? u.total_tokens : null, providerUsageRaw: u },
+        done: true,
+        resolvedModel: (data.response && data.response.model) || null
+      };
     }
     return { delta: null, usage: null, done: false };
   }
@@ -437,9 +450,10 @@ const geminiAdapter = {
     const usage = data.usage ? {
       inputTokens: data.usage.total_input_tokens != null ? data.usage.total_input_tokens : null,
       outputTokens: data.usage.total_output_tokens != null ? data.usage.total_output_tokens : null,
-      totalTokens: data.usage.total_tokens != null ? data.usage.total_tokens : null
+      totalTokens: data.usage.total_tokens != null ? data.usage.total_tokens : null,
+      providerUsageRaw: data.usage
     } : null;
-    return { delta: delta, usage: usage, done: !!data.done };
+    return { delta: delta, usage: usage, done: !!data.done, resolvedModel: data.model || null };
   }
 };
 

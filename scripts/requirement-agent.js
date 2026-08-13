@@ -817,8 +817,16 @@ function _raSplitStreamResponse(raw){
   return parsed;
 }
 
+// Shared by every callAPI()/callAPIStream() call site in this file (non-
+// streaming _raCallModel() below, plus both streaming branches in
+// raRunOpeningTurn()/_raRunTurn()) - previously copy-pasted at each site,
+// which risked the streaming and non-streaming paths silently diverging in
+// what they report for usage tracking if only one copy got updated.
+function _raUsageExtraFields(){
+  return {session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+}
 async function _raCallModel(sys,usr,signal){
-  var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+  var extra=_raUsageExtraFields();
   // v-next: lowered back from 8000 - that cap was raised for the OLD
   // return-the-FULL-document-every-turn design, where a large capability
   // set easily produced ~13.7k characters. Now that turns return
@@ -884,7 +892,7 @@ async function raRunOpeningTurn(conv){
     var raw,parsed;
     if(_streaming){
       var _bubbleEl=null;
-      var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+      var extra=_raUsageExtraFields();
       raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
         _raHideTyping();
         if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();
@@ -1000,7 +1008,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var raw,parsed;
     if(_streaming){
       var _bubbleEl=null;
-      var extra={session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+      var extra=_raUsageExtraFields();
       raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
         _raHideTyping();
         if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();

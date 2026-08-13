@@ -487,11 +487,12 @@ function _callUpstream(upstreamReq, timeoutMs, onTimeoutLog) {
 // same limitation any streaming client has).
 function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog) {
   const https = require('https');
+  const { StringDecoder } = require('string_decoder');
   const url = new URL(upstreamReq.url);
   const postBody = JSON.stringify(upstreamReq.body);
   const bodyBytes = Buffer.byteLength(postBody, 'utf8');
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let upstreamTimedOut = false;
     const options = {
       hostname: url.hostname,
@@ -523,11 +524,19 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       let sseBuffer = '';
       let responseBytes = 0;
-      const usage = { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null };
+      const usage = { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null, resolvedModel: null };
+      // StringDecoder (Node core), not Buffer#toString('utf8') per chunk —
+      // a multi-byte UTF-8 character split across two TCP chunks would
+      // otherwise decode independently in each chunk and come out as a
+      // replacement character (U+FFFD) instead of being reassembled.
+      // StringDecoder carries incomplete trailing bytes over to the next
+      // .write() call, same guarantee scripts/api.js's client-side
+      // TextDecoder(..., {stream:true}) already provides.
+      const decoder = new StringDecoder('utf8');
 
       upstreamRes.on('data', (chunk) => {
         responseBytes += chunk.length;
-        sseBuffer += chunk.toString('utf8');
+        sseBuffer += decoder.write(chunk);
         const events = sseBuffer.split('\n\n');
         sseBuffer = events.pop(); // last entry may be a partial event — keep buffering it
         events.forEach((evt) => {
@@ -541,7 +550,9 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
             if (parsedEvt.usage.inputTokens != null) usage.inputTokens = parsedEvt.usage.inputTokens;
             if (parsedEvt.usage.outputTokens != null) usage.outputTokens = parsedEvt.usage.outputTokens;
             if (parsedEvt.usage.totalTokens != null) usage.totalTokens = parsedEvt.usage.totalTokens;
+            if (parsedEvt.usage.providerUsageRaw != null) usage.providerUsageRaw = parsedEvt.usage.providerUsageRaw;
           }
+          if (parsedEvt.resolvedModel != null) usage.resolvedModel = parsedEvt.resolvedModel;
         });
       });
 
@@ -568,9 +579,16 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
           res.write('data: ' + JSON.stringify({ error: true, message: upstreamTimedOut ? 'Upstream timed out mid-stream.' : ('Stream interrupted: ' + (err.message || 'unknown error')) }) + '\n\n');
           res.end();
         } catch (e) {}
-        resolve({ streamed: true, usage: { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null }, requestBytes: bodyBytes, responseBytes: 0, midStreamError: true });
+        resolve({ streamed: true, usage: { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null, resolvedModel: null }, requestBytes: bodyBytes, responseBytes: 0, midStreamError: true });
       } else {
-        resolve({ streamed: false, transportError: err, requestBytes: bodyBytes, responseBytes: 0 });
+        // No response ever received (headers never sent) — a genuine
+        // transport-level failure, same as _callUpstream()'s own
+        // reject(e) above. Rejecting (not resolving) is what makes
+        // _handleStreamingRequest's `catch (transportErr) { throw
+        // transportErr; }` actually reachable, so this falls through to
+        // the outer handler's proper timeout/network error path instead
+        // of being misread as an HTTP error with undefined status.
+        reject(err);
       }
     });
 
@@ -607,7 +625,7 @@ async function _handleStreamingRequest(req, res, ctx) {
       await _insertAiUsageEvent({
         client_call_id: _clientCallId, provider, company_id: req.companyId, product_id: _productId,
         session_id: _sessionId, session_type: _sessionType, user_id: req.user.id, user_role_at_call: _userRoleAtCall,
-        caller: _caller, prompt_version: _promptVersion, requested_model: body.model, response_model: null,
+        caller: _caller, prompt_version: _promptVersion, requested_model: body.model, response_model: outcome.usage.resolvedModel,
         settings_mode: _settingsMode, settings_model: _settingsModel, selection_rule: _selectionRule,
         input_tokens: outcome.usage.inputTokens, output_tokens: outcome.usage.outputTokens,
         cache_creation_5m_tokens: null, cache_creation_1h_tokens: null, cache_read_tokens: null,
