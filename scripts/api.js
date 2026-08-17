@@ -484,16 +484,19 @@ function switchTab(t){
     _lsFlushManualEditOnTabLeave('sc');
     _lsFlushManualEditOnTabLeave('pc');
   }
-  // v9.24 — Requirement Agent voice dictation must not keep listening once
-  // the PM navigates away from the ra tab entirely. No equivalent tab-leave
-  // hook existed for 'ra' before this (confirmed via full read of this
-  // function). abort(), not stop() — the PM has already left, a trailing
-  // result has nowhere correct to land. v9.24.02 — now the shared
-  // voice-input.js module; voiceStopActive() is a safe no-op if voice input
-  // isn't active, or if some other surface is the active instance, so no
-  // typeof/raVoiceListening guard is needed here anymore — the shared
-  // function owns that check internally.
-  if(prev==='ra'&&t!=='ra'){
+  // v9.24 — voice dictation must not keep listening once the PM navigates
+  // away from the tab that's actually dictating. Originally scoped to
+  // prev==='ra' only, back when Requirement Agent was the sole surface with
+  // voice input. v9.25 (confirmed via live testing) — generalized to ANY
+  // tab switch: Discovery Map, Capability Canvas, Feature Canvas, Outcome
+  // Pulse, and Prototype Canvas all attached afterward, and NONE of their
+  // own cleanup points (rebuild guards, close handlers, stop-on-send) fire
+  // on a plain tab switch with no other action taken first — dictation kept
+  // running untouched. voiceStopActive() is a safe no-op regardless of
+  // which surface (if any) is actually active, so one unconditional call
+  // here covers every current surface and every future one, with no
+  // per-surface prev==='xx' condition to remember to add each time.
+  if(prev!==t){
     voiceStopActive('abort');
   }
   // Fix 1 (v8.39): update lastTab on user-initiated tab switches, debounced 300ms

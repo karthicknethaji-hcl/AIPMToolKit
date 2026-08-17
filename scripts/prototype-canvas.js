@@ -326,6 +326,15 @@ function pcIsNonUIFeature(featId) {
 
 // ── Render entry point ──
 function pcRenderView(featId) {
+  // v9.25 — this is the single render entry point for the whole prototype
+  // view; confirmed via tracing its call sites (screenshot upload/removal,
+  // generation start/error, live-sync remote updates) that it always
+  // rebuilds #pc-refine-bar (and so #pc-ctx-input) unconditionally, one way
+  // or another. A guard here doesn't cover EVERY exit path though — see
+  // newScSetProtoView()/newScSetNavFeat() in story-canvas-new.js for the
+  // "leaving proto view entirely" and "switching to a different feature"
+  // cases, neither of which necessarily calls this function on the way out.
+  voiceStopActive('abort');
   const scroll = document.getElementById('pc-scroll');
   const refine = document.getElementById('pc-refine-bar');
   if (!scroll || !refine) return;
@@ -578,7 +587,10 @@ function pcRenderGenerated(featId, scroll, refine, feat, entry, v) {
       <div class="pc-refine-label">Refine Prototype</div>
       <div class="pc-refine-row">
         <textarea class="pc-refine-input" id="pc-ctx-input" placeholder="e.g. Add error state on step node, show estimated time remaining per step..." rows="2">${e(entry.additionalContext||'')}</textarea>
-        <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
+        <div class="pc-refine-btn-group">
+          ${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'pc-ctx-input',buttonId:'pc-voice-btn',statusId:'pc-voice-status'}):''}
+          <button class="pc-regen-btn-sm" onclick="pcGenerate('${e(featId)}',this)"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> Regenerate</button>
+        </div>
       </div>
     </div>`;
   } else {
@@ -889,6 +901,11 @@ function pcCopyPrompt(elId, btn) {
 // Call 1: wireframe + screenTitle + wireframeOutline (skipped for non-UI features)
 // Call 2: design brief + story coverage + external prompt
 async function pcGenerate(featId, triggerEl) {
+  // v9.25 — stop-on-send: pcReadAdditionalContext() below reads
+  // #pc-ctx-input's live value synchronously, before this function's own
+  // loading state (v.generating=true) triggers any re-render, so stopping
+  // here first doesn't affect what gets captured.
+  voiceStopActive('abort');
   if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!featId) return;
 

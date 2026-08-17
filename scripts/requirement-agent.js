@@ -476,6 +476,15 @@ function raApplyRestoredSnapshot(s){
 // Tab entry
 // ══════════════════════════════════════════════════════════════════════════
 function raOnTabEnter(){
+  // v9.25 — must capture BEFORE raRenderShell(), not inside raRenderCenter().
+  // raRenderShell() does its own root.innerHTML= on the ENTIRE #ra-tab
+  // (including a brand-new, empty #ra-center) as a step BEFORE it calls
+  // raRenderCenter() — so by the time raRenderCenter()'s own capture runs,
+  // the old #ra-chat-input is already gone. Confirmed via live debug
+  // logging (oldChatInput found:false on the tab-entry path specifically) —
+  // raOpenConversation()/raNewConversation() don't have this problem, since
+  // they call raRenderCenter() directly with no destructive wrapper first.
+  _raCaptureChatDraft();
   raRenderShell();
 }
 
@@ -507,6 +516,23 @@ function raEnterFromDiscoveryMap(){
 var raFilterState='all'; // 'all' | 'draft' | 'finalized' — left-panel filter chips, view-scoped only, not persisted
 var raPanelOpen=true;    // left panel expand/collapse state — view-scoped only, mirrors guided-launch.js's glPanelOpen (not persisted)
 var raRightPanelOpen=true; // Live Draft panel expand/collapse — view-scoped only, mirrors guided-launch.js's glMdOpen (not persisted)
+var _raLastRenderedConvId=null; // which conversation's DOM was actually on screen before the CURRENT capture call — see _raCaptureChatDraft()
+var _raChatDraftByConvId={};    // unsent #ra-chat-input text, keyed by conversation id — view-scoped only, not persisted
+
+// Shared by raOnTabEnter() (before raRenderShell()'s own destructive wipe of
+// #ra-tab) and raRenderCenter() (for its other two callers, raOpenConversation()/
+// raNewConversation(), which call it directly with no destructive wrapper in
+// between) — captures whatever's currently in #ra-chat-input, keyed by
+// whichever conversation was actually on screen, before it's destroyed.
+// Safe to call redundantly: a no-op if the element is already gone (e.g.
+// raRenderCenter()'s own call, running after raRenderShell() already wiped
+// it via the earlier raOnTabEnter() call) or if there's nothing tracked yet.
+function _raCaptureChatDraft(){
+  var _oldChatInput=document.getElementById('ra-chat-input');
+  if(_oldChatInput&&_raLastRenderedConvId){
+    _raChatDraftByConvId[_raLastRenderedConvId]=_oldChatInput.value;
+  }
+}
 
 // Left panel — the real global .left/.ph/.collapse-btn structure (copied
 // from index.html's #left-panel, same convention guided-launch.js's
@@ -664,10 +690,27 @@ function raRenderCenter(){
   // to prevent. voiceStopActive() is a safe no-op if voice input isn't
   // active, or if some other surface (not this one) is the active instance.
   voiceStopActive('abort');
+  // v9.25 — preserve any unsent draft text before the old textarea (if any)
+  // is destroyed below. Keyed by whichever conversation was ACTUALLY on
+  // screen before this render, NOT raActiveConversationId — callers like
+  // raOpenConversation()/raNewConversation() already reassign that BEFORE
+  // calling this function, so it no longer identifies the outgoing
+  // conversation by the time we get here. Confirmed via live testing this
+  // is a pre-existing gap in this render function (it has always rebuilt
+  // #ra-chat-input empty on every call, with no value ever interpolated
+  // in) — not something voice input introduced. It would equally discard
+  // an unsent manually-typed draft; voice just makes hitting it far more
+  // likely, since dictating naturally accumulates more unsent content
+  // before a PM would think to hit Send. Redundant-but-harmless on the
+  // tab-entry path specifically — raOnTabEnter() already captured before
+  // raRenderShell()'s own destructive wipe, so this call finds nothing left
+  // to capture; still load-bearing for the other two callers below.
+  _raCaptureChatDraft();
   var center=document.getElementById('ra-center');
   var right=document.getElementById('ra-right');
   if(!center||!right)return;
   var conv=_raActiveConv();
+  _raLastRenderedConvId=conv?conv.id:null;
   if(!conv){
     center.innerHTML='<div class="ra-empty-state"><i class="ti ti-clipboard-text" style="font-size:28px;color:var(--label);" aria-hidden="true"></i><div style="font-size:13px;font-weight:600;color:var(--t2);margin-top:10px;">No conversation open</div><div style="font-size:11px;color:var(--t3);margin-top:4px;">Start a new one, or pick a conversation on the left.</div></div>';
     right.innerHTML='';
@@ -695,6 +738,14 @@ function raRenderCenter(){
       +'</div>'
       +'<input type="file" id="ra-file-input" accept=".docx,.pdf,.txt,.xlsx,.csv" style="display:none;" onchange="raHandleUpload(this)">'
       +'</div>');
+  // Restore this SAME conversation's preserved draft, if any — one-shot,
+  // deleted after restoring so a later re-render of this conversation
+  // (once it's genuinely empty again) doesn't reapply a stale value.
+  if(conv.status!=='finalized'&&_raChatDraftByConvId[conv.id]){
+    var _newChatInput=document.getElementById('ra-chat-input');
+    if(_newChatInput)_newChatInput.value=_raChatDraftByConvId[conv.id];
+    delete _raChatDraftByConvId[conv.id];
+  }
   raRenderChatHistory();
   raRenderLiveDraft();
   if(!conv.messages||!conv.messages.length){
