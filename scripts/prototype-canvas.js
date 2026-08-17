@@ -901,13 +901,17 @@ function pcCopyPrompt(elId, btn) {
 // Call 1: wireframe + screenTitle + wireframeOutline (skipped for non-UI features)
 // Call 2: design brief + story coverage + external prompt
 async function pcGenerate(featId, triggerEl) {
-  // v9.25 — stop-on-send: pcReadAdditionalContext() below reads
-  // #pc-ctx-input's live value synchronously, before this function's own
-  // loading state (v.generating=true) triggers any re-render, so stopping
-  // here first doesn't affect what gets captured.
-  voiceStopActive('abort');
+  // v9.25 code-review fix — canEditSession() now checked BEFORE stopping
+  // voice (was after): a read-only collaborator's click here is a no-op
+  // regardless, so it shouldn't also silently kill their dictation with no
+  // explanation.
   if(typeof canEditSession==='function'&&!canEditSession())return;
   if (!featId) return;
+  // stop-on-send: pcReadAdditionalContext() below reads #pc-ctx-input's
+  // live value synchronously, before this function's own loading state
+  // (v.generating=true) triggers any re-render, so stopping here first
+  // doesn't affect what gets captured.
+  voiceStopActive('abort');
 
   // pcReady guard
   if (!pcReady) {

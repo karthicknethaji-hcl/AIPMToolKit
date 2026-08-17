@@ -3343,13 +3343,18 @@ async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverrid
 // somewhere to land instead of surfacing as a console error. Every direct
 // onclick caller should use this wrapper, not the function directly.
 function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride,ctx){
-  // v9.25 — stop-on-send: refinement (above) is already read synchronously
-  // from #cc-feat-refine-txt's live value in the onclick attribute, before
-  // this function runs, so stopping here doesn't affect what was captured.
-  // No "next message" for continued dictation to feed once this fires,
-  // unlike Requirement Agent's persistent chat.
-  voiceStopActive('abort');
+  // v9.25 code-review fix — canEditSession() now checked BEFORE stopping
+  // voice (was after): a read-only collaborator's click here is a no-op
+  // regardless, so it shouldn't also silently kill their dictation with no
+  // explanation. Matches kpi-tree.js's regen(), which already had this
+  // ordering right.
   if(typeof canEditSession==='function'&&!canEditSession())return Promise.resolve();
+  // stop-on-send: refinement (above) is already read synchronously from
+  // #cc-feat-refine-txt's live value in the onclick attribute, before this
+  // function runs, so stopping here doesn't affect what was captured. No
+  // "next message" for continued dictation to feed once this fires, unlike
+  // Requirement Agent's persistent chat.
+  voiceStopActive('abort');
   return ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride,ctx).catch(function(err){
     console.warn('[cc] generate features click handler error:', err);
   });

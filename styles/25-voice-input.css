@@ -17,7 +17,7 @@
    has begun — pulses, reusing glTypingPulse's existing keyframes
    (22-guided-launch.css) rather than new ones. */
 .vi-btn.vi-btn-connecting{background:var(--purple-pale);border-color:var(--purple-light);color:var(--purple);}
-.vi-btn.vi-btn-listening{background:var(--purple);border-color:var(--purple);color:#fff;animation:glTypingPulse 1.2s ease-in-out infinite;}
+.vi-btn.vi-btn-listening{background:var(--purple);border-color:var(--purple);color:var(--white);animation:glTypingPulse 1.2s ease-in-out infinite;}
 /* Status label — sits in whatever gap already exists below the button
    group on each surface (e.g. the same 6px band Requirement Agent's
    upload-chip row already uses). Absolutely positioned so it adds zero

@@ -146,15 +146,29 @@ function voiceStopActive(method){
   _viUiState=null;
   var rec=_viRecognition;
   _viRecognition=null;
-  var priorActive=_viActive;
-  _viActive=null;
+  // v9.25 code-review fix — _viActive is deliberately NOT cleared here.
+  // Previously it was nulled synchronously above, which meant a graceful
+  // ('stop') call could never actually receive its own trailing onresult:
+  // the native .stop() call is async and typically fires one more result
+  // event with whatever was already captured, but _viOnResult()'s staleness
+  // guard (checking _viActive.attemptId) would already see _viActive===null
+  // and reject it — so 'stop' and 'abort' behaved identically in practice,
+  // silently dropping the last few words spoken right at the moment of a
+  // user-initiated stop. _viActive now stays set until _viOnEnd() confirms
+  // the recognizer has truly finished (and won't restart), so a legitimate
+  // trailing result from THIS instance still passes the attempt-id check.
+  // This does not reopen the cross-instance race the attempt-id guard
+  // exists for: voiceToggle()'s start path overwrites _viActive with the
+  // new instance's data synchronously, before any async event from the old
+  // instance can possibly fire, so a stale event is still correctly
+  // rejected once a different surface takes over.
   if(rec){
     try{
       if(method==='abort'&&typeof rec.abort==='function')rec.abort();
       else rec.stop();
     }catch(err){/* already stopped/errored — safe no-op */}
   }
-  if(priorActive)_viRenderButtonState(priorActive);
+  _viRenderButtonState();
 }
 
 // Light-touch visual update — deliberately does NOT trigger any surface's
@@ -247,6 +261,13 @@ function _viOnEnd(attemptId){
   if(_viListening&&!_viRestartGuard&&_viRecognition){
     try{_viRecognition.start();}
     catch(err){voiceStopActive('abort');}
+  } else {
+    // Recognizer has fully ended and won't restart — safe to release the
+    // instance now. This is the actual end of this attempt's lifecycle;
+    // voiceStopActive() deliberately left this set so a trailing onresult
+    // (fired between the stop()/abort() call and this onend) could still
+    // land correctly.
+    _viActive=null;
   }
 }
 

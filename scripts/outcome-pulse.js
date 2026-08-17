@@ -1071,8 +1071,13 @@ function _opCloseSuggestOverlay(){
 function opOpenSuggestExperimentModal(fid){
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat||!feat.outcomeHypothesis)return;
-  const existing=document.getElementById('op-suggest-overlay');
-  if(existing)existing.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the shared close path added specifically so
+  // every removal of this overlay stops dictation first. Reachable if this
+  // is invoked a second time (e.g. from the Experiment Library) while a
+  // prior overlay — possibly with an active mic in its "no recommendation"
+  // state — is still open.
+  _opCloseSuggestOverlay();
   _opSuggestCurrentResult=null;
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
@@ -1344,8 +1349,10 @@ async function _opAcceptSuggestedExperiment(fid){
   }catch(saveErr){
     console.warn('Session save failed after synthesizing Outcome Pulse experiment:',saveErr);
   }
-  const overlay=document.getElementById('op-suggest-overlay');
-  if(overlay)overlay.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the 5th of the overlay's close paths and the
+  // only one this refactor missed (Accept, not just Cancel/Close/Escape/X).
+  _opCloseSuggestOverlay();
   if(typeof laRebuildSentIdsFromCanvas==='function')laRebuildSentIdsFromCanvas();
   _opNavigateToExperimentCanvasDetail(_runId,0,true);
 }

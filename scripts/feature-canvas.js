@@ -2229,6 +2229,15 @@ async function scGenerateStories(featureIds){
   if(!features.length)return;
   // Open panel on first feature being generated
   const firstFeat=features[0];
+  // v9.25 code-review fix — this is a SECOND entry point that reassigns
+  // scPanelFeatureId (scOpenPanel() is the other), and #sc-refine-txt is
+  // static HTML that's never destroyed — the same misattribution risk
+  // scOpenPanel()'s own guard exists to prevent: dictation started for
+  // whatever feature's panel was open before this bulk-generate call would
+  // otherwise keep running and could get submitted against firstFeat
+  // instead via scRefineStories() (which reads scPanelFeatureId at click
+  // time, not at typing time).
+  voiceStopActive('abort');
   scPanelFeatureId=firstFeat.id;
   document.getElementById('sc-panel-feat-name').textContent=firstFeat.name;
   scLineageTargetElId='sc-panel-feat-meta';

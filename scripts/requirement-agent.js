@@ -39,6 +39,17 @@ function raResetState(){
   // exist next, which could belong to a different session entirely.
   // voiceStopActive() is a safe no-op if this surface isn't the active one.
   voiceStopActive('abort');
+  // v9.25 code-review fix — _raChatDraftByConvId/_raLastRenderedConvId
+  // otherwise survive a session clear indefinitely (this state is never
+  // persisted, only bounded by page reload). Not a live bug today — by the
+  // time raRenderCenter() next runs, #ra-tab has already been wiped by
+  // homeClearSession(), so _raCaptureChatDraft() finds nothing to capture
+  // regardless of the stale conversation id — but it's unbounded growth
+  // across repeated clears in one long-lived tab, and a latent trap for
+  // whichever future change adds per-conversation delete or ever reuses an
+  // id from _raUid()'s generation scheme.
+  _raChatDraftByConvId={};
+  _raLastRenderedConvId=null;
   // Confirmed pre-existing bug (predates the Discovery-First redesign):
   // this used to hardcode raEnabled=false unconditionally, so every
   // session relaunch after the first one in a browser tab reset raEnabled
@@ -728,7 +739,11 @@ function raRenderCenter(){
       :'<div class="ra-chat-input-wrap"><div class="ra-chat-input-row">'
         +'<textarea class="ra-chat-input" id="ra-chat-input" rows="1" placeholder="Type your response..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();raSendMessage();}"></textarea>'
         +'<div class="ra-chat-btn-group">'
-          +voiceButtonHtml({textareaId:'ra-chat-input',buttonId:'ra-voice-btn',statusId:'ra-voice-status'})
+          // v9.25 code-review fix — guarded with typeof, matching every
+          // other surface's call site convention (was unguarded here,
+          // safe in practice since voice-input.js always loads first, but
+          // an inconsistent pattern for future surfaces to copy from).
+          +((typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'ra-chat-input',buttonId:'ra-voice-btn',statusId:'ra-voice-status'}):'')
           +'<button class="ra-chat-send" id="ra-send-btn" onclick="raSendMessage()" title="Send"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>'
         +'</div>'
       +'</div>'
