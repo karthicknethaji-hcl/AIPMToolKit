@@ -1,5 +1,9 @@
 # Changelog — AI PM Toolkit
 
+## v9.24.01 - 2026-08-17: Requirement Agent voice dictation — tab/window backgrounding leak
+
+- Fixed - Live voice dictation in Requirement Agent kept capturing and transcribing indefinitely after switching to a different browser tab or application (window backgrounded but not closed) — none of v9.24's four cleanup paths react to browser-level visibility, only in-app navigation, so nothing stopped it. Added a `document.visibilitychange` listener that stops the session immediately (no auto-resume when the tab becomes visible again — resuming a third-party audio capture silently would be the wrong default).
+
 ## v9.24 - 2026-08-17: Requirement Agent voice dictation
 
 - Added - Requirement Agent's chat input now supports optional voice dictation via the browser's native Web Speech API, gated behind a new "Voice Input (Requirement Agent)" toggle in Settings > Company Profile & Access > API & Access (defaulting OFF, pending legal sign-off — Chrome's implementation sends raw audio to Google's servers, a new third-party data flow outside this app's own governed AI proxy). Dictation streams live into the existing #ra-chat-input textarea; Send still gates the commit through the unchanged turn pipeline. The mic toggle sits grouped tightly with Send at the input row's right edge, stays available while a turn is in flight (mirrors the textarea's own busy-state behavior), and is hidden entirely (not disabled) on unsupported browsers or when the flag is off. A small "Connecting…"/"Listening…" status label beneath the button group gives a clear mental model of mic state, distinguishing the moment the toggle is clicked from the moment the browser has actually started capturing audio (which can lag behind a first-use mic-permission prompt).

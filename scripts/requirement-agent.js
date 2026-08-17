@@ -834,6 +834,28 @@ function _raVoiceOnEnd(){
   }
 }
 
+// 5th involuntary teardown path, distinct from the four inside
+// raRenderCenter()/raResetState()/switchTab()/applyFeats() above: none of
+// those react to the BROWSER tab/window itself losing visibility while the
+// page keeps running in the background (switching to a different browser
+// tab/app, or minimizing) — confirmed via live testing that this silently
+// leaves dictation capturing and transcribing indefinitely into the
+// still-live (just visually hidden) #ra-chat-input, since nothing else in
+// this app reacts to tab/window visibility (confirmed via grep — no other
+// visibilitychange/blur listener exists anywhere in this codebase, so
+// there is no existing pattern to reuse here). Distinct from the earlier,
+// correctly-dismissed "tab close" non-gap — a closed tab lets the browser
+// reclaim the mic on its own; a backgrounded-but-open tab does not. No
+// auto-resume when the tab becomes visible again, by design: every other
+// involuntary path here is one-way too, and silently resuming a
+// third-party audio capture the instant a PM tabs back in would be the
+// wrong default for a feature gated specifically because that capture
+// leaves this app's own governed boundary. Registered once, at script
+// load — not inside a function that re-runs per render.
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden&&raVoiceListening)_raVoiceStop('abort');
+});
+
 // ══════════════════════════════════════════════════════════════════════════
 // Center (chat) + right (live draft) — rendered together per active conv
 // ══════════════════════════════════════════════════════════════════════════
