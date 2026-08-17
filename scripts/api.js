@@ -484,6 +484,16 @@ function switchTab(t){
     _lsFlushManualEditOnTabLeave('sc');
     _lsFlushManualEditOnTabLeave('pc');
   }
+  // v9.24 — Requirement Agent voice dictation must not keep listening once
+  // the PM navigates away from the ra tab entirely. No equivalent tab-leave
+  // hook existed for 'ra' before this (confirmed via full read of this
+  // function). abort(), not stop() — the PM has already left, a trailing
+  // result has nowhere correct to land. Idempotent — safe even if another
+  // cleanup hook (e.g. raResetState() via homeClearSession(), which can run
+  // just before this on the live-sync kickout path) already stopped it.
+  if(prev==='ra'&&t!=='ra'&&typeof _raVoiceStop==='function'&&typeof raVoiceListening!=='undefined'&&raVoiceListening){
+    _raVoiceStop('abort');
+  }
   // Fix 1 (v8.39): update lastTab on user-initiated tab switches, debounced 300ms
   if(typeof _ssRestoring!=='undefined'&&!_ssRestoring&&t!=='home'){
     if(typeof _ssLastTabTimer!=='undefined')clearTimeout(_ssLastTabTimer);

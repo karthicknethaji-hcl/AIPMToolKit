@@ -45,6 +45,12 @@ const appSettings={
   // different model response contract (prompts.js's streamingMode param)
   // that's had less real-world mileage than the existing buffered path.
   aiStreamingEnabled:false,
+  // v9.24 — Requirement Agent voice dictation (browser-native Web Speech
+  // API). Default OFF pending Vijay/Lester sign-off: Chrome's implementation
+  // sends raw audio to Google's servers for recognition — a new, ungoverned
+  // third-party data flow outside this app's own governed BYOK proxy.
+  // Mirrors aiStreamingEnabled's dual-mode-switch pattern exactly.
+  featVoiceInput:false,
   // Section 2 — Feature Modules
   featDD:true,
   featCap:true,   // always true — core workflow, not user-configurable

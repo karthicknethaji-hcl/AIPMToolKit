@@ -400,6 +400,8 @@ async function settingsPageSave() {
   if(modelEl) appSettings.model = modelEl.value;
   const togAis = document.getElementById('sp-tog-ais');
   if(togAis) appSettings.aiStreamingEnabled = _spTogState('ais');
+  const togVi = document.getElementById('sp-tog-vi');
+  if(togVi) appSettings.featVoiceInput = _spTogState('vi');
 
   // Section 2 — Feature Modules (read toggle states)
   const togMd = document.getElementById('sp-tog-md');
@@ -893,7 +895,7 @@ function spTogRow(k) {
 }
 function _spReadTogInit(k) {
   // Read from appSettings for known keys
-  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled' };
+  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled', vi:'featVoiceInput' };
   const key = map[k];
   return key ? appSettings[key] : true;
 }
@@ -1305,6 +1307,14 @@ function spP1() {
     'Live AI Streaming',
     'Requirement Agent replies reveal token-by-token as they generate, instead of appearing all at once when the full response is ready.',
     _spTog('ais', appSettings.aiStreamingEnabled),
+    'Experimental — off by default.',
+    true
+  )}
+
+  ${_spRow(
+    'Voice Input (Requirement Agent)',
+    'Lets a PM dictate into Requirement Agent\'s chat box instead of typing. Speech is processed by your browser\'s vendor (e.g. Chrome sends audio to Google) — not by this app\'s own AI provider.',
+    _spTog('vi', appSettings.featVoiceInput),
     'Experimental — off by default.',
     true
   )}`;
