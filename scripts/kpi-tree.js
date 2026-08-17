@@ -471,6 +471,16 @@ async function generateConfirmed(extra){
 }
 async function regen(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
+  // v9.25 — stop-on-send: clicking this surface's own action button means
+  // there's no "next message" for continued dictation to feed (unlike
+  // Requirement Agent's persistent chat, where the mic deliberately stays
+  // on across Sends). abort(), not stop() — traced regen()'s own flow: the
+  // refinement text below is read synchronously in this same tick, before
+  // either method's async tail could resolve, so they'd capture identical
+  // text either way; abort() is still correct to guarantee no delayed,
+  // surprise result can land later if the refine bar is reopened for an
+  // unrelated second refinement.
+  voiceStopActive('abort');
   const refinementText=gv('regen-in');
   // v8.133 fix (item 3): checked here too, not just inside generate() —
   // this function can route to _mmShowRegenConfirm's richer modal, which
@@ -649,6 +659,16 @@ function _mmReconcileManualCaps(parsed,manualList,allowAISuggestions){
 
 
 function renderDiagnosticActionBar(){
+  // v9.25 — this function does existing.remove()+full rebuild EVERY time
+  // it's called, and it's called from far more places than just "after
+  // regenerating" (confirmed via grep: also confirmDeleteStage() and the
+  // equivalent add/edit/delete-stage/capability paths) — i.e. ANY stage or
+  // capability mutation anywhere on this screen destroys #regen-in, even if
+  // the refine bar is open with an active dictation session at the time and
+  // has nothing to do with the edit being made. Single guard here covers
+  // every one of those call sites at once, mirroring requirement-agent.js's
+  // own raRenderCenter() choke-point pattern.
+  voiceStopActive('abort');
   const existing=document.getElementById('diag-action-bar');
   if(existing)existing.remove();
   const right=document.querySelector('.right');
@@ -678,7 +698,10 @@ function renderDiagnosticActionBar(){
       <div class="diag-refine-lbl">${refineLbl}</div>
       <div class="diag-refine-row">
         <textarea class="diag-refine-txt" id="regen-in" placeholder="${refinePlaceholder}" rows="2"></textarea>
-        <button class="diag-refine-send" id="diag-refine-send" onclick="regen()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:13px;" aria-hidden="true"></i></button>
+        <div class="diag-refine-btn-group">
+          ${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'regen-in',buttonId:'regen-voice-btn',statusId:'regen-voice-status'}):''}
+          <button class="diag-refine-send" id="diag-refine-send" onclick="regen()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:13px;" aria-hidden="true"></i></button>
+        </div>
       </div>
     </div>
     <div class="diag-bar-row">
@@ -697,6 +720,11 @@ function toggleRefineBar(){
   const btn=document.getElementById('diag-refine-btn');
   if(!expand)return;
   const isOpen=expand.style.display!=='none';
+  // v9.25 — collapsing the bar doesn't destroy #regen-in (just hides it via
+  // display, so dictation could technically keep running unseen), but
+  // collapsing reads as "I'm done here" the same way clicking Regenerate
+  // does — stop on collapse, not on expand.
+  if(isOpen)voiceStopActive('abort');
   expand.style.display=isOpen?'none':'block';
   const refineLbl='Refine Discovery Map';  // v8.38 — always DM regardless of approach
   if(btn)btn.innerHTML=isOpen?'<i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i> '+refineLbl:'<i class="ti ti-chevron-down" style="font-size:11px;" aria-hidden="true"></i> '+refineLbl;

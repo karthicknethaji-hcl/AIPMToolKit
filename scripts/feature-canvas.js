@@ -1255,6 +1255,16 @@ function scOpenPanel(fid){
   if(scPanelFeatureId===fid){scClosePanel();return;}
   const feat=scCanvas.find(x=>x.id===fid);
   if(!feat)return;
+  // v9.25 — #sc-refine-txt is STATIC HTML (index.html), never destroyed or
+  // rebuilt by any render function here — a different failure mode from
+  // every other surface's textarea. Switching to a different feature's
+  // panel reassigns scPanelFeatureId while the SAME physical textarea node
+  // persists untouched: without this guard, dictation started for the
+  // previous feature would keep running and could get submitted against
+  // the NEWLY active feature via scRefineStories() (which reads
+  // scPanelFeatureId at click time, not at typing time) — silent
+  // misattribution, not just silent loss.
+  voiceStopActive('abort');
   scPanelFeatureId=fid;
   document.getElementById('sc-panel-feat-name').textContent=feat.name;
   // Show selection indicator in panel tag
@@ -1271,7 +1281,19 @@ function scOpenPanel(fid){
   document.getElementById('sc-panel').classList.add('open');
   scRenderPanel(feat);
   scUpdatePanelNav();
+  _scRenderVoiceSlot();
   fcRenderCanvas(); // update active card ring
+}
+
+// v9.25 — populates the static #sc-refine-voice-slot (index.html) with the
+// mic button. Since #sc-refine-txt's row is static HTML, not JS-template-
+// generated, there's no natural render pass to embed voiceButtonHtml()
+// into the way other surfaces do — this runs once per panel-open instead,
+// which also keeps it in sync with appSettings.featVoiceInput on every
+// open (matching every other surface's own render-time gate check).
+function _scRenderVoiceSlot(){
+  const slot=document.getElementById('sc-refine-voice-slot');
+  if(slot&&typeof voiceButtonHtml==='function')slot.innerHTML=voiceButtonHtml({textareaId:'sc-refine-txt',buttonId:'sc-refine-voice-btn',statusId:'sc-refine-voice-status'});
 }
 
 function scRenderLineage(feat,targetElId){
@@ -1630,6 +1652,12 @@ function scClosePanelUserAction(){
 }
 
 function scClosePanel(){
+  // v9.25 — closing hides the panel via CSS class removal, it doesn't
+  // destroy #sc-refine-txt's DOM node — so without this, a mic left
+  // listening would keep capturing into a now-hidden textarea, same
+  // privacy/resource-leak shape as the tab-backgrounding case, just
+  // scoped to "this panel is closed" instead of "browser tab is hidden."
+  voiceStopActive('abort');
   scPanelFeatureId=null;
   document.getElementById('sc-main').classList.remove('panel-open');
   document.getElementById('sc-panel').classList.remove('open');
@@ -2109,6 +2137,10 @@ function fcPanelSendToSC(){
 }
 
 function scRefineStories(){
+  // v9.25 — stop-on-send: refinement below is read synchronously from the
+  // live value, so stopping here first doesn't affect what gets captured.
+  // No "next message" for continued dictation to feed once this fires.
+  voiceStopActive('abort');
   if(!scPanelFeatureId)return;
   const feat=scCanvas.find(f=>f.id===scPanelFeatureId);
   if(!feat)return;
@@ -2197,6 +2229,15 @@ async function scGenerateStories(featureIds){
   if(!features.length)return;
   // Open panel on first feature being generated
   const firstFeat=features[0];
+  // v9.25 code-review fix — this is a SECOND entry point that reassigns
+  // scPanelFeatureId (scOpenPanel() is the other), and #sc-refine-txt is
+  // static HTML that's never destroyed — the same misattribution risk
+  // scOpenPanel()'s own guard exists to prevent: dictation started for
+  // whatever feature's panel was open before this bulk-generate call would
+  // otherwise keep running and could get submitted against firstFeat
+  // instead via scRefineStories() (which reads scPanelFeatureId at click
+  // time, not at typing time).
+  voiceStopActive('abort');
   scPanelFeatureId=firstFeat.id;
   document.getElementById('sc-panel-feat-name').textContent=firstFeat.name;
   scLineageTargetElId='sc-panel-feat-meta';

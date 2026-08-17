@@ -31,6 +31,7 @@
 <link rel="stylesheet" href="./styles/22-guided-launch.css">
 <link rel="stylesheet" href="./styles/23-requirement-agent.css">
 <link rel="stylesheet" href="./styles/24-readiness-canvas.css">
+<link rel="stylesheet" href="./styles/25-voice-input.css">
 </head>
 <body>
 <!-- Boot gate overlay (Phase 1) — full-viewport, covers everything underneath.
@@ -487,7 +488,10 @@
               <div class="sc-refine-lbl">Refine Stories</div>
               <div class="sc-refine-row">
                 <textarea class="sc-refine-txt" id="sc-refine-txt" placeholder="e.g. Focus on admin persona, add more edge cases, make ACs more technical..." rows="2"></textarea>
-                <button class="sc-refine-send" id="sc-refine-btn" onclick="scRefineStories()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i></button>
+                <div class="sc-refine-btn-group">
+                  <span id="sc-refine-voice-slot"></span>
+                  <button class="sc-refine-send" id="sc-refine-btn" onclick="scRefineStories()" title="Refine &amp; Regenerate"><i class="ti ti-refresh" style="font-size:11px;" aria-hidden="true"></i></button>
+                </div>
               </div>
             </div>
             <div class="sc-panel-footer-split">
@@ -609,6 +613,7 @@
 <script src="./scripts/state.js"></script>
 <script src="./scripts/config.js"></script>
 <script src="./scripts/utils.js"></script>
+<script src="./scripts/voice-input.js"></script>
 <script src="./scripts/pi-bucket.js"></script>
 <script src="./scripts/prompts.js"></script>
 <script src="./scripts/settings.js"></script>

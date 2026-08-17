@@ -183,6 +183,12 @@ function pcAvailCall(fn,arg){
 
 // ── View toggle ──
 function newScSetProtoView(on){
+  // v9.25 — belt-and-suspenders alongside pcRenderView()'s own guard:
+  // TURNING PROTO VIEW OFF doesn't necessarily call pcRenderView() again
+  // (newScRenderMain() takes the non-proto branch instead once
+  // newScProtoView is false), so that guard alone wouldn't catch this
+  // specific transition. voiceStopActive() is a safe no-op either way.
+  voiceStopActive('abort');
   newScProtoView=!!on;
   if(!newScActiveNavFeat)newScProtoView=false;
   if(newScProtoView&&typeof newScClosePanel==='function')newScClosePanel();
@@ -191,6 +197,12 @@ function newScSetProtoView(on){
 
 // ── Nav feat setter — resets proto view on nav change (v1 behaviour) ──
 function newScSetNavFeat(featId){
+  // v9.25 — switching to a different feature while #pc-ctx-input is being
+  // dictated into would otherwise misattribute that feature's dictated
+  // context to the NEW feature (same shape of gap found in Feature
+  // Canvas's scOpenPanel() — a context change, not a DOM destroy, on a
+  // surface keyed by featId rather than a per-instance textarea).
+  voiceStopActive('abort');
   newScActiveNavFeat=featId;
   newScProtoView=false;
   newScRender();

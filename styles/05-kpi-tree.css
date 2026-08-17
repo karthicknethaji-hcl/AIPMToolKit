@@ -181,10 +181,15 @@ table.dt th:nth-child(7){width:17%;}
 /* Refine expand area */
 .diag-refine-expand{padding:10px 20px 8px;border-top:1px solid var(--blue-mid);background:#F8FAFF;}
 .diag-refine-lbl{font-size:9px;font-weight:700;color:var(--blue);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:5px;}
-.diag-refine-row{display:flex;gap:8px;align-items:flex-end;}
+.diag-refine-row{display:flex;gap:10px;align-items:flex-end;}
 .diag-refine-txt{font-family:var(--font)!important;font-size:11px!important;color:var(--t1)!important;flex:1;background:#fff;border:1px solid var(--blue-mid);border-left:3px solid var(--blue);border-radius:5px;padding:6px 9px;outline:none;resize:none;min-height:40px;line-height:1.4;transition:border-color 0.15s;}
 .diag-refine-txt:focus{border-color:var(--blue);}
 .diag-refine-txt::placeholder{color:var(--label);font-size:10px!important;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with the refine/send button (4px internal gap); the row's own 10px gap
+   (above) is the looser separation between the textarea and this group.
+   position:relative anchors .vi-status's absolute positioning. */
+.diag-refine-btn-group{display:flex;gap:4px;flex-shrink:0;position:relative;}
 /* Inline refine pattern — single icon-only submit button, matches .sc-refine-send */
 .diag-refine-send{background:var(--purple);border:none;border-radius:6px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;flex-shrink:0;transition:background 0.12s;}
 .diag-refine-send:hover{background:var(--purple-deep);}

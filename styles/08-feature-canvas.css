@@ -149,6 +149,9 @@
 .sc-refine-bar{padding:9px 12px 10px;border-bottom:1px solid var(--divider);}
 .sc-refine-lbl{font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:5px;}
 .sc-refine-row{display:flex;gap:6px;align-items:flex-end;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with Send. position:relative anchors .vi-status's absolute positioning. */
+.sc-refine-btn-group{display:flex;gap:4px;position:relative;}
 
 /* ── CAPABILITY TREE NAV PANEL — Option B: Track & Node ── */
 .sc-cap-nav{width:300px;min-width:300px;border-right:1px solid var(--divider);background:var(--card);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width 0.22s cubic-bezier(0.4,0,0.2,1);}

@@ -1057,11 +1057,27 @@ function _opFindPossibleDuplicate(newExp,priorExperiments){
   return priorExperiments.find(function(x){return norm(x.experimentTitle)===newTitle;})||null;
 }
 
+// v9.25 — single shared close path for the suggest-experiment overlay,
+// used by every trigger (X button, Escape key, both Cancel/Close buttons
+// rendered in the two result states) instead of each calling .remove()
+// independently — voiceStopActive() is a safe no-op if the refine box
+// (only present in the no-recommendation state) isn't the active instance.
+function _opCloseSuggestOverlay(){
+  voiceStopActive('abort');
+  const overlay=document.getElementById('op-suggest-overlay');
+  if(overlay)overlay.remove();
+}
+
 function opOpenSuggestExperimentModal(fid){
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat||!feat.outcomeHypothesis)return;
-  const existing=document.getElementById('op-suggest-overlay');
-  if(existing)existing.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the shared close path added specifically so
+  // every removal of this overlay stops dictation first. Reachable if this
+  // is invoked a second time (e.g. from the Experiment Library) while a
+  // prior overlay — possibly with an active mic in its "no recommendation"
+  // state — is still open.
+  _opCloseSuggestOverlay();
   _opSuggestCurrentResult=null;
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
@@ -1070,7 +1086,7 @@ function opOpenSuggestExperimentModal(fid){
   document.body.appendChild(overlay);
   if(typeof trapFocus==='function')trapFocus(overlay);
   const _esc=function(ev){
-    if(ev.key==='Escape'){overlay.remove();document.removeEventListener('keydown',_esc,true);}
+    if(ev.key==='Escape'){_opCloseSuggestOverlay();document.removeEventListener('keydown',_esc,true);}
   };
   document.addEventListener('keydown',_esc,true);
   overlay.dataset.escHandlerAttached='1';
@@ -1080,7 +1096,7 @@ function opOpenSuggestExperimentModal(fid){
 function _opSuggestModalShell(feat){
   const p=feat.outcomeHypothesis.primary;
   return`<div class="modal" style="max-width:420px;position:relative;">
-    <button onclick="document.getElementById('op-suggest-overlay').remove()"
+    <button onclick="_opCloseSuggestOverlay()"
       style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;
       padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;"
       title="Close">
@@ -1119,6 +1135,14 @@ function _opSuggestLoadingHTML(){
 }
 
 async function _opRunSuggestExperiment(fid,refinement){
+  // v9.25 — single choke point: EVERY invocation of this function (the
+  // initial empty-refinement call on modal open, or a PM-submitted
+  // refinement from the no-recommendation state) immediately wipes bodyEl
+  // below to show a loader — the only place #op-suggest-refine-txt is ever
+  // destroyed. Also covers stop-on-send, since refinement (the param) was
+  // already read synchronously from the live textarea value before this
+  // function was even called.
+  voiceStopActive('abort');
   const feat=scCanvas.find(function(f){return f.id===fid;});
   if(!feat)return;
   const overlay=document.getElementById('op-suggest-overlay');
@@ -1189,7 +1213,7 @@ async function _opRunSuggestExperiment(fid,refinement){
     endAiGen();
     if(!_opSuggestOverlayStillCurrent(_attempt.id))return;
     if(bodyEl)bodyEl.innerHTML=`<div style="font-size:11px;color:var(--red);padding:12px 0;">Error: ${e(err.message)}</div>`;
-    if(footerEl)footerEl.innerHTML=`<button class="modal-cancel-btn" onclick="document.getElementById('op-suggest-overlay').remove()">Close</button>`;
+    if(footerEl)footerEl.innerHTML=`<button class="modal-cancel-btn" onclick="_opCloseSuggestOverlay()">Close</button>`;
   }finally{
     clearInterval(_opSuggestMsgTimer);
   }
@@ -1226,11 +1250,14 @@ function _opRenderSuggestNoRecommendation(fid,reason){
       <i class="ti ti-info-circle" style="font-size:13px;color:#854F0B;margin-top:1px;" aria-hidden="true"></i>
       <div style="font-size:11px;color:#63380A;line-height:1.5;">${e(reason)}</div>
     </div>
-    <div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);margin-bottom:6px;">Add context to try again</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <div style="font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Add context to try again</div>
+      <div style="position:relative;">${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'op-suggest-refine-txt',buttonId:'op-suggest-voice-btn',statusId:'op-suggest-voice-status'}):''}</div>
+    </div>
     <textarea id="op-suggest-refine-txt" style="width:100%;box-sizing:border-box;border:1px solid var(--divider);border-radius:6px;padding:8px 10px;font-size:11px;font-family:var(--font);resize:none;" rows="3" placeholder="e.g. Focus on returning users, not first-time signups..."></textarea>
   `;
   footerEl.innerHTML=`
-    <button class="modal-cancel-btn" onclick="document.getElementById('op-suggest-overlay').remove()">Cancel</button>
+    <button class="modal-cancel-btn" onclick="_opCloseSuggestOverlay()">Cancel</button>
     <button id="op-suggest-regen-with-context-btn" class="modal-confirm-btn" onclick="_opRunSuggestExperiment('${e(fid)}',document.getElementById('op-suggest-refine-txt').value.trim())">Generate</button>
   `;
 }
@@ -1322,8 +1349,10 @@ async function _opAcceptSuggestedExperiment(fid){
   }catch(saveErr){
     console.warn('Session save failed after synthesizing Outcome Pulse experiment:',saveErr);
   }
-  const overlay=document.getElementById('op-suggest-overlay');
-  if(overlay)overlay.remove();
+  // v9.25 code-review fix — was a raw .remove() that bypassed
+  // _opCloseSuggestOverlay(), the 5th of the overlay's close paths and the
+  // only one this refactor missed (Accept, not just Cancel/Close/Escape/X).
+  _opCloseSuggestOverlay();
   if(typeof laRebuildSentIdsFromCanvas==='function')laRebuildSentIdsFromCanvas();
   _opNavigateToExperimentCanvasDetail(_runId,0,true);
 }
