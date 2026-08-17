@@ -1,5 +1,14 @@
 # Changelog — AI PM Toolkit
 
+## v9.25 - 2026-08-17: Voice dictation rolled out to Discovery Map and Capability Canvas
+
+- Added - Discovery Map's "Refine Discovery Map" box (#regen-in) and Capability Canvas's "Refine features" box (#cc-feat-refine-txt) now support the same voice dictation as Requirement Agent, via the shared voice-input.js module — same Settings flag, same Connecting/Listening states, same hidden-when-unsupported treatment. Unlike Requirement Agent's persistent chat, clicking each box's own action button (or collapsing Discovery Map's refine bar) automatically stops dictation, since a single-shot refine box has no "next message" for continued dictation to feed.
+- Fixed - Both boxes sit inside functions that rebuild far more often than just "after generating." Discovery Map's renderDiagnosticActionBar() also rebuilds on unrelated stage/capability add/edit/delete actions; Capability Canvas's ccBuildFeatPanel() rebuilds on over a dozen unrelated actions (feature-selection toggles, feature edit/remove, live-sync remote updates) and ccCloseFeatPanel() removes the panel outright on close. Any of these would otherwise silently destroy an active dictation session with no visible symptom — confirmed via tracing each surface individually rather than assuming the pattern from one applied to the next. A single guard at the top of each shared rebuild/removal function covers every call site.
+
+## v9.24.02 - 2026-08-17: Voice dictation extracted into a shared module
+
+- Changed - Requirement Agent's voice-dictation logic (the connecting/listening state machine, all cleanup paths, and the manual-edit/interim-transcript merge algorithm) moved out of requirement-agent.js into a new shared scripts/voice-input.js, so other AI-refine text boxes across the app can attach to the same battle-tested implementation instead of each getting a bespoke reimplementation. Pure internal refactor — Requirement Agent's voice input behaves identically to v9.24.01, verified against its full existing test checklist plus the live-sync forced-kickout path.
+
 ## v9.24.01 - 2026-08-17: Requirement Agent voice dictation — tab/window backgrounding leak
 
 - Fixed - Live voice dictation in Requirement Agent kept capturing and transcribing indefinitely after switching to a different browser tab or application (window backgrounded but not closed) — none of v9.24's four cleanup paths react to browser-level visibility, only in-app navigation, so nothing stopped it. Added a `document.visibilitychange` listener that stops the session immediately (no auto-resume when the tab becomes visible again — resuming a third-party audio capture silently would be the wrong default).

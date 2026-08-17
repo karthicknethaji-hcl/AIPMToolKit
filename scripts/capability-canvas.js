@@ -1713,6 +1713,16 @@ function ccRenderMainContent(){
 
 // ── Build right panel HTML for a capability ──
 function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
+  // v9.25 — this "pure" string builder gets an intentional side effect:
+  // confirmed via tracing that EVERY call site (capability switch, feature-
+  // selection toggle, feature edit/remove, live-sync remote update, and
+  // more — over a dozen sites) immediately assigns its return value to
+  // replace #cc-feat-panel's live DOM content, directly or nested inside a
+  // caller's larger template. A single guard here, rather than
+  // instrumenting each call site individually, covers all of them at once
+  // and can't be missed by a future one. voiceStopActive() is a safe no-op
+  // if #cc-feat-refine-txt isn't the active dictation instance.
+  voiceStopActive('abort');
   // metricKey param added to avoid relying on capActiveMetricKey which is null in All Caps view
   // Fall back to capActiveMetricKey for callers that don't pass it yet
   const _mk=metricKey||(capActiveMetricKey)||'';
@@ -1819,9 +1829,12 @@ function ccBuildFeatPanel(entry,cap,capIdx,metricKey){
       <textarea class="cc-chat-input" id="cc-feat-refine-txt" rows="2" placeholder="${features?(isPIFirst?'e.g. Add a feature for guest checkout...':'e.g. Focus on mobile only, avoid enterprise features...'):'e.g. Focus on self-serve setup, avoid enterprise-only features...'}"></textarea>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
         <span class="cc-chat-hint">↵ send</span>
-        <button class="cc-chat-send" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},document.getElementById('cc-feat-refine-txt').value.trim(),null,{triggerEl:this})" aria-label="Generate or refine features">
-          <i class="ti ti-arrow-up" style="font-size:12px;" aria-hidden="true"></i>
-        </button>
+        <div class="cc-chat-btn-group">
+          ${(typeof voiceButtonHtml==='function')?voiceButtonHtml({textareaId:'cc-feat-refine-txt',buttonId:'cc-feat-voice-btn',statusId:'cc-feat-voice-status'}):''}
+          <button class="cc-chat-send" onclick="ccGenerateFeaturesForCapClick('${e(_mk)}',${capIdx},document.getElementById('cc-feat-refine-txt').value.trim(),null,{triggerEl:this})" aria-label="Generate or refine features">
+            <i class="ti ti-arrow-up" style="font-size:12px;" aria-hidden="true"></i>
+          </button>
+        </div>
       </div>
     </div>
   </div>`:''}
@@ -3330,6 +3343,12 @@ async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverrid
 // somewhere to land instead of surfacing as a console error. Every direct
 // onclick caller should use this wrapper, not the function directly.
 function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride,ctx){
+  // v9.25 — stop-on-send: refinement (above) is already read synchronously
+  // from #cc-feat-refine-txt's live value in the onclick attribute, before
+  // this function runs, so stopping here doesn't affect what was captured.
+  // No "next message" for continued dictation to feed once this fires,
+  // unlike Requirement Agent's persistent chat.
+  voiceStopActive('abort');
   if(typeof canEditSession==='function'&&!canEditSession())return Promise.resolve();
   return ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride,ctx).catch(function(err){
     console.warn('[cc] generate features click handler error:', err);
@@ -4102,6 +4121,12 @@ function ccCloseFeatPanelUserAction(){
 }
 
 function ccCloseFeatPanel(){
+  // v9.25 — rp.remove() below is a SEPARATE destruction mechanism from
+  // ccBuildFeatPanel()'s own guard (that one covers rebuilds; this one
+  // covers outright removal) — called from the explicit close button, the
+  // toggle-close-same-capability path, and live-sync's panelShouldClose
+  // branch. voiceStopActive() is a safe no-op if not active.
+  voiceStopActive('abort');
   // Only null capActiveCapIdx when in metric-specific view (not All Caps)
   if(capActiveMetricKey!==null) capActiveCapIdx=null;
   ccPanelCapKey=null;

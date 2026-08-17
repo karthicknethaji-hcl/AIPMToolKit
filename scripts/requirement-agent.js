@@ -29,7 +29,7 @@
 // call site in home.js's homeClearSession())
 // ══════════════════════════════════════════════════════════════════════════
 function raResetState(){
-  // v9.24 — a mic session left listening must not survive into whichever
+  // v9.24.02 — a mic session left listening must not survive into whichever
   // session is opened next. This is the SOLE cleanup point that fires during
   // homeClearSession()'s live-sync kickout path (home.js wipes #ra-tab's
   // innerHTML BEFORE calling this — raRenderCenter()'s own guard never runs
@@ -37,7 +37,8 @@ function raResetState(){
   // assumed. abort(), not stop(): a stray final result landing after the
   // session was "cleared" would write into whatever textarea DOM happens to
   // exist next, which could belong to a different session entirely.
-  if(typeof raVoiceListening!=='undefined'&&raVoiceListening&&typeof _raVoiceStop==='function')_raVoiceStop('abort');
+  // voiceStopActive() is a safe no-op if this surface isn't the active one.
+  voiceStopActive('abort');
   // Confirmed pre-existing bug (predates the Discovery-First redesign):
   // this used to hardcode raEnabled=false unconditionally, so every
   // session relaunch after the first one in a browser tab reset raEnabled
@@ -650,225 +651,19 @@ function raSaveRename(id){
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// Voice dictation (v9.24) — browser-native SpeechRecognition, gated behind
-// appSettings.featVoiceInput (default false, pending legal sign-off — see
-// state.js) AND feature detection. Dictation streams live into the EXISTING
-// #ra-chat-input textarea; Send still gates the commit through the
-// unchanged _raRunTurn() pipeline — no new AI/prompt work. All state below
-// is view-scoped only, never persisted (mirrors raFilterState/raPanelOpen
-// above) — a SpeechRecognition instance cannot be serialized, and never
-// belongs on conv{} (see _sessionStoreBuildSnapshot()'s raConversations
-// field — confirmed via session-store.js that only conv{} data survives a
-// snapshot/restore).
-// ══════════════════════════════════════════════════════════════════════════
-var raVoiceListening=false;       // mic toggle state — "is the feature on", checked by every cleanup hook
-var _raVoiceUiState=null;         // null | 'connecting' | 'listening' — finer-grained than raVoiceListening: whether the browser has ACTUALLY started capturing audio yet (distinct from raVoiceToggle() merely having called .start(), which is async and can sit behind the browser's own first-use mic-permission prompt). Drives the button/status-label visual only.
-var _raVoiceRecognition=null;     // live SpeechRecognition instance, or null
-var _raVoiceCommittedBase='';     // textarea value as of the last finalized speech segment
-var _raVoiceLastWrittenValue=null;// last value THIS module wrote — used to detect a manual edit between ticks
-var _raVoiceRestartGuard=false;   // true once a permanent error fires — blocks onend's auto-restart
-
-function _raVoiceSupported(){
-  return typeof window!=='undefined'&&!!(window.SpeechRecognition||window.webkitSpeechRecognition);
-}
-
-// Constructs a fresh recognizer per toggle-on (not reused across sessions —
-// simplest lifecycle, avoids stale-handler questions on a long-lived object).
-function _raVoiceInit(){
-  var Ctor=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!Ctor)return null;
-  var rec=new Ctor();
-  rec.continuous=true;
-  rec.interimResults=true;
-  rec.lang='en-US';
-  rec.onstart=_raVoiceOnStart;
-  rec.onresult=_raVoiceOnResult;
-  rec.onerror=_raVoiceOnError;
-  rec.onend=_raVoiceOnEnd;
-  return rec;
-}
-
-// Click handler for the mic button (#ra-voice-btn, rendered in
-// raRenderCenter() below, only when featVoiceInput is on AND the browser
-// supports it — per this codebase's standing "hidden, never disabled" rule
-// for standalone action buttons, the button is simply absent otherwise).
-function raVoiceToggle(){
-  if(raVoiceListening){
-    // User-initiated stop — stop(), not abort(): no reason to discard audio
-    // the PM just finished speaking on purpose, unlike the involuntary
-    // cleanup paths below (flag flip, tab leave, session clear, re-render).
-    _raVoiceStop('stop');
-    return;
-  }
-  if(!_raVoiceSupported())return;
-  var input=document.getElementById('ra-chat-input');
-  if(!input)return;
-  // Resync from the textarea's LIVE value, not a stale snapshot — covers
-  // resuming dictation after a manual edit made while the mic was off.
-  _raVoiceCommittedBase=input.value||'';
-  _raVoiceLastWrittenValue=_raVoiceCommittedBase;
-  _raVoiceRestartGuard=false;
-  _raVoiceRecognition=_raVoiceInit();
-  if(!_raVoiceRecognition)return;
-  try{
-    _raVoiceRecognition.start();
-    raVoiceListening=true;
-    _raVoiceUiState='connecting'; // flips to 'listening' on the recognizer's own onstart event below, not here — start() is async
-    _raVoiceRenderButtonState();
-  }catch(e){
-    console.warn('[requirement-agent] voice start failed',e);
-    _raVoiceRecognition=null;
-  }
-}
-
-// Shared stop path for every cleanup call site. method:'stop' lets any audio
-// already being processed finish and fire a final onresult; method:'abort'
-// discards anything in flight immediately, no further results fire. Every
-// INVOLUNTARY cleanup path (settings flag flip, tab-away, session clear,
-// conversation switch/re-render) uses 'abort' — none of them should let a
-// trailing result land in a context the PM has already left or that no
-// longer has the feature enabled. Idempotent: safe to call with nothing
-// active (multiple cleanup hooks can legitimately fire in the same tick,
-// e.g. the live-sync kickout path calls raResetState() then switchTab()'s
-// own leave-hook fires right after).
-function _raVoiceStop(method){
-  raVoiceListening=false;
-  _raVoiceUiState=null;
-  var rec=_raVoiceRecognition;
-  _raVoiceRecognition=null;
-  if(rec){
-    try{
-      if(method==='abort'&&typeof rec.abort==='function')rec.abort();
-      else rec.stop();
-    }catch(e){/* already stopped/errored — safe no-op */}
-  }
-  _raVoiceRenderButtonState();
-}
-
-// Light-touch visual update — deliberately does NOT call raRenderCenter()
-// (that would rebuild #ra-chat-input from scratch and immediately trip its
-// own voice-stop guard below, killing the session this function is trying
-// to reflect as started).
-function _raVoiceRenderButtonState(){
-  var btn=document.getElementById('ra-voice-btn');
-  if(btn){
-    btn.classList.toggle('ra-voice-listening',raVoiceListening&&_raVoiceUiState==='listening');
-    btn.classList.toggle('ra-voice-connecting',raVoiceListening&&_raVoiceUiState==='connecting');
-    btn.title=raVoiceListening?'Stop dictation':'Start dictation';
-  }
-  var statusEl=document.getElementById('ra-voice-status');
-  if(statusEl){
-    statusEl.textContent=!raVoiceListening?'':(_raVoiceUiState==='listening'?'Listening…':'Connecting…');
-  }
-}
-
-// Fires once the browser has ACTUALLY started capturing audio — the real
-// signal raVoiceToggle()'s call to .start() can't give on its own, since
-// .start() is async and can sit behind the browser's own mic-permission
-// prompt on first use. Without this the button would show "listening" for
-// however long that prompt takes to resolve, a misleading signal confirmed
-// via live testing, not just cosmetic polish.
-function _raVoiceOnStart(){
-  _raVoiceUiState='listening';
-  _raVoiceRenderButtonState();
-}
-
-function _raVoiceOnResult(event){
-  var input=document.getElementById('ra-chat-input');
-  if(!input)return; // torn down mid-flight (e.g. a cleanup hook's DOM wipe raced this event) — safe no-op
-  // Manual-edit detection: if the textarea's current value doesn't match the
-  // last value THIS module wrote, the PM typed/edited manually since the
-  // last tick — resync the base to their edit instead of clobbering it on
-  // this tick's overlay.
-  if(_raVoiceLastWrittenValue!==null&&input.value!==_raVoiceLastWrittenValue){
-    _raVoiceCommittedBase=input.value;
-  }
-  var interim='',finalChunk='';
-  for(var i=event.resultIndex;i<event.results.length;i++){
-    var res=event.results[i];
-    if(res.isFinal)finalChunk+=res[0].transcript;
-    else interim+=res[0].transcript;
-  }
-  if(finalChunk){
-    var sep=(_raVoiceCommittedBase&&!/\s$/.test(_raVoiceCommittedBase))?' ':'';
-    _raVoiceCommittedBase=_raVoiceCommittedBase+sep+finalChunk.trim();
-  }
-  var display=interim?(_raVoiceCommittedBase+((_raVoiceCommittedBase&&!/\s$/.test(_raVoiceCommittedBase))?' ':'')+interim):_raVoiceCommittedBase;
-  input.value=display;
-  _raVoiceLastWrittenValue=display;
-}
-
-// Distinct, honest toast per error type — never collapsed into one generic
-// message. not-allowed/service-not-allowed are PERMANENT (permission denied
-// outright) — onend's auto-restart below must never retry these, or a
-// revoked mic produces a tight error/restart loop.
-function _raVoiceOnError(event){
-  var err=event&&event.error;
-  var permanent=(err==='not-allowed'||err==='service-not-allowed');
-  var messages={
-    'no-speech':'No speech detected — dictation is still listening.',
-    'audio-capture':'No microphone found.',
-    'not-allowed':'Microphone access denied. Enable it in your browser settings to use dictation.',
-    'service-not-allowed':'Microphone access denied. Enable it in your browser settings to use dictation.',
-    'network':'Dictation lost its network connection.'
-  };
-  if(typeof showToast==='function')showToast(messages[err]||'Dictation error — stopped listening.','warn');
-  if(permanent){
-    _raVoiceRestartGuard=true;
-    _raVoiceStop('abort'); // permission genuinely gone — nothing in flight is worth waiting on
-  }
-}
-
-// Chrome silently ends the recognition session after a few seconds of
-// silence even with continuous:true — auto-restart unless the PM explicitly
-// toggled off (raVoiceListening false) or a permanent error already fired
-// above (restart guard set, e.g. mic access revoked mid-session).
-// Deliberately does NOT reset _raVoiceUiState back to 'connecting' — this
-// restart is an internal implementation detail invisible to the PM, who
-// never stopped dictating; flashing "Connecting…" on every silence-timeout
-// cycle would be worse than not showing the label at all.
-function _raVoiceOnEnd(){
-  if(raVoiceListening&&!_raVoiceRestartGuard&&_raVoiceRecognition){
-    try{_raVoiceRecognition.start();}
-    catch(e){_raVoiceStop('abort');}
-  }
-}
-
-// 5th involuntary teardown path, distinct from the four inside
-// raRenderCenter()/raResetState()/switchTab()/applyFeats() above: none of
-// those react to the BROWSER tab/window itself losing visibility while the
-// page keeps running in the background (switching to a different browser
-// tab/app, or minimizing) — confirmed via live testing that this silently
-// leaves dictation capturing and transcribing indefinitely into the
-// still-live (just visually hidden) #ra-chat-input, since nothing else in
-// this app reacts to tab/window visibility (confirmed via grep — no other
-// visibilitychange/blur listener exists anywhere in this codebase, so
-// there is no existing pattern to reuse here). Distinct from the earlier,
-// correctly-dismissed "tab close" non-gap — a closed tab lets the browser
-// reclaim the mic on its own; a backgrounded-but-open tab does not. No
-// auto-resume when the tab becomes visible again, by design: every other
-// involuntary path here is one-way too, and silently resuming a
-// third-party audio capture the instant a PM tabs back in would be the
-// wrong default for a feature gated specifically because that capture
-// leaves this app's own governed boundary. Registered once, at script
-// load — not inside a function that re-runs per render.
-document.addEventListener('visibilitychange',function(){
-  if(document.hidden&&raVoiceListening)_raVoiceStop('abort');
-});
-
-// ══════════════════════════════════════════════════════════════════════════
 // Center (chat) + right (live draft) — rendered together per active conv
 // ══════════════════════════════════════════════════════════════════════════
 function raRenderCenter(){
-  // v9.24 — confirmed via grep this is the ONLY function (3 call sites, all
-  // in this file: tab-entry shell render, raOpenConversation(),
+  // v9.24.02 — confirmed via grep this is the ONLY function (3 call sites,
+  // all in this file: tab-entry shell render, raOpenConversation(),
   // raNewConversation()) that rebuilds #ra-chat-input's DOM node from
   // scratch. abort(), not stop(): the old node is about to be discarded
   // regardless, and letting a trailing result land would write into
   // whichever NEW conversation's textarea replaces it — the exact
   // dictation-bleeds-into-a-different-conversation bug this guard exists
-  // to prevent.
-  if(raVoiceListening)_raVoiceStop('abort');
+  // to prevent. voiceStopActive() is a safe no-op if voice input isn't
+  // active, or if some other surface (not this one) is the active instance.
+  voiceStopActive('abort');
   var center=document.getElementById('ra-center');
   var right=document.getElementById('ra-right');
   if(!center||!right)return;
@@ -890,10 +685,7 @@ function raRenderCenter(){
       :'<div class="ra-chat-input-wrap"><div class="ra-chat-input-row">'
         +'<textarea class="ra-chat-input" id="ra-chat-input" rows="1" placeholder="Type your response..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();raSendMessage();}"></textarea>'
         +'<div class="ra-chat-btn-group">'
-          +((typeof appSettings!=='undefined'&&appSettings&&appSettings.featVoiceInput&&_raVoiceSupported())
-            ?('<button class="ra-voice-btn'+((raVoiceListening&&_raVoiceUiState==='listening')?' ra-voice-listening':(raVoiceListening?' ra-voice-connecting':''))+'" id="ra-voice-btn" onclick="raVoiceToggle()" title="'+(raVoiceListening?'Stop dictation':'Start dictation')+'"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>'
-              +'<span class="ra-voice-status" id="ra-voice-status">'+(raVoiceListening?(_raVoiceUiState==='listening'?'Listening…':'Connecting…'):'')+'</span>')
-            :'')
+          +voiceButtonHtml({textareaId:'ra-chat-input',buttonId:'ra-voice-btn',statusId:'ra-voice-status'})
           +'<button class="ra-chat-send" id="ra-send-btn" onclick="raSendMessage()" title="Send"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>'
         +'</div>'
       +'</div>'

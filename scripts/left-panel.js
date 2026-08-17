@@ -17,17 +17,19 @@ function applyFeats(){
   featOutcomePulse = appSettings.featOutcomePulse;
   featRA = appSettings.featRA;
 
-  // v9.24 — Requirement Agent voice dictation kill-switch. Settings opens as
-  // a pure overlay (openSettingsPage()/closeSettingsPage() never call
-  // switchTab() — confirmed by reading both directly), so flipping this flag
-  // off while dictation is active would otherwise leave the mic running
-  // indefinitely underneath the Settings page, with no other hook to catch
-  // it. abort(), not stop(): no audio already in flight may be processed
-  // after the flag flip — this flag exists specifically pending legal
-  // sign-off on a third-party audio data flow, so the cutoff must be
-  // immediate and absolute, not "finish what you were already saying."
-  if(!appSettings.featVoiceInput&&typeof _raVoiceStop==='function'&&typeof raVoiceListening!=='undefined'&&raVoiceListening){
-    _raVoiceStop('abort');
+  // v9.24 — voice dictation kill-switch. Settings opens as a pure overlay
+  // (openSettingsPage()/closeSettingsPage() never call switchTab() —
+  // confirmed by reading both directly), so flipping this flag off while
+  // dictation is active would otherwise leave the mic running indefinitely
+  // underneath the Settings page, with no other hook to catch it. abort(),
+  // not stop(): no audio already in flight may be processed after the flag
+  // flip — this flag exists specifically pending legal sign-off on a
+  // third-party audio data flow, so the cutoff must be immediate and
+  // absolute, not "finish what you were already saying." v9.24.02 — now the
+  // shared voice-input.js module, app-wide: this one call covers every
+  // attached surface, not just Requirement Agent.
+  if(!appSettings.featVoiceInput){
+    voiceStopActive('abort');
   }
 
   // #tab-dd retired — no longer a tab. DD is download-only panel triggered from KPI tree.

@@ -241,6 +241,10 @@
 .cc-chat-input{flex:1;border:1px solid var(--divider);border-radius:6px;padding:7px 9px;font-size:11px;color:var(--t1);resize:none;min-height:38px;line-height:1.4;}
 .cc-chat-input:focus{outline:none;border-color:var(--purple);}
 .cc-chat-hint{font-size:9px;color:var(--label);text-align:right;}
+/* Mic (shared voice-input.js, styles/25-voice-input.css) grouped tightly
+   with Send, sitting below the "↵ send" hint. position:relative anchors
+   .vi-status's absolute positioning. */
+.cc-chat-btn-group{display:flex;gap:4px;position:relative;}
 .cc-chat-send{background:var(--purple);border:none;border-radius:6px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;flex-shrink:0;}
 .cc-chat-send:hover{background:var(--purple-deep);}
 .cc-chat-send:disabled{opacity:0.4;cursor:not-allowed;}

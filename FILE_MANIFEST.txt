@@ -57,6 +57,7 @@ state.js
 story-canvas-new.js
 team-management.js
 utils.js
+voice-input.js                ← v9.24.02; shared browser-native voice dictation module, extracted from requirement-agent.js's original single-surface build
 
 ## styles/
 00-tokens.css
@@ -84,6 +85,7 @@ utils.js
 22-guided-launch.css
 23-requirement-agent.css
 24-readiness-canvas.css       ← v9.21; Adoption Readiness screen flow + lineage drawer + Outcome Pulse By Stage/By Release toggle
+25-voice-input.css            ← v9.24.02; mic button + status label styling shared by every voice-dictation surface
 
 ## assets/
 prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/
