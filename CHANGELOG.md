@@ -1,5 +1,9 @@
 # Changelog — AI PM Toolkit
 
+## v9.25.06 - 2026-08-18: False "Dictation error" toast on every intentional stop
+
+- Fixed - Every deliberate voice-dictation stop (stop-on-send on any AI-refine surface, tab-leave, session-clear, tab/window backgrounding) showed a "Dictation error — stopped listening." toast, since calling rec.abort() always fires a browser 'error' event with error:'aborted' immediately beforehand (per the Web Speech API spec), and _viOnError() had no special case for it - it fell through to the generic error message meant for genuine failures (no-speech, no mic, permission denied, network loss). Added an early return for 'aborted' in scripts/voice-input.js's _viOnError(), since that code only ever fires as the direct result of our own intentional abort() calls, never an unrelated failure. One shared-module fix covers every surface at once, not just Requirement Agent (where it was first reported, once RA's stop-on-send started calling abort() as frequently as every other surface already did).
+
 ## v9.25.05 - 2026-08-18: Code-review fixes on v9.25.04
 
 - Fixed - raSendMessage()/raQuickReplyClick() called voiceStopActive('abort') before their own empty-text/empty-answer guards, so a stray Enter on an empty Requirement Agent textarea (or an invalid quick-reply click) while dictating silently killed the mic even though nothing was sent - the same class of bug capability-canvas.js's ccGenerateFeaturesForCapClick() was already fixed for once (guard-before-stop). Centralized the call inside the existing shared _raSubmitUserMessage() choke point instead, placed after its own !text guard, so both callers - and any future third submit path - get a correctly-guarded single copy instead of two independently-ordered ones.

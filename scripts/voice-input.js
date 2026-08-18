@@ -233,6 +233,13 @@ function _viOnResult(event,attemptId){
 function _viOnError(event,attemptId){
   if(!_viActive||_viActive.attemptId!==attemptId)return;
   var err=event&&event.error;
+  // v9.25.06 — 'aborted' fires whenever OUR OWN code calls rec.abort() (per
+  // spec, immediately before 'end'), which is every deliberate stop-on-send/
+  // tab-leave/session-clear/etc. across every surface in the app — never a
+  // genuine failure. Falling through to the generic toast below showed
+  // "Dictation error — stopped listening." on every intentional stop, which
+  // is exactly backwards: the PM asked for this, it isn't an error.
+  if(err==='aborted')return;
   var permanent=(err==='not-allowed'||err==='service-not-allowed');
   var messages={
     'no-speech':'No speech detected — dictation is still listening.',
