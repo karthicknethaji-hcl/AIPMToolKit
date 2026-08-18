@@ -1046,6 +1046,21 @@ async function raRunOpeningTurn(conv){
 // copies of the same three lines.
 async function _raSubmitUserMessage(conv,text){
   if(!conv||raBusy||conv.status!=='draft'||!text)return;
+  // v9.25.04 — stop-on-send (product decision), centralized here rather
+  // than duplicated in raSendMessage()/raQuickReplyClick(): RA's mic
+  // previously stayed listening across Sends by design (a multi-turn chat,
+  // unlike every other single-shot AI-refine box's own stop-on-send), but
+  // that was reported as unexpected in practice. Placing the call AFTER
+  // the guard above (not in each caller, before their own guards) matters:
+  // a code-review pass on the first version of this fix found it firing
+  // before the empty-text/empty-answer checks in both callers, silently
+  // killing an active dictation session on a no-op Enter press or stray
+  // click — the exact class of bug capability-canvas.js's
+  // ccGenerateFeaturesForCapClick() was already fixed for once before
+  // (guard-before-stop). Since this function is the single choke point
+  // both callers route through, one guarded call here covers both, and
+  // any future third submit path automatically inherits it too.
+  voiceStopActive('abort');
   if(_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
   raAppendMessage(conv,'user',text);
   await _raRunTurn(conv,text);
@@ -1058,14 +1073,6 @@ async function raSendMessage(){
   // pure no-op that leaves whatever they were typing untouched, not
   // silently clear it out from under them.
   if(raBusy)return;
-  // v9.25.03 — stop-on-send (product decision): RA's mic previously stayed
-  // listening across Sends by design (a multi-turn chat, unlike every
-  // other single-shot AI-refine box's own stop-on-send), but that was
-  // reported as unexpected in practice. Now matches every other surface's
-  // convention exactly. abort(), not stop() — the text below is already
-  // read synchronously from the live textarea value in the same tick, so
-  // stopping here doesn't affect what was captured.
-  voiceStopActive('abort');
   var conv=_raActiveConv();
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
@@ -1080,9 +1087,6 @@ async function raSendMessage(){
 function raQuickReplyClick(btnEl){
   var conv=_raActiveConv();
   if(!conv||raBusy||conv.status!=='draft')return;
-  // v9.25.03 — same stop-on-send as raSendMessage(): a quick-reply click is
-  // also a message submission, just via a chip instead of the textarea.
-  voiceStopActive('abort');
   var answer=btnEl.dataset.answer;
   if(!answer)return;
   // Remove the whole quick-reply block immediately - confirms the pick

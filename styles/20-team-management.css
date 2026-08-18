@@ -88,12 +88,16 @@
 .tm-menu-item-expand .ti-chevron-right {
   font-size: 10px;
   color: var(--t3);
-  /* v9.25.03 — pin the chevron to the right via margin instead of
-     justify-content:space-between on the row: with 3 flat flex children
-     (icon, text, chevron) and no wrapping span, space-between distributed
-     leftover width into BOTH gaps, inflating the icon-text spacing past
-     the intended 8px .tm-menu-item gap. margin-left:auto only consumes
-     space before this element, leaving the icon-text gap untouched. */
+}
+/* v9.25.03/v9.25.04 — pin the row's trailing element to the right via
+   margin instead of justify-content:space-between on .tm-menu-item-expand
+   itself: with 3 flat flex children (icon, text, trailing element) and no
+   wrapping span, space-between distributed leftover width into BOTH gaps,
+   inflating the icon-text spacing past the intended 8px .tm-menu-item gap.
+   Targets :last-child generically (not .ti-chevron-right specifically) so
+   any future .tm-menu-item-expand row's trailing element gets this for
+   free, not just the two rows that happen to use a chevron today. */
+.tm-menu-item-expand > *:last-child {
   margin-left: auto;
 }
 /* Drill-in submenu - replaces the open popover's own content in place

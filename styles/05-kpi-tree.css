@@ -258,24 +258,24 @@ table.dt th:nth-child(7){width:17%;}
 .stage-modal-save.destructive{background:var(--red);}
 .stage-modal-save.destructive:hover:not(:disabled){background:#8a2020;}
 
-/* Base trigger pill — restored v9.25.03 after being deleted along with
-   styles/07-capability-drawer.css; still consumed by kpi-tree.js's and
-   diagnostic-view.js's live Dictionary/Evidence trigger buttons on L1/L2/L3
-   metric rows (class="cap-trigger cap-trigger-ev/-dd [cap-trigger-sm/-xs]"),
-   which are unrelated to the (now-deleted) capability drawer feature. */
+/* Base trigger pill — SHARED, cross-feature component; do not delete
+   alongside any single feature's own CSS. Restored v9.25.03 after being
+   deleted along with styles/07-capability-drawer.css; confirmed live
+   consumers as of v9.25.04 (re-verified via full-repo grep, not memory):
+   scripts/kpi-tree.js and scripts/diagnostic-view.js (render the
+   class="cap-trigger cap-trigger-ev/-dd [cap-trigger-sm/-xs]" buttons
+   themselves) AND scripts/left-panel.js (applyFeats()'s
+   querySelectorAll('.cap-trigger') reset) — all unrelated to the
+   (now-deleted) capability drawer feature this file also happens to own. */
 .cap-trigger{display:none;font-family:var(--font)!important;font-size:9px!important;font-weight:700;color:var(--purple);background:var(--card-purple);border:1px solid #CECBF6;border-radius:10px;padding:2px 9px;cursor:pointer;transition:all 0.12s;white-space:nowrap;margin:0 8px 6px auto;}
 .l1-trigger-row .cap-trigger{margin:0;width:fit-content;display:none;}
 .cap-trigger:hover{background:var(--purple);color:#fff;}
 .l1:hover .cap-trigger{display:flex;width:fit-content;}
 .l1:hover .l1-trigger-row{display:flex;}
-.l1.cap-active{border-color:var(--purple);border-width:2px;box-shadow:0 0 0 3px rgba(95,30,190,0.12);}
-.l1.cap-active .cap-trigger{display:flex;width:fit-content;}
 .l2:hover .cap-trigger{display:flex;width:fit-content;}
 .l3:hover .cap-trigger,.l3.has-l4:hover .cap-trigger{display:flex;width:fit-content;}
 .cap-trigger-sm{font-size:8px!important;padding:1px 7px;margin:4px 0 2px auto;}
 .cap-trigger-xs{font-size:8px!important;padding:1px 6px;margin:3px 0 0 auto;}
-.l2.cap-active{border-color:var(--purple);border-width:1.5px;}
-.l3.cap-active{border-color:var(--purple);border-width:1.5px;}
 
 /* Evidence CTA trigger — same visual weight as Dictionary */
 .cap-trigger-ev{background:var(--card-purple);color:var(--purple);border-color:#CECBF6;}
