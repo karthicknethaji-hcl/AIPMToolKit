@@ -173,7 +173,13 @@ function normalizeAIHypothesis(raw){
 function scTbKebabTopHtml(){
   const canEdit=(typeof canEditSession!=='function')||canEditSession();
   const addFeatRow=canEdit
-    ?'<div class="tm-menu-item tm-menu-item-expand" role="menuitem" tabindex="-1" onclick="event.stopPropagation();scTbKebabDrillAddFeature()"><span><i class="ti ti-plus" aria-hidden="true"></i> Add Feature</span><i class="ti ti-chevron-right" aria-hidden="true"></i></div>'
+    // v9.25.03 — dropped the <span> wrapper around icon+text: with
+    // .tm-menu-item-expand's justify-content:space-between removed (see
+    // 20-team-management.css), the span is no longer needed to protect
+    // icon-text spacing from space-between, and kept it inconsistent with
+    // this same menu's own Export row and CC's Add Capability row (all
+    // three now share flat icon/text/chevron markup and the same 8px gap).
+    ?'<div class="tm-menu-item tm-menu-item-expand" role="menuitem" tabindex="-1" onclick="event.stopPropagation();scTbKebabDrillAddFeature()"><i class="ti ti-plus" aria-hidden="true"></i> Add Feature <i class="ti ti-chevron-right" aria-hidden="true"></i></div>'
     :'';
   const exportDisabled=scCanvas.length===0||fcExportInFlight;
   const exportAttrs=exportDisabled?' aria-disabled="true" tabindex="-1" style="opacity:0.5;cursor:not-allowed;"':' tabindex="-1"';
@@ -337,55 +343,6 @@ function scMakeFeatureId(metric,cap,feat){
   return (metric+'|'+cap+'|'+feat).replace(/['"]/g,'');
 }
 
-// ── Toggle feature on/off canvas from cap drawer ──
-// Reads feature data from parent element's data-* attributes — avoids inline string escaping bugs
-function scToggleFeatureFromDrawer(checkEl){
-  const item=checkEl.closest('[data-fid]');
-  if(!item)return;
-  // Outcome Verification Loop (Phase A/B): look up the live hypothesis from
-  // capStore by identity (metric key + cap name + feature name) rather than
-  // serializing a nested object into a data-* attribute — avoids having to
-  // JSON-stringify + escape a whole object into HTML, and stays consistent
-  // with every other field on this element being a flat string. capStore is
-  // the drawer's own live in-memory source, so this lookup is always fresh
-  // at the moment of toggle, never a stale copy.
-  const _hyp=(typeof scFindDrawerFeatureHypothesis==='function')
-    ?scFindDrawerFeatureHypothesis(item.dataset.metric,item.dataset.cap,item.dataset.fname)
-    :null;
-  scToggleFeature(
-    item.dataset.fid,
-    item.dataset.metric,
-    item.dataset.stage,
-    item.dataset.cap,
-    item.dataset.fname,
-    item.dataset.fwhy,
-    checkEl,
-    _hyp
-  );
-}
-
-// ── Outcome Verification Loop: capStore hypothesis lookup for drawer toggle ──
-// capStore is keyed by stageId+'||'+metricName (KPI-linked) or 'pi||'+capName
-// (PI-first) — see PROJECT_MAP.md's capStore structure. This does a linear
-// scan across capStore entries matching on cap name + feature name, since the
-// drawer's data-* attributes don't carry the exact capStore key. Cheap in
-// practice — capStore entries and their feature lists are both small (tens,
-// not thousands, of items) for any real product.
-function scFindDrawerFeatureHypothesis(metric,capName,featName){
-  if(typeof capStore==='undefined'||!capStore)return null;
-  for(const entry of Object.values(capStore)){
-    if(!entry||!entry.capabilities)continue;
-    const cap=entry.capabilities.find(c=>c.name===capName);
-    if(!cap||!cap.featStore)continue;
-    for(const feats of Object.values(cap.featStore)){
-      if(!Array.isArray(feats))continue;
-      const f=feats.find(x=>x.name===featName);
-      if(f&&f.outcomeHypothesis)return f.outcomeHypothesis;
-    }
-  }
-  return null;
-}
-
 function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothesis){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const idx=scCanvas.findIndex(x=>x.id===fid);
@@ -426,8 +383,13 @@ function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothes
 }
 
 function scUpdateCapDrawerFooter(){
+  // capability-drawer.js (and its #cap-drawer-footer/#cap-canvas-count-num
+  // markup) was removed as dead code — this function is still called from
+  // several unrelated feature-mutation call sites below, so guard rather
+  // than remove those call sites.
   const footer=document.getElementById('cap-drawer-footer');
   const count=document.getElementById('cap-canvas-count-num');
+  if(!footer||!count)return;
   count.textContent=scCanvas.length;
   footer.style.display=scCanvas.length>0?'flex':'none';
 }
@@ -1289,8 +1251,7 @@ function scOpenPanel(fid){
 // mic button. Since #sc-refine-txt's row is static HTML, not JS-template-
 // generated, there's no natural render pass to embed voiceButtonHtml()
 // into the way other surfaces do — this runs once per panel-open instead,
-// which also keeps it in sync with appSettings.featVoiceInput on every
-// open (matching every other surface's own render-time gate check).
+// matching every other surface's own render-time gate check.
 function _scRenderVoiceSlot(){
   const slot=document.getElementById('sc-refine-voice-slot');
   if(slot&&typeof voiceButtonHtml==='function')slot.innerHTML=voiceButtonHtml({textareaId:'sc-refine-txt',buttonId:'sc-refine-voice-btn',statusId:'sc-refine-voice-status'});

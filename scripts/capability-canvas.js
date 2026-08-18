@@ -3127,11 +3127,14 @@ function ccBuildFeatHypChipHTML(f){
   const hasBT=p.baseline!==null&&p.baseline!==undefined&&p.target!==null&&p.target!==undefined;
   const tooltipText=(p.metric||'')+(hasBT?' | '+p.baseline+' \u2192 '+p.target:'');
   // v9.10.02: kept in sync with scBuildOutcomeHypChipHTML's outer/inner
-  // split (Bug 1 fix) — this instance used max-width:none so it wasn't
-  // actually clipping its own tooltip before, but matching the pattern
-  // here anyway avoids a second divergent chip structure for the same
-  // visual component.
-  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}" style="margin-left:0;max-width:none;width:fit-content;"><span class="sc-hyp-chip-inner" style="max-width:none;">${e(label)}</span></span>`;
+  // split (Bug 1 fix).
+  // v9.25.03: removed this instance's max-width:none override on both spans
+  // — with white-space:nowrap still active on .sc-hyp-chip-inner, an
+  // uncapped width let long metric labels overflow past the CC right
+  // panel's edge. Now inherits the shared class's normal 140px+ellipsis
+  // truncation, same as Story Canvas's own chip; the full text remains
+  // available via the tooltip.
+  return`<span class="sc-hyp-chip pgt-tooltip" data-tooltip="${e(tooltipText)}" style="margin-left:0;"><span class="sc-hyp-chip-inner">${e(label)}</span></span>`;
 }
 
 function ccToggleFeatPanel(capIdx,featIdx){
@@ -3352,8 +3355,7 @@ function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride
   // stop-on-send: refinement (above) is already read synchronously from
   // #cc-feat-refine-txt's live value in the onclick attribute, before this
   // function runs, so stopping here doesn't affect what was captured. No
-  // "next message" for continued dictation to feed once this fires, unlike
-  // Requirement Agent's persistent chat.
+  // "next message" for continued dictation to feed once this fires.
   voiceStopActive('abort');
   return ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride,ctx).catch(function(err){
     console.warn('[cc] generate features click handler error:', err);

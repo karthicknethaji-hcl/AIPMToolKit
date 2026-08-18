@@ -400,8 +400,6 @@ async function settingsPageSave() {
   if(modelEl) appSettings.model = modelEl.value;
   const togAis = document.getElementById('sp-tog-ais');
   if(togAis) appSettings.aiStreamingEnabled = _spTogState('ais');
-  const togVi = document.getElementById('sp-tog-vi');
-  if(togVi) appSettings.featVoiceInput = _spTogState('vi');
 
   // Section 2 — Feature Modules (read toggle states)
   const togMd = document.getElementById('sp-tog-md');
@@ -430,7 +428,7 @@ async function settingsPageSave() {
   if(vaEl) appSettings.maxACs       = parseInt(vaEl.textContent) || 3;
   appSettings.includeSubCaps = _spTogState('sc');
 
-  // Section 4 — PI Planning Defaults
+  // Section 4 — Release Planning Defaults
   const vspEl = document.getElementById('sp-vsp');
   const vdEl  = document.getElementById('sp-vd');
   const vqEl  = document.getElementById('sp-vq');
@@ -734,7 +732,7 @@ function spBuildHTML() {
 // ── Nav item HTML ──
 function spNavItem(n) {
   const icons  = {0:'ti-user-circle',1:'ti-building',2:'ti-box-multiple',3:'ti-layout-grid',4:'ti-adjustments-horizontal',5:'ti-calendar-event',6:'ti-users'};
-  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'PI Planning Defaults',6:'Team Management'};
+  const labels = {0:'My Profile',1:'Company Profile &amp; Access',2:'Product Profiles',3:'Feature Modules',4:'Output Depth',5:'Release Planning Defaults',6:'Team Management'};
   const active = _spSection === n;
   return `<div onclick="spNav(${n})" style="display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:11px;font-weight:${active?600:500};color:${active?'#5F1EBE':'#6b6b68'};cursor:pointer;border-left:2px solid ${active?'#5F1EBE':'transparent'};background:${active?'#EEEDFE':'transparent'};font-family:'DM Sans',sans-serif;user-select:none;" id="sp-nav-${n}">
     <i class="ti ${icons[n]}" style="font-size:12px;flex-shrink:0;" aria-hidden="true"></i> ${labels[n]}
@@ -769,7 +767,7 @@ function spNav(n) {
   // permission work in this same change, per external adversarial review —
   // this previously checked n===3||n===4, disagreeing with spBuildHTML's
   // initial-render check of _spSection===4||5. Sections 4 and 5 (Output
-  // Depth, PI Planning Defaults) are the only two with numeric defaults to
+  // Depth, Release Planning Defaults) are the only two with numeric defaults to
   // restore; Feature Modules (3) never should have shown this button.
   if(restBtn) restBtn.style.display = (n===4||n===5) ? 'flex' : 'none';
   // Section 5 manages its own internal scroll — prevent outer wrapper from competing
@@ -895,7 +893,7 @@ function spTogRow(k) {
 }
 function _spReadTogInit(k) {
   // Read from appSettings for known keys
-  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled', vi:'featVoiceInput' };
+  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled' };
   const key = map[k];
   return key ? appSettings[key] : true;
 }
@@ -926,7 +924,7 @@ function _spTitle(n) {
     2:'Product Profiles',
     3:'Feature Modules',
     4:'Output Depth',
-    5:'PI Planning Defaults',
+    5:'Release Planning Defaults',
     6:'Team Management'
   }[n]||'';
 }
@@ -937,7 +935,7 @@ function _spDesc(n) {
     2:'Manage your product workspaces. Each profile feeds the Home tab selector.',
     3:'Control which tabs are available to users. Changes take effect immediately.',
     4:'Locked minimums ensure quality floors. You control the ceiling.',
-    5:'Default values pre-loaded when PI Planning opens. Users can override in the PI panel.',
+    5:'Default values pre-loaded when Release Canvas opens. Users can override in the Release Canvas panel.',
     6:'Invite, manage roles, and remove people from this company.'
   }[n]||'';
 }
@@ -1309,14 +1307,6 @@ function spP1() {
     _spTog('ais', appSettings.aiStreamingEnabled),
     'Experimental — off by default.',
     true
-  )}
-
-  ${_spRow(
-    'Voice Input (Requirement Agent)',
-    'Lets a PM dictate into Requirement Agent\'s chat box instead of typing. Speech is processed by your browser\'s vendor (e.g. Chrome sends audio to Google) — not by this app\'s own AI provider.',
-    _spTog('vi', appSettings.featVoiceInput),
-    'Experimental — off by default.',
-    true
   )}`;
 }
 
@@ -1361,7 +1351,7 @@ function spP2() {
   ${_spModRow('op','ti-activity','#EEEDFE','#5F1EBE','Outcome Pulse','Track feature outcome hypotheses against actual results, with a leadership-facing rollup',appSettings.featOutcomePulse)}
   ${_spModRow('md','ti-table','#DCE6F0','#0F5FDC','Metrics Dictionary','Dictionary of all KPI tree metrics with benchmarks and red flags',appSettings.featDD)}
   ${_spModRow('pd','ti-microscope','#e6f4f1','#007873','Experiment Canvas','Evidence collection and product leak analysis on your Discovery Map',appSettings.featDiag)}
-  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','PI Planning','Sprint sequencing and PI board for story backlog planning',appSettings.featPI,true)}`;
+  ${_spModRow('pi','ti-calendar-event','#EEEDFE','#5F1EBE','Release Canvas','Sprint sequencing and release board for story backlog planning',appSettings.featPI,true)}`;
 }
 
 // ── Panel 3: Output Depth ──
@@ -1381,7 +1371,7 @@ function spP3() {
     _spStepper('sp-vf',appSettings.maxFeatures,"spStep('sp-vf',-1,3,6)","spStep('sp-vf',1,3,6)"),'Min 3 locked')}
   ${_spSubLbl('Stories &amp; Acceptance Criteria')}
   <div class="sp-group-tight">
-  ${_spRow('Stories per Feature','AI generates 2 to [n] stories per feature across Story Canvas and PI Planning',
+  ${_spRow('Stories per Feature','AI generates 2 to [n] stories per feature across Story Canvas and Release Canvas',
     _spStepper('sp-vs',appSettings.maxStories,"spStep('sp-vs',-1,2,10)","spStep('sp-vs',1,2,10)"),'Min 2 locked',true)}
   ${_spRow('Acceptance Criteria per Story','One happy path and one edge case are always included',
     _spStepper('sp-va',appSettings.maxACs,"spStep('sp-va',-1,2,5)","spStep('sp-va',1,2,5)"),'Min 2 locked',true)}
@@ -1472,7 +1462,7 @@ function spSetCollabEditMode(mode){
   if(typeof spMarkDirty==='function') spMarkDirty();
 }
 
-// ── Panel 4: PI Planning Defaults ──
+// ── Panel 4: Release Planning Defaults (internal ids stay pi-prefixed) ──
 function spP4() {
   const vel = appSettings.teamVelocity || 'med';
   const segBtn = (k,lbl) => {
@@ -1484,13 +1474,13 @@ function spP4() {
     return `<button id="sp-seg-${k}" onclick="spSeg('${k}')" data-active="${on}" style="width:44px;font-size:10px;font-weight:${on?600:500};background:${on?'#EEEDFE':'#fff'};border:none;cursor:pointer;color:${on?'#5F1EBE':'#6b6b68'};font-family:'DM Sans',sans-serif;display:flex;align-items:center;justify-content:center;">${lbl}</button>`;
   };
   return `
-  ${_spRow('Sprints per PI','How many sprints in a typical planning interval',
+  ${_spRow('Sprints per Release','How many sprints in a typical planning interval',
     _spStepper('sp-vsp',appSettings.defaultSprints,"spStep('sp-vsp',-1,1,20)","spStep('sp-vsp',1,1,20)"),null)}
   ${_spRow('Sprint Duration','Duration of each sprint in weeks',
     _spStepper('sp-vd',appSettings.defaultSprintDur,"spStep('sp-vd',-1,1,6)","spStep('sp-vd',1,1,6)")+'<span style="font-size:10px;color:#6b6b68;font-family:\'DM Sans\',sans-serif;">wks</span>',null)}
   ${_spRow('Squad Name Prefix','Used when a new squad is added. e.g. Pod, Team, Squad',
     `<input id="sp-squad-prefix" type="text" value="${appSettings.defaultSquadName||'Squad'}" style="height:26px;border:1px solid #D0D5E8;border-radius:5px;padding:0 8px;font-size:11px;font-family:'DM Sans',sans-serif;color:#1a1a1a;background:#fff;outline:none;width:110px;">`,null)}
-  ${_spRow('Squad Capacity (points)','Default story points per squad per PI',
+  ${_spRow('Squad Capacity (points)','Default story points per squad per Release',
     _spStepper('sp-vq',appSettings.defaultSquadCapacity,"spStep('sp-vq',-1,10,500)","spStep('sp-vq',1,10,500)",true)+'<span style="font-size:10px;color:#6b6b68;font-family:\'DM Sans\',sans-serif;">pts</span>',null)}
   ${_spRow('Team Velocity','Calibrates AI story sizing. Low (~3), Med (~6), High (~8) pts/dev/sprint',
     `<div style="display:inline-flex;border:1px solid #D0D5E8;border-radius:5px;overflow:hidden;height:26px;">

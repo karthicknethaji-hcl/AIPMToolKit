@@ -1046,6 +1046,21 @@ async function raRunOpeningTurn(conv){
 // copies of the same three lines.
 async function _raSubmitUserMessage(conv,text){
   if(!conv||raBusy||conv.status!=='draft'||!text)return;
+  // v9.25.04 — stop-on-send (product decision), centralized here rather
+  // than duplicated in raSendMessage()/raQuickReplyClick(): RA's mic
+  // previously stayed listening across Sends by design (a multi-turn chat,
+  // unlike every other single-shot AI-refine box's own stop-on-send), but
+  // that was reported as unexpected in practice. Placing the call AFTER
+  // the guard above (not in each caller, before their own guards) matters:
+  // a code-review pass on the first version of this fix found it firing
+  // before the empty-text/empty-answer checks in both callers, silently
+  // killing an active dictation session on a no-op Enter press or stray
+  // click — the exact class of bug capability-canvas.js's
+  // ccGenerateFeaturesForCapClick() was already fixed for once before
+  // (guard-before-stop). Since this function is the single choke point
+  // both callers route through, one guarded call here covers both, and
+  // any future third submit path automatically inherits it too.
+  voiceStopActive('abort');
   if(_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
   raAppendMessage(conv,'user',text);
   await _raRunTurn(conv,text);

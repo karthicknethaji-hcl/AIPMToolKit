@@ -14,7 +14,6 @@
 <link rel="stylesheet" href="./styles/04-left-panel.css">
 <link rel="stylesheet" href="./styles/05-kpi-tree.css">
 <link rel="stylesheet" href="./styles/06-metrics-definition.css">
-<link rel="stylesheet" href="./styles/07-capability-drawer.css">
 <link rel="stylesheet" href="./styles/08-feature-canvas.css">
 <link rel="stylesheet" href="./styles/16-story-canvas-new.css">
 <link rel="stylesheet" href="./styles/19-prototype-canvas.css">
@@ -533,39 +532,6 @@
 </div>
 </div><!-- end app-shell -->
 
-<div class="cap-overlay" id="cap-overlay" onclick="closeCapDrawer()"></div>
-<div class="cap-drawer" id="cap-drawer">
-  <div class="cap-drawer-hdr">
-    <div class="cap-drawer-tag">Capabilities &amp; Features</div>
-    <div class="cap-drawer-metric" id="cap-metric-name">—</div>
-    <div class="cap-drawer-stage" id="cap-stage-name"></div>
-    <button class="cap-close" onclick="closeCapDrawer()">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-  </div>
-  <div class="cap-drawer-body">
-    <div class="cap-loading" id="cap-loading">
-      <div class="cap-spin"></div>
-      <div class="cap-load-txt" id="cap-load-txt">Researching capabilities...</div>
-      <div class="cap-load-sub" id="cap-load-sub">This might take a moment...</div>
-      <div class="cap-load-steps" id="cap-load-steps"></div>
-    </div>
-    <div id="cap-content"></div>
-  </div>
-  <div class="cap-refine-wrap">
-    <div class="cap-refine-lbl">Suggest differently</div>
-    <div class="cap-refine-row">
-      <textarea class="cap-refine-txt" id="cap-refine-txt" placeholder="e.g. We already have invite flow. Focus on analytics..." rows="2" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();refineCapabilities();}"></textarea>
-      <button class="cap-refine-btn" id="cap-refine-btn" onclick="refineCapabilities()">&#8635; Refine</button>
-    </div>
-  </div>
-  <div class="cap-drawer-footer" id="cap-drawer-footer" style="display:none;">
-    <div class="cap-canvas-count"><strong id="cap-canvas-count-num">0</strong> feature(s) on canvas</div>
-    <button class="cap-go-canvas" onclick="closeCapDrawer();switchTab('fc');"><i class="ti ti-writing" style="font-size:11px;"></i> View Feature Canvas</button>
-  </div>
-</div>
-
-
 <!-- Settings page — full-page swap, replaces app-shell when open -->
 <div id="settings-page" style="display:none;flex-direction:column;width:100%;height:calc(100vh - 0px);min-height:0;overflow:hidden;"></div>
 
@@ -622,7 +588,6 @@
 <script src="./scripts/left-panel.js"></script>
 <script src="./scripts/kpi-tree.js"></script>
 <script src="./scripts/metrics-definition.js"></script>
-<script src="./scripts/capability-drawer.js"></script>
 <script src="./scripts/feature-canvas.js"></script>
 <script src="./scripts/story-canvas-new.js"></script>
 <script src="./scripts/prototype-canvas.js"></script>

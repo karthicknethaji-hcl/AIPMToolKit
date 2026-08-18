@@ -472,9 +472,8 @@ async function generateConfirmed(extra){
 async function regen(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   // v9.25 — stop-on-send: clicking this surface's own action button means
-  // there's no "next message" for continued dictation to feed (unlike
-  // Requirement Agent's persistent chat, where the mic deliberately stays
-  // on across Sends). abort(), not stop() — traced regen()'s own flow: the
+  // there's no "next message" for continued dictation to feed. abort(),
+  // not stop() — traced regen()'s own flow: the
   // refinement text below is read synchronously in this same tick, before
   // either method's async tail could resolve, so they'd capture identical
   // text either way; abort() is still correct to guarantee no delayed,

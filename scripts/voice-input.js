@@ -8,9 +8,8 @@
 // mic-permission prompt), five involuntary teardown paths, abort-vs-stop
 // semantics, and a manual-edit-vs-interim-transcript merge algorithm.
 //
-// Gated behind appSettings.featVoiceInput (default false, pending legal
-// sign-off — Chrome's implementation sends raw audio to Google's servers)
-// AND feature detection — see _viShouldRender().
+// Always on (v9.25.03 — legal sign-off received, Settings toggle removed),
+// gated only by feature detection — see _viShouldRender().
 //
 // MANDATORY CONTRACT for every surface that attaches: any function that
 // destroys or replaces a textarea's DOM node (innerHTML reassignment, node
@@ -55,10 +54,10 @@ function _viSupported(){
   return typeof window!=='undefined'&&!!(window.SpeechRecognition||window.webkitSpeechRecognition);
 }
 
-// Centralizes the flag+support gate every surface's render function needs —
-// one place, not reimplemented per surface.
+// Centralizes the support gate every surface's render function needs — one
+// place, not reimplemented per surface.
 function _viShouldRender(){
-  return typeof appSettings!=='undefined'&&appSettings&&appSettings.featVoiceInput&&_viSupported();
+  return _viSupported();
 }
 
 // Pure HTML-string builder — the caller's OWN render function embeds this
@@ -234,6 +233,13 @@ function _viOnResult(event,attemptId){
 function _viOnError(event,attemptId){
   if(!_viActive||_viActive.attemptId!==attemptId)return;
   var err=event&&event.error;
+  // v9.25.06 — 'aborted' fires whenever OUR OWN code calls rec.abort() (per
+  // spec, immediately before 'end'), which is every deliberate stop-on-send/
+  // tab-leave/session-clear/etc. across every surface in the app — never a
+  // genuine failure. Falling through to the generic toast below showed
+  // "Dictation error — stopped listening." on every intentional stop, which
+  // is exactly backwards: the PM asked for this, it isn't an error.
+  if(err==='aborted')return;
   var permanent=(err==='not-allowed'||err==='service-not-allowed');
   var messages={
     'no-speech':'No speech detected — dictation is still listening.',
