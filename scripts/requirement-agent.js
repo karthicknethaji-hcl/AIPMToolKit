@@ -1058,6 +1058,14 @@ async function raSendMessage(){
   // pure no-op that leaves whatever they were typing untouched, not
   // silently clear it out from under them.
   if(raBusy)return;
+  // v9.25.03 — stop-on-send (product decision): RA's mic previously stayed
+  // listening across Sends by design (a multi-turn chat, unlike every
+  // other single-shot AI-refine box's own stop-on-send), but that was
+  // reported as unexpected in practice. Now matches every other surface's
+  // convention exactly. abort(), not stop() — the text below is already
+  // read synchronously from the live textarea value in the same tick, so
+  // stopping here doesn't affect what was captured.
+  voiceStopActive('abort');
   var conv=_raActiveConv();
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
@@ -1072,6 +1080,9 @@ async function raSendMessage(){
 function raQuickReplyClick(btnEl){
   var conv=_raActiveConv();
   if(!conv||raBusy||conv.status!=='draft')return;
+  // v9.25.03 — same stop-on-send as raSendMessage(): a quick-reply click is
+  // also a message submission, just via a chip instead of the textarea.
+  voiceStopActive('abort');
   var answer=btnEl.dataset.answer;
   if(!answer)return;
   // Remove the whole quick-reply block immediately - confirms the pick

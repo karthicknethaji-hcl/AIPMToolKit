@@ -3355,8 +3355,7 @@ function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride
   // stop-on-send: refinement (above) is already read synchronously from
   // #cc-feat-refine-txt's live value in the onclick attribute, before this
   // function runs, so stopping here doesn't affect what was captured. No
-  // "next message" for continued dictation to feed once this fires, unlike
-  // Requirement Agent's persistent chat.
+  // "next message" for continued dictation to feed once this fires.
   voiceStopActive('abort');
   return ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverride,ctx).catch(function(err){
     console.warn('[cc] generate features click handler error:', err);

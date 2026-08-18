@@ -509,7 +509,7 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── requirement-agent.js
 │   └── voice-input.js
 │
-├── styles/                           (ALL .css files, 26 total, and ONLY .css files)
+├── styles/                           (ALL .css files, 25 total, and ONLY .css files)
 │   ├── 00-tokens.css
 │   ├── 01-base.css
 │   ├── 02-layout.css
@@ -610,7 +610,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `anthropic-proxy.js` present (that file belongs only in `netlify/functions/`)
 
 **`styles/`:**
-- [ ] 26 `.css` files present, matching `FILE_MANIFEST.txt`
+- [ ] 25 `.css` files present, matching `FILE_MANIFEST.txt`
 
 **`assets/`:**
 - [ ] `assets/prototype-style-default.md` present (NOT inside `templates/`)
