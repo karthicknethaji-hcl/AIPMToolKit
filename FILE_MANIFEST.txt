@@ -22,7 +22,6 @@ package.json                  ← Netlify Functions dependencies; must live at s
 api.js
 auth.js
 capability-canvas.js
-capability-drawer.js
 config.js
 demo-data.js
 diagnostic-view.js
@@ -67,7 +66,6 @@ voice-input.js                ← v9.24.02; shared browser-native voice dictatio
 04-left-panel.css
 05-kpi-tree.css
 06-metrics-definition.css
-07-capability-drawer.css
 08-feature-canvas.css
 09-modals-export.css
 10-capability-canvas.css

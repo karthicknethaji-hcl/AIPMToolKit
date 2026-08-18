@@ -1116,12 +1116,11 @@ function _opSuggestModalShell(feat){
   </div>`;
 }
 
-// v9.11.05 (Fix 17) — rotating sub-message during generation, mirroring
-// the same lightweight setInterval pattern already used in
-// capability-drawer.js's own loader (not the heavier multi-step stepper
-// used in diagnostic-view.js's full analysis loader — this modal is
-// small and the call is fast, so a single rotating text line fits better
-// than importing extra stepper structure).
+// v9.11.05 (Fix 17) — rotating sub-message during generation, a lightweight
+// setInterval pattern (not the heavier multi-step stepper used in
+// diagnostic-view.js's full analysis loader — this modal is small and the
+// call is fast, so a single rotating text line fits better than importing
+// extra stepper structure).
 const OP_SUGGEST_LOADING_MESSAGES=[
   'Generating a suggestion...',
   'Comparing against this feature\'s hypothesis...',

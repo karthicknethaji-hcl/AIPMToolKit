@@ -966,7 +966,7 @@ function _lsApplyCCEvents(freshSnapshot, events){
 }
 
 function _lsCanvasLabel(canvas){
-  var labels = { cc: 'Capability Canvas', mm: 'Discovery Map', pi: 'PI Planning', mi: 'Market Intelligence', la: 'Diagnostics', sc: 'Story Canvas', pc: 'Prototype Canvas' };
+  var labels = { cc: 'Capability Canvas', mm: 'Discovery Map', pi: 'Release Canvas', mi: 'Market Intelligence', la: 'Diagnostics', sc: 'Story Canvas', pc: 'Prototype Canvas' };
   return labels[canvas] || canvas;
 }
 

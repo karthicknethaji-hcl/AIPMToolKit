@@ -481,7 +481,6 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── prompts.js
 │   ├── kpi-tree.js
 │   ├── capability-canvas.js
-│   ├── capability-drawer.js
 │   ├── feature-canvas.js
 │   ├── story-canvas-new.js
 │   ├── pi-planning.js
@@ -503,9 +502,14 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── export-pi-docx.js
 │   ├── export-diagnostic-docx.js
 │   ├── export-market-intel-docx.js
-│   └── local-server.js               (zero-dependency local static file server — distinct from proxy/server.js; NOT a duplicate, NOT the same file)
+│   ├── local-server.js               (zero-dependency local static file server — distinct from proxy/server.js; NOT a duplicate, NOT the same file)
+│   ├── guided-launch.js
+│   ├── outcome-pulse.js
+│   ├── readiness-canvas.js
+│   ├── requirement-agent.js
+│   └── voice-input.js
 │
-├── styles/                           (ALL .css files, 21 total, and ONLY .css files)
+├── styles/                           (ALL .css files, 26 total, and ONLY .css files)
 │   ├── 00-tokens.css
 │   ├── 01-base.css
 │   ├── 02-layout.css
@@ -513,7 +517,6 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── 04-left-panel.css
 │   ├── 05-kpi-tree.css
 │   ├── 06-metrics-definition.css
-│   ├── 07-capability-drawer.css
 │   ├── 08-feature-canvas.css
 │   ├── 09-modals-export.css
 │   ├── 10-capability-canvas.css
@@ -526,7 +529,12 @@ AIPM-Toolkit-vX.XX(.XX)/
 │   ├── 17-home.css
 │   ├── 18-auth.css
 │   ├── 19-prototype-canvas.css
-│   └── 20-team-management.css
+│   ├── 20-team-management.css
+│   ├── 21-outcome-pulse.css
+│   ├── 22-guided-launch.css
+│   ├── 23-requirement-agent.css
+│   ├── 24-readiness-canvas.css
+│   └── 25-voice-input.css
 │
 ├── assets/
 │   ├── prototype-style-default.md    (fetched at runtime via 'assets/prototype-style-default.md' — must sit here, NOT inside templates/, NOT renamed)
@@ -539,6 +547,7 @@ AIPM-Toolkit-vX.XX(.XX)/
 │
 └── proxy/                            (separate Render.com deployable — never merge into frontend root)
     ├── server.js                     (Express proxy backend — lives ONLY here, never duplicated into scripts/; requires npm install, cannot run standalone like local-server.js)
+    ├── providerAdapters.js           (canonical adapter module, v9.14 — imported by BOTH proxy/server.js and netlify/functions/anthropic-proxy.js, never duplicated into either)
     ├── package.json                  (proxy-specific dependency list — see exact content below, never copy root package.json here)
     └── README.md
 ```
@@ -565,10 +574,13 @@ AIPM-Toolkit-vX.XX(.XX)/
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "eslint-plugin-security": "^4.0.1"
   }
 }
 ```
-Dependencies are extracted from `server.js`'s actual `require()` statements. Node engine constraint ensures Render.com compatibility.
+Dependencies are extracted from `server.js`'s actual `require()` statements. Node engine constraint ensures Render.com compatibility. `devDependencies` (`eslint-plugin-security`) is dev-time-only lint tooling — never affects the deployed runtime, but is part of the exact spec so a fresh package.json write doesn't silently drop it.
 
 ### FILES THAT MUST BE EXCLUDED FROM EVERY ZIP
 - ❌ `scripts/env.js` — contains live Supabase credentials (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PROXY_URL`). Never included. The user creates this file once locally and drops it into `scripts/` after unzipping — its absence from the zip is expected and correct, not a bug to fix.
@@ -598,7 +610,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `anthropic-proxy.js` present (that file belongs only in `netlify/functions/`)
 
 **`styles/`:**
-- [ ] 21 `.css` files present, matching `FILE_MANIFEST.txt`
+- [ ] 26 `.css` files present, matching `FILE_MANIFEST.txt`
 
 **`assets/`:**
 - [ ] `assets/prototype-style-default.md` present (NOT inside `templates/`)
@@ -609,7 +621,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] `anthropic-proxy.js` present, and present ONLY here (not also in `scripts/`)
 
 **`proxy/`:**
-- [ ] `server.js`, `package.json` (proxy-specific content above), `README.md` all present
+- [ ] `server.js`, `providerAdapters.js`, `package.json` (proxy-specific content above), `README.md` all present
 - [ ] `proxy/server.js` present ONLY here (not also in `scripts/`)
 
 **Exclusions — confirm none of these exist anywhere in the tree:**

@@ -426,8 +426,13 @@ function scToggleFeature(fid,metric,stage,cap,fname,fwhy,checkEl,outcomeHypothes
 }
 
 function scUpdateCapDrawerFooter(){
+  // capability-drawer.js (and its #cap-drawer-footer/#cap-canvas-count-num
+  // markup) was removed as dead code — this function is still called from
+  // several unrelated feature-mutation call sites below, so guard rather
+  // than remove those call sites.
   const footer=document.getElementById('cap-drawer-footer');
   const count=document.getElementById('cap-canvas-count-num');
+  if(!footer||!count)return;
   count.textContent=scCanvas.length;
   footer.style.display=scCanvas.length>0?'flex':'none';
 }
@@ -1289,8 +1294,7 @@ function scOpenPanel(fid){
 // mic button. Since #sc-refine-txt's row is static HTML, not JS-template-
 // generated, there's no natural render pass to embed voiceButtonHtml()
 // into the way other surfaces do — this runs once per panel-open instead,
-// which also keeps it in sync with appSettings.featVoiceInput on every
-// open (matching every other surface's own render-time gate check).
+// matching every other surface's own render-time gate check.
 function _scRenderVoiceSlot(){
   const slot=document.getElementById('sc-refine-voice-slot');
   if(slot&&typeof voiceButtonHtml==='function')slot.innerHTML=voiceButtonHtml({textareaId:'sc-refine-txt',buttonId:'sc-refine-voice-btn',statusId:'sc-refine-voice-status'});

@@ -565,7 +565,6 @@ trapFocus(overlay);
 | Left panel form inputs, gen-btn, collapse-btn | `styles/04-left-panel.css` |
 | KPI tree, action bar, evidence drawer trigger | `styles/05-kpi-tree.css` |
 | Metrics definition | `styles/06-metrics-definition.css` |
-| Capability drawer (slide-in from KPI tree) | `styles/07-capability-drawer.css` |
 | Feature Canvas + Story Canvas shared | `styles/08-feature-canvas.css` |
 | Modals, export overlays | `styles/09-modals-export.css` |
 | Capability Canvas | `styles/10-capability-canvas.css` |
