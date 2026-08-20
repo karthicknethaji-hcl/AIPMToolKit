@@ -1376,16 +1376,25 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     // than blocking the turn — a PM's ability to keep chatting must never
     // depend on the embedding service being up.
     var _raRetrievedCtx='';
+    // v14 code-review fix — captured once, before any of the awaits below,
+    // per this project's own "capture session identity BEFORE async work"
+    // convention (already followed in raHandleUpload()). Re-reading the
+    // global separately for the list-documents call and the later
+    // search-chunks call meant a PM switching sessions mid-turn could pair
+    // the NEW session's id with this (OLD) conversation's id on the second
+    // call, producing a spurious authorization error the surrounding catch
+    // would just silently degrade to "no retrieved context."
+    var _raRetrievalSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
     try{
-      if(typeof _activeSessionId!=='undefined'&&_activeSessionId&&typeof _pgtRpc==='function'){
-        var _raDocsRes=await _pgtRpc('ra_list_documents',{p_session_id:_activeSessionId,p_conversation_id:conv.id});
+      if(_raRetrievalSessionId&&typeof _pgtRpc==='function'){
+        var _raDocsRes=await _pgtRpc('ra_list_documents',{p_session_id:_raRetrievalSessionId,p_conversation_id:conv.id});
         if(_raDocsRes&&!_raDocsRes.error&&Array.isArray(_raDocsRes.data)&&_raDocsRes.data.length){
           var _raQuery=_raBuildRetrievalQuery(conv,userMessage);
           if(_raQuery){
             var _raQueryEmbedRes=await _raEmbedTexts([_raQuery]);
             if(_raQueryEmbedRes&&Array.isArray(_raQueryEmbedRes.embeddings)&&_raQueryEmbedRes.embeddings[0]){
               var _raSearchRes=await _pgtRpc('ra_search_doc_chunks',{
-                p_session_id:_activeSessionId,
+                p_session_id:_raRetrievalSessionId,
                 p_conversation_id:conv.id,
                 p_query_embedding:_raQueryEmbedRes.embeddings[0],
                 p_current_schema_version:_raQueryEmbedRes.embedding_schema_version,
@@ -1474,17 +1483,34 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
 // make: retrieval happens later, per-turn, in _raRunTurn(); this function's
 // only job is getting the document indexed.
 var RA_MAX_UPLOAD_WORDS=20000;
-// v14 code-review fix — deterministic, not random: derived from file
-// identity (name+size+lastModified) rather than _raUid(), so a PM manually
-// re-uploading the exact same file (e.g. retrying after a transient
-// failure) reuses the same doc_id and actually reaches D4's content_hash
-// idempotency path server-side, instead of consuming a fresh slot toward
-// the 5-document cap every retry.
-function _raDeterministicDocId(file){
-  var raw=file.name+'|'+file.size+'|'+(file.lastModified||0);
-  var h=0;
-  for(var i=0;i<raw.length;i++){h=((h<<5)-h+raw.charCodeAt(i))|0;}
-  return 'ra_'+(h>>>0).toString(36);
+// v14 code-review fix (round 3) — the original deterministic-hash approach
+// (derived purely from name+size+lastModified, no randomness at all) meant
+// re-uploading the EXACT same file after deliberately removing it always
+// regenerated the identical doc_id — which D4's lifecycle model correctly
+// treats as terminal and never resurrects, so that specific file could
+// never be re-attached to that conversation again, and the RPC's own
+// "upload it again as a new document" advice was impossible to satisfy
+// (re-selecting the same file always produces the same id).
+//
+// Replaced with a short-lived, in-memory-only retry cache instead: the
+// SAME file re-selected while an earlier attempt for it is still pending
+// (not yet confirmed success, and not explicitly removed since) reuses
+// that attempt's id — which is what D4's idempotency path actually exists
+// for (a client-side timeout after the server already committed). Any
+// other case — a fresh upload, or re-uploading after the earlier attempt
+// succeeded or was removed — gets a brand new random id via _raUid(),
+// exactly like every other identity in this file. Cleared on confirmed
+// ingest success (raHandleUpload()) and on removal (raRemoveDocument()) —
+// see both call sites below.
+var _raPendingUploadIds={}; // key: "convId|name|size|lastModified" -> doc_id
+function _raUploadIdKey(conv,file){
+  return conv.id+'|'+file.name+'|'+file.size+'|'+(file.lastModified||0);
+}
+function _raClearPendingUploadIdsForConv(convId){
+  var prefix=convId+'|';
+  Object.keys(_raPendingUploadIds).forEach(function(k){
+    if(k.indexOf(prefix)===0)delete _raPendingUploadIds[k];
+  });
 }
 
 async function raHandleUpload(inputEl){
@@ -1570,7 +1596,9 @@ async function raHandleUpload(inputEl){
     }
 
     var payloadChunks=chunks.map(function(t,i){return {chunk_text:t,embedding:embedRes.embeddings[i]};});
-    var docId=_raDeterministicDocId(file);
+    var _raUpKey=_raUploadIdKey(conv,file);
+    var docId=_raPendingUploadIds[_raUpKey]||_raUid();
+    _raPendingUploadIds[_raUpKey]=docId;
     var ingestRes=await _pgtRpc('ra_ingest_document_chunks',{
       p_session_id:sessionId,
       p_conversation_id:conv.id,
@@ -1585,6 +1613,7 @@ async function raHandleUpload(inputEl){
     // contention is never auto-retried here; the RPC's own message already
     // tells the PM to try again shortly, on their own action.
     if(ingestRes&&ingestRes.error)throw ingestRes.error;
+    delete _raPendingUploadIds[_raUpKey]; // confirmed success - no longer "pending"; a future re-upload of this same file gets a fresh id
 
     _raHideIndexing();
     _raSetBusy(false);
@@ -1671,6 +1700,16 @@ async function raRemoveDocument(convId,docId){
     else console.warn('[requirement-agent] raRemoveDocument failed',res.error);
     return;
   }
+  // v14 code-review fix (round 3) — a removal invalidates any cached
+  // pending-upload id for this conversation, so a future re-upload of the
+  // same file (deliberately re-attaching it, not retrying a failed
+  // attempt) gets a fresh random id instead of colliding with the one that
+  // was just tombstoned. Coarse (clears every pending id for this
+  // conversation, not just the removed doc's own file) but safe — the
+  // worst case is a legitimate in-flight retry loses its cached id and
+  // falls back to a fresh one, which is exactly this file's pre-round-2
+  // behavior, not a regression.
+  _raClearPendingUploadIdsForConv(convId);
   raRenderAttachedDocs(conv);
 }
 

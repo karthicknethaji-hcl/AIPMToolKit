@@ -848,7 +848,12 @@ async function _raEmbedTexts(texts){
   var headers=await _raEmbedAuthHeaders();
   var r=await fetch(_raEmbedProxyUrl('/api/embed'),{method:'POST',headers:headers,body:JSON.stringify({texts:texts})});
   var data=await r.json().catch(function(){throw new Error('Embedding request timed out or proxy unavailable.');});
-  if(data.error)throw new Error(typeof data.error==='string'?data.error:'Embedding request failed.');
+  // v14 code-review fix — proxy/server.js's /api/embed always returns
+  // error as an {type,message} object (matching every other route in that
+  // file), never a bare string, so the old typeof==='string' check never
+  // fired and every embedding failure showed the same generic message,
+  // discarding the proxy's own specific, actionable detail.
+  if(data.error)throw new Error((data.error&&typeof data.error==='object'&&data.error.message)?data.error.message:(typeof data.error==='string'?data.error:'Embedding request failed.'));
   if(!data.embeddings||!data.embedding_schema_version)throw new Error('Embedding response missing expected fields.');
   _raEmbedInfoCache={embedding_schema_version:data.embedding_schema_version};
   return data;
