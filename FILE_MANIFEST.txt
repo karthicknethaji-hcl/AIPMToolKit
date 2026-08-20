@@ -1,4 +1,4 @@
-# File Manifest — AI PM Toolkit
+# File Manifest — Product Studio
 # Current, complete file inventory. Grouped by folder, alphabetized within each group,
 # matching the directory structure in AI_EDITING_RULES.md exactly.
 # Historical "added in vX.XX" notes live in CHANGELOG.md, not here — this file states

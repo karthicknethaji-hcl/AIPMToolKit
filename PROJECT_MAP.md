@@ -1,4 +1,4 @@
-# Project Map — AI PM Toolkit
+# Project Map — Product Studio
 
 **Purpose:** This file exists so that a request touching one feature area only requires reading the 1–3 files this map points to — not the whole codebase. Treat every entry as a targeting aid: precise enough to avoid opening unrelated files, and no more verbose than that job requires. Narrative history (why a fix was made across several past versions) belongs in `CHANGELOG.md`; keep entries here to current-state facts and only the "why" detail that changes where to look or what to avoid touching.
 

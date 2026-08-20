@@ -123,9 +123,9 @@ function newScBuildLayout(){
           <div class="sc-legend" style="margin-bottom:4px;${isProto?'display:none;':''}">
             <span class="sc-legend-lbl">Card states</span>
             <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--label);background:#fff;border-radius:0 2px 2px 0;"></div> Not selected</div>
-            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--purple);background:var(--purple-pale);border-radius:0 2px 2px 0;"></div> PI selected</div>
+            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--purple);background:var(--purple-pale);border-radius:0 2px 2px 0;"></div> Release Selected</div>
             <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#fff;border-radius:0 2px 2px 0;"></div> DoR ready</div>
-            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#E8F5F0;border-radius:0 2px 2px 0;border-top:3px solid var(--green);"></div> In PI plan</div>
+            <div class="sc-legend-item"><div class="sc-legend-bar" style="border-left:3px solid var(--green);background:#E8F5F0;border-radius:0 2px 2px 0;border-top:3px solid var(--green);"></div> In Release Plan</div>
           </div>
         </div>
         <div class="nsc-scroll" id="nsc-scroll" style="${isProto?'display:none;':''}">
@@ -140,7 +140,7 @@ function newScBuildLayout(){
             <span class="sc-action-count" id="nsc-action-info"></span>
           </div>
           <div class="sc-action-btns">
-            <button class="sc-gen-btn" id="nsc-send-pi-btn" onclick="newScSendToPI()" disabled><i class="ti ti-calendar-event" style="font-size:12px;" aria-hidden="true"></i> <span id="nsc-send-pi-label">Send to PI</span></button>
+            <button class="sc-gen-btn" id="nsc-send-pi-btn" onclick="newScSendToPI()" disabled><i class="ti ti-calendar-event" style="font-size:12px;" aria-hidden="true"></i> <span id="nsc-send-pi-label">Send to Release</span></button>
           </div>
         </div>
         <div class="pc-view${isProto?' on':''}" id="pc-view">
@@ -215,8 +215,8 @@ function newScBuildFilterPanel(){
     <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Readiness</div>
     ${['Ready','Not Ready','Points not set'].map(r=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('readiness','${e(r)}')" ${newScFilter.readiness.includes(r)?'checked':''}> ${r}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
-    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">PI Status</div>
-    ${['PI Selected','Not Selected'].map(s=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('piStatus','${e(s)}')" ${newScFilter.piStatus.includes(s)?'checked':''}> ${s}</label>`).join('')}
+    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Release Status</div>
+    ${['Release Selected','Not Selected'].map(s=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('piStatus','${e(s)}')" ${newScFilter.piStatus.includes(s)?'checked':''}> ${s}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
     <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Dependencies</div>
     ${['Yes','No'].map(d=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('dependencies','${e(d)}')" ${newScFilter.dependencies===d?'checked':''}> ${d}</label>`).join('')}
@@ -454,7 +454,7 @@ function newScRenderMain(){
     const f=scCanvas.find(x=>x.id===fid);
     return a+(f&&f.stories?f.stories.filter(s=>s._stagedForPI).length:0);
   },0);
-  if(piSub)piSub.textContent=piCount>0?piCount+' PI selected':'Select stories for PI first';
+  if(piSub)piSub.textContent=piCount>0?piCount+' Release Selected':'Select Stories for Release First';
 }
 
 // Toolbar kebab menu - replaces the old standalone Add Story + Export
@@ -489,7 +489,7 @@ function newScBuildStoryCard(st,feat,stageColor){
   const _owningPlan=scFindOwningPlan(st.id);
   const sprintAssignment=_owningPlan&&_owningPlan.storyAssignments[st.id];
   const sprintLabel=sprintAssignment?('Sprint '+(sprintAssignment.sprint||'?')):null;
-  const piPlanName=_owningPlan?_owningPlan.name:'In PI plan';
+  const piPlanName=_owningPlan?_owningPlan.name:'In Release Plan';
 
   let cls='nsc-story-card sc-card';
   if(isInPIPlan||sprintLabel)cls+=' nsc-pi-planned';
@@ -515,8 +515,8 @@ function newScBuildStoryCard(st,feat,stageColor){
       <div class="sc-card-actions">
         ${_canEditScCard?`<button class="sc-card-pencil" onclick="event.stopPropagation();newScShowEditStoryModal('${e(st.id)}','${e(feat.id)}')" title="Edit story" aria-label="Edit story" style="background:none;border:none;cursor:pointer;padding:2px;color:var(--t3);display:flex;align-items:center;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`:''}
         ${isInPIPlan
-          ?`<div class="nsc-pi-tag" title="${e(piPlanName)}"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${e(piPlanName)} ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from PI">&#x2715;</span>`:''}</div>`
-          :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for PI':'Select for PI'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
+          ?`<div class="nsc-pi-tag" title="${e(piPlanName)}"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${e(piPlanName)} ${_canEditScCard?`<span class="nsc-pi-tag-x" onclick="event.stopPropagation();newScConfirmRemoveFromPI('${e(st.id)}','${e(feat.id)}')" title="Remove from Release">&#x2715;</span>`:''}</div>`
+          :(_canEditScCard?`<div class="sc-card-check${isPiSel?' sc-card-check-pi':''}" onclick="event.stopPropagation();newScToggleStoryPiSelect('${e(st.id)}','${e(feat.id)}')" title="${isPiSel?'Deselect for Release':'Select for Release'}">${isPiSel?'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>':''}</div>`:'')
         }
         ${_canEditScCard?`<button class="sc-card-remove" onclick="event.stopPropagation();newScDeleteStoryById('${e(st.id)}','${e(feat.id)}')" title="Remove story">
           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -610,14 +610,14 @@ function newScUpdateActionBar(){
   const info=document.getElementById('nsc-action-info');
   if(info){
     if(piCount>0)info.innerHTML=`<strong>${piCount}</strong> stor${piCount!==1?'ies':'y'} selected &middot; ~<strong>${piPts}</strong> pts`;
-    else info.innerHTML=totalStories>0?`${totalStories} stor${totalStories!==1?'ies':'y'} — select to send to PI`:'';
+    else info.innerHTML=totalStories>0?`${totalStories} stor${totalStories!==1?'ies':'y'} — select to send to release`:'';
   }
 
   // Send to PI button
   const btn=document.getElementById('nsc-send-pi-btn');
   const btnLbl=document.getElementById('nsc-send-pi-label');
   if(btn){btn.disabled=piCount===0;}
-  if(btnLbl)btnLbl.textContent=piCount>0?'Send to PI ('+piCount+')':'Send to PI';
+  if(btnLbl)btnLbl.textContent=piCount>0?'Send to Release ('+piCount+')':'Send to Release';
 }
 
 function newScToggleSelectAll(chk){
@@ -638,7 +638,7 @@ function newScSelectAll(){
 async function newScSendToPI(){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const piCount=scCanvas.reduce((a,f)=>a+(f.stories?f.stories.filter(s=>s._inSC&&!s._hiddenFromSC&&s._stagedForPI).length:0),0);
-  if(piCount===0){showToast('Select stories for PI first.','info');return;}
+  if(piCount===0){showToast('Select stories for release first.','info');return;}
   // Story Canvas has zero plan-awareness by design - it never references
   // any release plan object. Stories staged for PI go straight into the
   // GLOBAL backlog array; which plan (if any) eventually claims them is
@@ -673,7 +673,7 @@ async function newScSendToPI(){
   const sendBtn=document.getElementById('nsc-send-pi-btn');
   if(sendBtn){
     const origHtml=sendBtn.innerHTML;
-    sendBtn.innerHTML='<i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> <span>'+piCount+' sent to PI</span>';
+    sendBtn.innerHTML='<i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> <span>'+piCount+' Sent to Release</span>';
     sendBtn.style.cssText='background:var(--green);color:#fff;border:none;';
     sendBtn.disabled=true;
     setTimeout(()=>{
@@ -793,7 +793,7 @@ function newScApplyFilter(stories,feat){
   }
   if(newScFilter.piStatus.length){
     result=result.filter(s=>{
-      if(newScFilter.piStatus.includes('PI Selected')&&(s._stagedForPI||s._inPIPlan))return true;
+      if(newScFilter.piStatus.includes('Release Selected')&&(s._stagedForPI||s._inPIPlan))return true;
       if(newScFilter.piStatus.includes('Not Selected')&&!s._stagedForPI&&!s._inPIPlan)return true;
       return false;
     });
@@ -964,7 +964,7 @@ function newScRenderPanelContent(st,feat){
 
     <!-- Notes -->
     <div>
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">(exported in PI DOCX)</span></div>
+      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">${RELEASE_EXPORT_NOTE_LABEL}</span></div>
       <textarea id="nsc-notes-${e(st.id)}" rows="3" ${_canEditSc?'':'readonly'} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:${_canEditSc?'var(--t1)':'var(--t3)'};resize:vertical;box-sizing:border-box;${_canEditSc?'':'background:var(--card);cursor:default;'}" placeholder="Add notes visible to the team…" ${_canEditSc?`oninput="newScSaveNotes('${e(st.id)}','${e(feat.id)}')"`:''}>${e(st.notes||'')}</textarea>
     </div>`;
   // Render traceability using FC's scRenderLineage — same pattern, same logic, same Link one? CTA
@@ -1134,7 +1134,7 @@ function newScConfirmRemoveFromPI(storyId,featId){
       }
       newScRender();
       if(typeof piCheckStaleness==='function')piCheckStaleness();
-      showToast('Story removed from PI plan.','success');
+      showToast('Story removed from release plan.','success');
       // v8.146 fix: confirmed missing entirely. PI-staging state only —
       // deliberately no live-edit mark, matching the existing convention
       // that selection/staging state isn't live-synced (same as

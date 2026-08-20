@@ -155,6 +155,11 @@ async function generateConfirmed(extra){
   piDdPanelOpen=false;
   piDdPanelMetricKey=null;
   piStoryPool={};
+  // v9.27 fix: piReadinessPlans (Adoption Readiness) was missing from this
+  // reset — same gap already fixed once in home.js's New Session reset (see
+  // its own comment there) but never carried over to this regenerate path,
+  // so the tab stayed revealed with fully intact stale data after regen.
+  piReadinessPlans=[];
   const dvTabEl=document.getElementById('tab-dv');
   const laTabEl=document.getElementById('tab-la');
   const miTabEl=document.getElementById('tab-mi');
@@ -168,6 +173,37 @@ async function generateConfirmed(extra){
   if(fcTabEl)fcTabEl.style.display='none';
   if(scTabEl)scTabEl.classList.remove('revealed');
   if(piTabEl)piTabEl.classList.remove('revealed');
+  // v9.27 fix: tab-cc (Capability Canvas) and tab-arp (Adoption Readiness)
+  // were missing from this hide list — capStore was correctly wiped above,
+  // but the tab itself stayed reachable and showing an empty/reset canvas;
+  // tab-arp had both the data AND the tab left stale (see piReadinessPlans
+  // reset above). tab-cc is revealed via style.display (session-store.js),
+  // tab-arp via classList (readiness-canvas.js's rcRevealTab) — un-reveal
+  // each the same way its own reveal function does.
+  const ccTabEl=document.getElementById('tab-cc');
+  const arpTabEl=document.getElementById('tab-arp');
+  if(ccTabEl)ccTabEl.style.display='none';
+  if(arpTabEl)arpTabEl.classList.remove('revealed');
+  // v9.27 fix: tab-ra (Requirement Agent) was also missing — raConversations
+  // stamp intakeBriefId onto Capability Canvas capabilities (see
+  // ra_FinalizeSequence in requirement-agent.js), so once capStore is wiped
+  // above, any existing brief's capability linkage is already orphaned;
+  // reuse raResetState() (the same reset home.js's New Session flow calls)
+  // rather than duplicating its cleanup here. tab-op (Outcome Pulse) is
+  // deliberately NOT touched — opUnlocked is a documented one-way,
+  // whole-session flag (state.js) that only resets on an actual new
+  // session, not a same-session regenerate.
+  // v9.27 code-review follow-up: also wipe #ra-tab's innerHTML the same way
+  // home.js's homeClearSession() does immediately before calling
+  // raResetState() — that function's own comments document this ordering
+  // as an assumption, not just a convenience, so this reset path should
+  // honor it too even though today's UI gating makes it unreachable while
+  // Requirement Agent is the active tab.
+  const raTabContentEl=document.getElementById('ra-tab');
+  if(raTabContentEl){raTabContentEl.innerHTML='';raTabContentEl.classList.remove('on');}
+  if(typeof raResetState==='function')raResetState();
+  const raTabEl=document.getElementById('tab-ra');
+  if(raTabEl)raTabEl.classList.remove('revealed');
   const analyzeBar=document.getElementById('dv-analyze-bar');
   if(analyzeBar)analyzeBar.remove();
   const dvLeft=document.getElementById('dv-left');
@@ -179,7 +215,13 @@ async function generateConfirmed(extra){
   fcRenderCanvas();
   if(typeof newScRender==='function')newScRender();
   if(typeof newScUpdateTabBadge==='function')newScUpdateTabBadge();
-  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc')switchTab('mm');
+  // v9.27 fix: 'cc', 'pi', 'arp', and 'ra' were missing here too — a PM
+  // sitting on Capability Canvas, Release Canvas, Adoption Readiness, or
+  // Requirement Agent when they regenerated stayed on a tab that had just
+  // been hidden out from under them, same class of bug as the tab-hide gap
+  // above. 'op' is deliberately excluded — Outcome Pulse is never hidden by
+  // this reset (see tab-op note above), so there's nothing to bounce out of.
+  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc'||curTab==='cc'||curTab==='pi'||curTab==='arp'||curTab==='ra')switchTab('mm');
 
   // Industry fallback: product profile -> company profile -> empty (ST-14)
   const industry=_p.industry||_cp.companyIndustry||'';
@@ -517,7 +559,7 @@ function _mmShowRegenConfirm(refinementText){
         <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate Discovery Map?</div>
       </div>
       <div class="modal-body">
-        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and PI Planning</strong> data for this session. This cannot be undone.
+        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and Release Canvas</strong> data for this session. This cannot be undone.
         <div style="margin-top:12px;">
           <button id="mm-regen-export-btn" style="width:100%;background:none;border:1px solid var(--divider);border-radius:6px;padding:7px 12px;font-size:11px;color:var(--t2);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;" onclick="_mmRegenExport()">
             <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export current work before clearing
@@ -591,6 +633,14 @@ async function _mmRegenProceed(refinementText){
           localEntry.snapshot.capStore={};
           localEntry.snapshot.scCanvas=[];
           localEntry.snapshot.piPlans=[];
+          // v9.27 code-review fix: this allowlist wasn't updated when
+          // piReadinessPlans/raConversations gained their own in-memory
+          // reset above - without these two, a tab close/crash before the
+          // async Supabase write confirms would resume from this stale
+          // localStorage snapshot and resurrect the exact stale Adoption
+          // Readiness/Requirement Agent data the in-memory reset just fixed.
+          localEntry.snapshot.piReadinessPlans=[];
+          localEntry.snapshot.raConversations=[];
           localEntry.snapshot.dmRegenAt=sessionContext.dmRegenAt;
           localStorage.setItem(_SS_PREFIX+_activeSessionId,JSON.stringify(localEntry));
         }

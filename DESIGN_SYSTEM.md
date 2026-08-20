@@ -1,4 +1,4 @@
-# Design System — AI PM Toolkit
+# Design System — Product Studio
 
 This document is the single source of truth for all visual, layout, and component standards.
 Read this before writing any new CSS, building any new screen, or adding any UI component.

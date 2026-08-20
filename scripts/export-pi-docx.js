@@ -15,7 +15,7 @@ function piSyncExportBtn(){
 }
 async function buildAndDownloadPIDocx(){
   const piPlan=(typeof piGetActivePlan==='function')?piGetActivePlan():null;
-  if(!piPlan){showToast('Generate a PI plan first.','info');return;}
+  if(!piPlan){showToast('Generate a release plan first.','info');return;}
   if(piExportInFlight)return;
   piExportInFlight=true;piSyncExportBtn();
   try{
@@ -85,13 +85,13 @@ async function buildAndDownloadPIDocx(){
 
     // ── Section 1 — PI at a Glance ──
     const s1=[
-      h2('1. PI at a Glance'),
+      h2('1. Release at a Glance'),
       body('Product: '+productName+(industry?' · '+industry:'')),
-      body('PI: '+piPlan.name+' · '+piPlan.sprintCount+' sprints · '+piPlan.sprintDuration+' days each'),
+      body('Release: '+piPlan.name+' · '+piPlan.sprintCount+' sprints · '+piPlan.sprintDuration+' days each'),
       gap(20),
     ];
     if(piGoal){
-      s1.push(new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'PI Goal:',font:'Arial',size:20,bold:true,color:NAVY})]}));
+      s1.push(new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'Release Goal:',font:'Arial',size:20,bold:true,color:NAVY})]}));
       s1.push(body(piGoal));
       s1.push(gap(10));
     }
@@ -153,7 +153,7 @@ async function buildAndDownloadPIDocx(){
     const deps=piPlan.dependencies||[];
     const extDeps=piPlan.externalDeps||[];
     if(deps.length===0&&extDeps.length===0){
-      s3.push(body('No dependencies declared for this PI.'));
+      s3.push(body('No dependencies declared for this release.'));
     } else {
       if(deps.length>0){
         s3.push(h3('Internal dependencies'));
@@ -240,7 +240,7 @@ async function buildAndDownloadPIDocx(){
           return !!(_pv&&_pv.generated&&_pv.designBrief);
         });
       if(protoFeats.length===0){
-        s5.push(body('No prototypes have been generated for features in this PI plan.'));
+        s5.push(body('No prototypes have been generated for features in this release plan.'));
       } else {
         // Lazy-load html2canvas once, reused for every feature's capture
         let h2cLoaded=false;
@@ -285,7 +285,7 @@ async function buildAndDownloadPIDocx(){
         }
       }
     } else {
-      s5.push(body('No prototypes have been generated for features in this PI plan.'));
+      s5.push(body('No prototypes have been generated for features in this release plan.'));
     }
     s5.push(new Paragraph({children:[new PageBreak()]}));
 
@@ -332,7 +332,7 @@ async function buildAndDownloadPIDocx(){
       sections:[{
         properties:{page:{size:{width:16838,height:11906},margin:{top:1008,right:1008,bottom:1008,left:1008}}},
         children:[
-          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+'AI PM Toolkit',font:'Arial',size:18,color:GREY})]}),
+          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+APP_NAME,font:'Arial',size:18,color:GREY})]}),
           new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:piPlan.name+' — Release Plan',font:'Arial',size:40,bold:true,color:NAVY})]}),
           new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:productName+' · '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}),font:'Arial',size:22,color:GREY})]}),
           gap(20),new Paragraph({children:[new PageBreak()]}),
@@ -340,7 +340,7 @@ async function buildAndDownloadPIDocx(){
         ]
       }]
     });
-    const fname=(piPlan.name||'PI-Plan').replace(/\s+/g,'-')+'-'+productName.replace(/\s+/g,'-')+'.docx';
+    const fname=(piPlan.name||'Release-Plan').replace(/\s+/g,'-')+'-'+productName.replace(/\s+/g,'-')+'.docx';
     const blob=await Packer.toBlob(doc);
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
@@ -348,7 +348,7 @@ async function buildAndDownloadPIDocx(){
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }catch(err){
-    showToast('PI export failed: '+err.message,'error');
+    showToast('Release export failed: '+err.message,'error');
     console.error('PI DOCX error:',err);
   }finally{
     piExportInFlight=false;piSyncExportBtn();

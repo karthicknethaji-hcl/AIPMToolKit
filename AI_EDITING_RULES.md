@@ -1,4 +1,4 @@
-# AI Editing Rules — AI PM Toolkit
+# AI Editing Rules — Product Studio
 
 Read this file before making any change to any file in this project.
 
@@ -451,14 +451,14 @@ When adding a new tab, screen, or major feature:
 **This is the only packaging specification in this document. Follow it exactly for every build — there is no alternate tree, no alternate naming scheme.**
 
 ### ZIP NAMING CONVENTION
-- Feature release: `AIPM-Toolkit-vX.XX.zip` (e.g. `AIPM-Toolkit-v9.07.zip`)
-- Bug-fix patch on a feature release: `AIPM-Toolkit-vX.XX.XX.zip` (e.g. `AIPM-Toolkit-v9.06.03.zip`)
+- Feature release: `Product-Studio-vX.XX.zip` (e.g. `Product-Studio-v9.07.zip`)
+- Bug-fix patch on a feature release: `Product-Studio-vX.XX.XX.zip` (e.g. `Product-Studio-v9.06.03.zip`)
 - Version in the zip name MUST match `APP_VERSION` in `scripts/config.js` exactly.
 - Never use any other naming scheme (no `Product-Diagnostics-Toolkit-*`, `PGT-*`, `Product-Metrics-Teardown-App-*`, or similar — these are stale names from earlier project phases and must not be used).
 
 ### DIRECTORY STRUCTURE (authoritative — the only tree)
 ```
-AIPM-Toolkit-vX.XX(.XX)/
+Product-Studio-vX.XX(.XX)/
 ├── index.html
 ├── login.html
 ├── netlify.toml
@@ -631,7 +631,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `favicon-base64.txt`
 
 **ZIP file:**
-- [ ] Filename matches `AIPM-Toolkit-vX.XX.zip` or `AIPM-Toolkit-vX.XX.XX.zip` exactly
+- [ ] Filename matches `Product-Studio-vX.XX.zip` or `Product-Studio-vX.XX.XX.zip` exactly
 - [ ] File placed in `/mnt/user-data/outputs/`
 
 **If ANY check fails: do not zip. Fix the issue, re-run the full checklist, only zip when everything passes.**
@@ -759,7 +759,7 @@ if(typeof newScRender==='function'){
 - Do not move the tab row inside `.right` — it must stay in `.app-shell`.
 - Do not ask the user to identify source files by name. Use `PROJECT_MAP.md`.
 - Do not hallucinate file counts. Read `FILE_MANIFEST.txt` for the current inventory.
-- Do not deviate from the `AIPM-Toolkit-vX.XX` / `AIPM-Toolkit-vX.XX.XX` naming convention.
+- Do not deviate from the `Product-Studio-vX.XX` / `Product-Studio-vX.XX.XX` naming convention.
 - Do not include root-level `.js` or `.css` files in the zip.
 - Do not create duplicate files in multiple folders — one canonical location per file. In particular: `anthropic-proxy.js` lives only in `netlify/functions/`; `server.js` lives only in `proxy/`; neither is ever also placed in `scripts/`.
 - Do not copy root `package.json` to `proxy/` — use the proxy-specific `package.json` content specified above.

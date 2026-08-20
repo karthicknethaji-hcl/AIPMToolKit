@@ -1,7 +1,13 @@
 // ── App version — single source of truth ──
 // Both index.html and login.html read this on DOMContentLoaded via #hdr-version span.
 // Update ONLY this constant on every release — never hardcode version strings in HTML.
-const APP_VERSION = 'v9.25.06';
+const APP_VERSION = 'v9.26.03';
+
+// ── App name — single source of truth for script-generated content ──
+// index.html/login.html's <title> and .hdr-title markup are static HTML,
+// not script-populated, so they still carry their own literal copy — update
+// those by hand alongside this constant if the product is ever renamed again.
+const APP_NAME = 'Product Studio';
 
 // ── KPI Tree loader — 3-stage progressive disclosure ──
 
