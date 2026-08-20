@@ -1,3 +1,7 @@
+// Shared note-field hint shown on both Story Canvas and Release Canvas's
+// per-story panels — keep as one constant so the two copies can't drift.
+const RELEASE_EXPORT_NOTE_LABEL='(Exported in Release Plan)';
+
 function sc(id){return{acquisition:'s-acq',activation:'s-act',engagement:'s-eng',retention:'s-ret'}[id]||'';}
 function pc(id){return{acquisition:'p-acq',activation:'p-act',engagement:'p-eng',retention:'p-ret'}[id]||'';}
 function e(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}

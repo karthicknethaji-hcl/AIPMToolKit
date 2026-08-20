@@ -38,10 +38,10 @@ function miBuildDocx(miData, ctx, exportMode){
   const _orgNameMi=typeof getOrgName==='function'?getOrgName():'';
   let html=`<html><head><meta charset="utf-8"/></head><body style="font-family:Arial,sans-serif;font-size:12pt;color:#000;">`;
   html+=`<div style="background:#003087;padding:24px;margin-bottom:24px;">
-    ${_orgNameMi?`<p style="color:#aabbcc;font-size:11pt;margin:0 0 4px;">${esc(_orgNameMi)} · Product Studio</p>`:''}
+    ${_orgNameMi?`<p style="color:#aabbcc;font-size:11pt;margin:0 0 4px;">${esc(_orgNameMi)} · ${APP_NAME}</p>`:''}
     <p style="color:#fff;font-size:22pt;font-weight:bold;margin:0 0 4px;">${esc(productName)} — ${esc(reportTitle)}</p>
     <p style="color:#8C69F0;font-size:13pt;margin:0 0 12px;">${isCategory?'Category Intelligence Report':'Market Intelligence Report'}</p>
-    <p style="color:#aabbcc;font-size:11pt;margin:0;">Research Period: ${esc(monthYear)} &nbsp;|&nbsp; Produced by: Product Studio</p>
+    <p style="color:#aabbcc;font-size:11pt;margin:0;">Research Period: ${esc(monthYear)} &nbsp;|&nbsp; Produced by: ${APP_NAME}</p>
   </div>`;
 
   // ── Disclaimer ──
@@ -242,7 +242,7 @@ function miBuildDocx(miData, ctx, exportMode){
   } // end !isCurrentView (Sections 6-8)
 
   html+=`<div style="background:#F4F6FA;border-top:2px solid #D0D5E8;padding:12px;margin-top:24px;text-align:center;font-size:10pt;color:#6B6B68;">
-    ${_orgNameMi?esc(_orgNameMi)+' · ':''}Product Studio · ${esc(monthYear)}
+    ${_orgNameMi?esc(_orgNameMi)+' · ':''}${APP_NAME} · ${esc(monthYear)}
   </div>`;
   html+=`</body></html>`;
 

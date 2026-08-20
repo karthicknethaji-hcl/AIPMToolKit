@@ -1913,7 +1913,7 @@ function piRenderRightPanel(storyId){
         ${_canEditPiRp?`<button class="pi-rp-add-dep-link" onclick="piShowAddDepForm('${e(storyId)}')">+ Add Dependency</button>`:''}
       </div>
       <div class="pi-rp-section">
-        <div class="pi-rp-section-lbl">Note <span style="font-size:9px;color:var(--label);">(Exported in Release Plan)</span></div>
+        <div class="pi-rp-section-lbl">Note <span style="font-size:9px;color:var(--label);">${RELEASE_EXPORT_NOTE_LABEL}</span></div>
         <textarea class="pi-rp-note-area" id="pi-rp-note-${storyId}" maxlength="300" ${_canEditPiRp?`onblur="piSaveNote('${e(storyId)}',this.value)"`:'readonly'}>${e(note)}</textarea>
         <div class="pi-rp-counter" id="pi-rp-note-count-${storyId}">${note.length} / 300</div>
       </div>

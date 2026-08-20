@@ -964,7 +964,7 @@ function newScRenderPanelContent(st,feat){
 
     <!-- Notes -->
     <div>
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">(Exported in Release Plan)</span></div>
+      <div class="pi-section-lbl" style="margin-bottom:5px;">Notes <span style="font-size:9px;color:var(--label);font-weight:400;">${RELEASE_EXPORT_NOTE_LABEL}</span></div>
       <textarea id="nsc-notes-${e(st.id)}" rows="3" ${_canEditSc?'':'readonly'} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:${_canEditSc?'var(--t1)':'var(--t3)'};resize:vertical;box-sizing:border-box;${_canEditSc?'':'background:var(--card);cursor:default;'}" placeholder="Add notes visible to the team…" ${_canEditSc?`oninput="newScSaveNotes('${e(st.id)}','${e(feat.id)}')"`:''}>${e(st.notes||'')}</textarea>
     </div>`;
   // Render traceability using FC's scRenderLineage — same pattern, same logic, same Link one? CTA
