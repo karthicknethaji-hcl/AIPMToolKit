@@ -188,20 +188,34 @@ async function generateConfirmed(extra){
   // stamp intakeBriefId onto Capability Canvas capabilities (see
   // ra_FinalizeSequence in requirement-agent.js), so once capStore is wiped
   // above, any existing brief's capability linkage is already orphaned;
-  // reuse raResetState() (the same reset home.js's New Session flow calls)
-  // rather than duplicating its cleanup here. tab-op (Outcome Pulse) is
-  // deliberately NOT touched — opUnlocked is a documented one-way,
-  // whole-session flag (state.js) that only resets on an actual new
-  // session, not a same-session regenerate.
+  // reuse raResetState() rather than duplicating its cleanup here. tab-op
+  // (Outcome Pulse) is deliberately NOT touched — opUnlocked is a
+  // documented one-way, whole-session flag (state.js) that only resets on
+  // an actual new session, not a same-session regenerate.
+  // Product decision, post-v9.27 review: raResetState() is now the
+  // DESTRUCTIVE reset, reachable only from THIS flow (Regenerate Discovery
+  // Map is a genuine, permanent reset) — home.js's New Session flow calls
+  // the non-destructive raClearInMemoryState() instead, since leaving a
+  // session via New Session is a pause, not a delete, and must not remove
+  // that session's documents. The two flows no longer call the same
+  // function; only this one does the destructive cleanup.
   // v9.27 code-review follow-up: also wipe #ra-tab's innerHTML the same way
-  // home.js's homeClearSession() does immediately before calling
-  // raResetState() — that function's own comments document this ordering
-  // as an assumption, not just a convenience, so this reset path should
-  // honor it too even though today's UI gating makes it unreachable while
-  // Requirement Agent is the active tab.
+  // home.js's homeClearSession() does immediately before its own RA reset
+  // call — this reset path should honor that same ordering even though
+  // today's UI gating makes it unreachable while Requirement Agent is the
+  // active tab.
   const raTabContentEl=document.getElementById('ra-tab');
   if(raTabContentEl){raTabContentEl.innerHTML='';raTabContentEl.classList.remove('on');}
-  if(typeof raResetState==='function')raResetState();
+  // v14 (RA-Persistent-Doc-RAG-Spec-v14) — generateConfirmed() is already
+  // async, so awaiting here needs no further propagation: raResetState()
+  // now cleans up this session's RA documents before wiping raConversations,
+  // and everything in this function after this line already runs after it
+  // resolves by virtue of the await, exactly as before this change. Passed
+  // explicitly (this function never nulls _activeSessionId before this
+  // point, unlike home.js's homeClearSession()) rather than relying on
+  // raResetState()'s global fallback, matching the "capture session
+  // identity" convention consistently at every call site.
+  if(typeof raResetState==='function')await raResetState(typeof _activeSessionId!=='undefined'?_activeSessionId:null);
   const raTabEl=document.getElementById('tab-ra');
   if(raTabEl)raTabEl.classList.remove('revealed');
   const analyzeBar=document.getElementById('dv-analyze-bar');

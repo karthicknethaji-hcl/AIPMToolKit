@@ -610,7 +610,26 @@ function _loadXlsx(){
 // Handles .txt, .md, .docx, .pdf. Rejects with Error if unreadable.
 // XLSX/CSV are NOT handled here — use existing structured parsers.
 // PDF uses sequential page extraction with early word-cap and cleanup.
-function extractTextFromFile(file){
+//
+// maxWords (optional, RA-only): a uniform word cap applied AFTER extraction,
+// on top of whatever per-type cap the branch below already applies
+// internally (PDF's own 4000-word early-exit, XLSX's own 6000-word cap) —
+// .txt/.md/.csv/.docx have no internal cap at all today, so this is the only
+// enforcement point that covers all five formats uniformly. When omitted,
+// resolves a plain string exactly as before (settings-page.js's call site
+// passes nothing and must see no behavior change). When provided, resolves
+// {text, truncated} instead, so the caller can disclose truncation rather
+// than silently dropping content (RA-Persistent-Doc-RAG-Spec-v14, OI-3/OI-5).
+function extractTextFromFile(file,maxWords){
+  return _extractTextFromFileRaw(file).then(function(text){
+    if(!maxWords)return text;
+    var words=(text||'').trim().split(/\s+/).filter(Boolean);
+    if(words.length<=maxWords)return {text:text,truncated:false};
+    return {text:words.slice(0,maxWords).join(' '),truncated:true};
+  });
+}
+
+function _extractTextFromFileRaw(file){
   return new Promise(function(resolve,reject){
     var ext=file.name.split('.').pop().toLowerCase();
 
@@ -757,6 +776,104 @@ function chunkText(text,chunkWords,overlapWords){
     i+=chunkWords-overlapWords;
   }
   return chunks;
+}
+
+// Post-processing for chunkText()'s output (D3): mt_ra_doc_chunks.chunk_text
+// has a hard 4000-character CHECK constraint, but chunkText() caps by WORD
+// count only — a chunk of short words can still exceed 4000 characters (e.g.
+// dense tabular/CSV-flavored text with little whitespace). Splits any
+// over-length chunk into multiple sub-chunks at whitespace boundaries
+// wherever possible (falls back to a hard slice only if a single "word"
+// itself exceeds the cap, which the CHECK constraint would otherwise reject
+// outright). Chunks already under the cap pass through untouched.
+function _raCapChunkChars(chunks,maxChars){
+  maxChars=maxChars||4000;
+  var out=[];
+  (chunks||[]).forEach(function(chunk){
+    if(!chunk)return;
+    if(chunk.length<=maxChars){out.push(chunk);return;}
+    var words=chunk.split(/\s+/);
+    var cur='';
+    words.forEach(function(w){
+      while(w.length>maxChars){
+        if(cur){out.push(cur);cur='';}
+        out.push(w.slice(0,maxChars));
+        w=w.slice(maxChars);
+      }
+      var next=cur?(cur+' '+w):w;
+      if(next.length>maxChars){
+        if(cur)out.push(cur);
+        cur=w;
+      }else{
+        cur=next;
+      }
+    });
+    if(cur)out.push(cur);
+  });
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Requirement Agent — persistent document embeddings (RAG, spec v14)
+// Talks to proxy/server.js's /api/embed + /api/embed-info, mirroring
+// callAPI()'s (api.js) own auth-header and local-vs-hosted URL resolution
+// exactly, minus the Anthropic-specific body fields — embeddings are
+// generated server-side via Azure OpenAI, never the PM's own BYOK key.
+// ══════════════════════════════════════════════════════════════════════════
+var _raEmbedInfoCache=null; // {embedding_schema_version} — cached for the page's lifetime, UI-badge use only, never a retrieval gate (D5/D6)
+
+function _raEmbedProxyUrl(routePath){
+  var host=window.location.hostname;
+  var isLocal=host===''||host==='localhost'||host==='127.0.0.1';
+  if(isLocal)return 'http://localhost:3001'+routePath;
+  var hostedBase=(typeof PROXY_URL!=='undefined'&&PROXY_URL)?PROXY_URL.replace(/\/api\/anthropic\/?$/,''):'https://product-diagnostics-proxy.onrender.com';
+  return hostedBase+routePath;
+}
+
+async function _raEmbedAuthHeaders(){
+  var headers={'Content-Type':'application/json'};
+  try{
+    if(typeof authGetFreshToken==='function'){
+      var authToken=await authGetFreshToken();
+      if(authToken)headers['X-Auth-Token']=authToken;
+    }
+  }catch(e){console.warn('_raEmbedAuthHeaders: could not retrieve session token',e);}
+  return headers;
+}
+
+// Returns {embeddings:number[][], embedding_schema_version:string}. Throws
+// on any transport/validation failure — callers (raHandleUpload()/_raRunTurn())
+// decide how to degrade (D8), this function does not swallow errors itself.
+async function _raEmbedTexts(texts){
+  var headers=await _raEmbedAuthHeaders();
+  var r=await fetch(_raEmbedProxyUrl('/api/embed'),{method:'POST',headers:headers,body:JSON.stringify({texts:texts})});
+  var data=await r.json().catch(function(){throw new Error('Embedding request timed out or proxy unavailable.');});
+  if(data.error)throw new Error(typeof data.error==='string'?data.error:'Embedding request failed.');
+  if(!data.embeddings||!data.embedding_schema_version)throw new Error('Embedding response missing expected fields.');
+  _raEmbedInfoCache={embedding_schema_version:data.embedding_schema_version};
+  return data;
+}
+
+// Calls /api/embed-info once per page lifetime, caches the result. Badge/
+// compatibility-indicator use only (D5/D6) — never gates whether retrieval
+// runs, since a failed or stale fetch here must not block RA's chat turns.
+var _raEmbedInfoInFlight=null; // v14 code-review fix — the resolved-cache check alone doesn't stop two callers issued before the FIRST call resolves (e.g. two conversations' raRenderAttachedDocs() firing back-to-back on a fast conversation switch) from both starting their own fetch; caching the in-flight promise itself means concurrent callers await the same request.
+async function _raGetEmbedInfo(){
+  if(_raEmbedInfoCache)return _raEmbedInfoCache;
+  if(_raEmbedInfoInFlight)return _raEmbedInfoInFlight;
+  _raEmbedInfoInFlight=(async function(){
+    try{
+      var headers=await _raEmbedAuthHeaders();
+      var r=await fetch(_raEmbedProxyUrl('/api/embed-info'),{method:'GET',headers:headers});
+      var data=await r.json().catch(function(){return null;});
+      if(data&&data.embedding_schema_version){
+        _raEmbedInfoCache={embedding_schema_version:data.embedding_schema_version};
+      }
+    }catch(e){console.warn('_raGetEmbedInfo: fetch failed',e);}
+    _raEmbedInfoInFlight=null;
+    return _raEmbedInfoCache;
+  })();
+  return _raEmbedInfoInFlight;
 }
 
 // ── Shared row-menu mechanics (Phase 4) ──

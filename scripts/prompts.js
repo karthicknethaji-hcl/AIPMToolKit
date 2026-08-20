@@ -1344,7 +1344,7 @@ function buildRequirementAgentDMOpeningPrompt(sessionContext,firstName,docContex
 // message type - that mechanism does not exist in this version) AND tags
 // the new capability "will be created" (exact copy, never "new") in the
 // Live Draft's "## 4. Capabilities" section.
-function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage,docContext,uploadedDocText,uploadedDocName,streamingMode){
+function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,userMessage,docContext,uploadedDocText,uploadedDocName,streamingMode,retrievedDocContext){
   const sc=sessionContext||{};
   const historyStr=(chatHistory||[]).map(function(m){
     return (m.role==='user'?'User: ':'You: ')+m.text;
@@ -1375,6 +1375,11 @@ function buildRequirementAgentTurnPrompt(sessionContext,liveDraftMd,chatHistory,
     + 'EXISTING CAPABILITY CANVAS (for matching against - capabilities NOT in this list, if the conversation needs them, must be tagged "will be created — under: <Metric or Process Area Name>"; every capability\'s existing feature NAMES are included too, for new-vs-existing feature classification):\n'+ccStr+'\n\n'
     + 'PRIOR FINALIZED REQUIREMENT AGENT CONVERSATIONS (for "from RQ01" style references and cross-release context):\n'+priorBriefsStr+'\n\n'
     + (docContext||'')
+    // v14 (RA-Persistent-Doc-RAG-Spec-v14, D3/D5/D6) — excerpts retrieved
+    // from this conversation's own persistently-indexed uploads (see
+    // _raRunTurn()), already formatted via _docFormatBlock()'s existing
+    // untrusted-content framing — reused as-is, not a new mechanism.
+    + (retrievedDocContext||'')
     + 'CURRENT BRIEF (markdown, exactly what the PM sees right now - reference this to know what already exists and avoid duplicating or contradicting it, but you are NOT re-emitting this, only the sections that change):\n'+(liveDraftMd||'(nothing written yet)')+'\n\n'
     + 'CONVERSATION SO FAR:\n'+historyStr+'\n\n'
     + (uploadedDocText

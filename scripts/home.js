@@ -669,7 +669,15 @@ function _homeDoLaunch(){
 }
 
 // ── Clear session ──
-function homeClearSession(){
+// p_releaseSessionId (optional, v14 code-review fix) — the session id to
+// release occupancy for, passed explicitly by a caller that nulls
+// _activeSessionId BEFORE calling this function (e.g. homeSessionDeleteConfirm(),
+// which does so deliberately so the exit-save below is correctly skipped for
+// an already-deleted session) — without it, this function's own capture a
+// few lines down would read a global the caller already cleared. Every
+// other caller, which never nulls the global first, is unaffected — the
+// fallback below still reads it live exactly as before.
+function homeClearSession(p_releaseSessionId){
   // Save current session before wiping — must happen before any state is cleared.
   // v8.150 fix (Issue 2, corrected — explicit sign-off obtained for this
   // edit per this function's own standing rule): the v8.149 attempt at
@@ -718,7 +726,7 @@ function homeClearSession(){
   // doesn't await network calls elsewhere either, and a failed release
   // still self-heals via the 60-second staleness window in
   // claim_session_occupancy.
-  var _occSessionIdToRelease = (typeof _activeSessionId!=='undefined') ? _activeSessionId : null;
+  var _occSessionIdToRelease = p_releaseSessionId || ((typeof _activeSessionId!=='undefined') ? _activeSessionId : null);
   if(typeof _lsOccupancyHeartbeatStop==='function'){
     var _occStopPromise = _lsOccupancyHeartbeatStop();
     if(_occStopPromise && typeof _occStopPromise.then==='function'){
@@ -865,7 +873,35 @@ function homeClearSession(){
   // pointers) must not survive into whichever session is opened next.
   const raTabContent=document.getElementById('ra-tab');
   if(raTabContent){raTabContent.innerHTML='';raTabContent.classList.remove('on');}
-  if(typeof raResetState==='function') raResetState();
+
+  // v14 product decision (post-v9.27 review) — this function is an ordinary
+  // session PAUSE/switch, never a permanent delete: the outgoing session's
+  // raConversations and their documents must survive untouched in the
+  // database for later resume. Calls the NON-destructive
+  // raClearInMemoryState() (view-only reset, no RPCs, no database writes) —
+  // NOT raResetState(), which now does destructive document cleanup and is
+  // reachable only from kpi-tree.js's generateConfirmed() (Regenerate
+  // Discovery Map), the one flow where every one of this session's RA
+  // conversations is genuinely, permanently gone. An earlier build of this
+  // feature called raResetState() here too, on the mistaken premise that
+  // every raConversations wipe is equally permanent — it isn't: this
+  // function's own sessionStoreSave() call, above, already persisted the
+  // outgoing session's real conversations+documents before this point, so
+  // calling the destructive path here would tombstone documents that are
+  // still fully reachable the next time this same session is resumed.
+  //
+  // Round-2 code-review fix: MUST run BEFORE the leak-detection guard a few
+  // lines down, not after — an earlier version of this fix placed it last
+  // in the function (a leftover from when this call site was still the
+  // async, network-calling raResetState(), where trailing placement
+  // actually mattered). raClearInMemoryState() is synchronous and clears
+  // raConversations directly; _ssAssertCleanSlate() reads that same global
+  // via _sessionStoreBuildSnapshot(). Placed after it, the guard always
+  // found raConversations non-empty for any session that had used
+  // Requirement Agent — a permanent false positive on every single New
+  // Session/product-change/resume transition, not the rare real-bug signal
+  // this guard exists to catch.
+  if(typeof raClearInMemoryState==='function') raClearInMemoryState();
 
   // Re-show lock message
   const lock=document.getElementById('home-tab-lock');
@@ -1548,10 +1584,19 @@ function homeSessionDeleteConfirm(sessionId, sessionName, isShared){
       const isActive=(typeof _activeSessionId!=='undefined'&&_activeSessionId===sessionId);
       if(typeof sessionStoreDelete==='function') sessionStoreDelete(sessionId);
       if(isActive){
-        // Deleted the active session — clear live state without saving
+        // Deleted the active session — clear live state without saving.
+        // v14 code-review fix — sessionId passed into homeClearSession()
+        // explicitly, since this caller deliberately nulls _activeSessionId
+        // BEFORE calling it (so homeClearSession()'s own exit-save is
+        // correctly skipped for an already-deleted session) — that ordering
+        // otherwise starved homeClearSession()'s own occupancy-release
+        // capture of the real session id. Confirmed non-exploitable in this
+        // specific path (the row is already deleted, so occupancy fields
+        // are gone via cascade too), but the pattern shouldn't depend on
+        // every caller getting this ordering right by accident.
         _activeSessionId=null;
         _activeSessionIsShared=false;
-        if(typeof homeClearSession==='function') homeClearSession();
+        if(typeof homeClearSession==='function') homeClearSession(sessionId);
       }
       // Full re-render handles empty state restoration
       homeRenderSessionLibrary();
