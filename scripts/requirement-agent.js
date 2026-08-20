@@ -1512,24 +1512,35 @@ async function raHandleUpload(inputEl){
     return;
   }
 
+  // v14 code-review fix (round 2) — moved before the "Uploaded: X" message
+  // below, and out of the main try block: fetch the CURRENT document count
+  // fresh (never a stale client-held count) and reject before anything is
+  // added to the transcript. This used to run AFTER "Uploaded: X" was
+  // already appended, so a rejected upload left a permanent, false record
+  // in the conversation history claiming something was uploaded when
+  // nothing was — the same class of persisted-false-state bug
+  // raNewConversation()'s own fix (elsewhere in this file) was careful to
+  // avoid by using a toast instead of raAppendMessage() on failure.
+  var _raCountRes;
+  try{
+    _raCountRes=await _pgtRpc('ra_list_documents',{p_session_id:sessionId,p_conversation_id:conv.id});
+  }catch(err){
+    raAppendMessage(conv,'agent',(err&&err.message)||('Could not upload '+file.name+'.'));
+    return;
+  }
+  if(_raCountRes&&_raCountRes.error){
+    raAppendMessage(conv,'agent',_raCountRes.error.message||('Could not upload '+file.name+'.'));
+    return;
+  }
+  if(Array.isArray(_raCountRes&&_raCountRes.data)&&_raCountRes.data.length>=5){
+    raAppendMessage(conv,'agent','Maximum 5 documents per conversation reached - remove one before uploading another.');
+    return;
+  }
+
   raAppendMessage(conv,'user','Uploaded: '+file.name);
   _raSetBusy(true);
   _raShowIndexing(file.name);
   try{
-    // v14 code-review fix — fetch the CURRENT document count fresh (never a
-    // stale client-held count) and reject before extraction/embedding, not
-    // after — the ingest RPC's own "Maximum 5 documents" rejection would
-    // otherwise only fire after a real embedding-API call already ran on a
-    // document that was always going to be rejected.
-    var _raCountRes=await _pgtRpc('ra_list_documents',{p_session_id:sessionId,p_conversation_id:conv.id});
-    if(_raCountRes&&_raCountRes.error)throw _raCountRes.error;
-    if(Array.isArray(_raCountRes&&_raCountRes.data)&&_raCountRes.data.length>=5){
-      _raHideIndexing();
-      _raSetBusy(false);
-      raAppendMessage(conv,'agent','Maximum 5 documents per conversation reached - remove one before uploading another.');
-      return;
-    }
-
     var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
     var extracted=await extractFn(file,RA_MAX_UPLOAD_WORDS);
     var text=(extracted&&typeof extracted==='object')?extracted.text:extracted;
