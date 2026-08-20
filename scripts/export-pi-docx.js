@@ -332,7 +332,7 @@ async function buildAndDownloadPIDocx(){
       sections:[{
         properties:{page:{size:{width:16838,height:11906},margin:{top:1008,right:1008,bottom:1008,left:1008}}},
         children:[
-          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+'AI PM Toolkit',font:'Arial',size:18,color:GREY})]}),
+          new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(typeof getOrgName==='function'&&getOrgName()?getOrgName()+' · ':'')+'Product Studio',font:'Arial',size:18,color:GREY})]}),
           new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:piPlan.name+' — Release Plan',font:'Arial',size:40,bold:true,color:NAVY})]}),
           new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:productName+' · '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}),font:'Arial',size:22,color:GREY})]}),
           gap(20),new Paragraph({children:[new PageBreak()]}),

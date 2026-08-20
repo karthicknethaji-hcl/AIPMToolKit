@@ -1,4 +1,11 @@
-# Changelog — AI PM Toolkit
+# Changelog — Product Studio
+
+## v9.26 - 2026-08-20: Product renamed from AI PM Toolkit to Product Studio
+
+- Renamed the product from "AI PM Toolkit" to "Product Studio" across all user-facing surfaces: browser tab titles and header text (index.html, login.html), and the masthead/footer text on all four DOCX exports (Market Intelligence, PI Release Plan, Experiment Canvas, Adoption Readiness Brief).
+- Updated the 5 governance doc titles (AI_EDITING_RULES.md, DESIGN_SYSTEM.md, FILE_MANIFEST.txt, PROJECT_MAP.md, CHANGELOG.md) to reflect the new name; the historical v8.88–v8.91 entry describing the original "AI PM Toolkit" rename is left untouched as an accurate historical record.
+- Updated the zip/build naming convention in AI_EDITING_RULES.md from AIPM-Toolkit-* to Product-Studio-* for all future deliverables.
+- Internal-only identifiers (package.json names, pgt_-prefixed keys/hostnames, proxy code comments) intentionally retained as-is — not user-visible and out of scope for this rename.
 
 ## v9.25.06 - 2026-08-18: False "Dictation error" toast on every intentional stop
 

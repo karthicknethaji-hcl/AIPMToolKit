@@ -1751,7 +1751,7 @@ async function rcExportDocx(){
       new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:(orgName?orgName+' · ':'')+productName,font:'Arial',size:18,color:GREY})]}),
       new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:'Change Readiness Brief',font:'Arial',size:40,bold:true,color:NAVY})]}),
       new Paragraph({spacing:{before:0,after:10},children:[new TextRun({text:plan.releasePlanName||'Release Plan',font:'Arial',size:24,bold:true,color:PURPLE})]}),
-      new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'Generated from AI PM Toolkit · Squad '+(s2.squad||'—')+' · Sprint plan of '+sprintCount+' · '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+' · Status: '+statusLabel+' · Classification: Internal · Confidential',font:'Arial',size:18,color:GREY})]}),
+      new Paragraph({spacing:{before:0,after:20},children:[new TextRun({text:'Generated from Product Studio · Squad '+(s2.squad||'—')+' · Sprint plan of '+sprintCount+' · '+new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+' · Status: '+statusLabel+' · Classification: Internal · Confidential',font:'Arial',size:18,color:GREY})]}),
       gap(20),new Paragraph({children:[new PageBreak()]})
     ];
 
@@ -1821,7 +1821,7 @@ async function rcExportDocx(){
 
     const closing=[
       gap(30),
-      body('This brief was generated from the AI PM Toolkit’s Adoption Readiness plan for '+(plan.releasePlanName||'this release')+', traceable back to its source requirement briefs and Discovery Map lineage.')
+      body('This brief was generated from the Product Studio’s Adoption Readiness plan for '+(plan.releasePlanName||'this release')+', traceable back to its source requirement briefs and Discovery Map lineage.')
     ];
 
     const doc=new Document({
