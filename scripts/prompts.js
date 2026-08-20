@@ -743,19 +743,19 @@ Return ONLY strict JSON — no markdown, no backticks, no preamble:
 }`;
 }
 
-// ── PI PLANNING PROMPTS ──
+// ── RELEASE PLANNING PROMPTS ──
 
 function buildPICapPrompt(ctx,piGoal,capabilityName,refinement){
   if(typeof _assertPromptCtx==='function')_assertPromptCtx(ctx,'buildPICapPrompt');
   const productName=ctx.name;const industry=ctx.industry;
   const _piDocText=ctx.docContext||'';
   const _piHasDoc=String(_piDocText).trim().length>0;
-  const _piEnrichment=_piHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction()+'\nNote for PI planning: if a roadmap document is present, use it to inform sequencing and committed vs aspirational work. If a strategy document is present, use it to validate that this capability aligns with stated strategic priorities — not to generate new capabilities.':'';
-  return `You are a senior product strategist. Generate capabilities for a PI-first product plan.
+  const _piEnrichment=_piHasDoc?'\n'+_docEnrichmentInstruction()+'\n'+_backlogEnrichmentInstruction()+'\nNote for release planning: if a roadmap document is present, use it to inform sequencing and committed vs aspirational work. If a strategy document is present, use it to validate that this capability aligns with stated strategic priorities — not to generate new capabilities.':'';
+  return `You are a senior product strategist. Generate capabilities for a release-first product plan.
 
 Product: ${productName}
 Industry: ${industry}
-${piGoal?'PI Business Goal: '+piGoal:''}
+${piGoal?'Release Goal: '+piGoal:''}
 Capability: "${capabilityName}"
 ${ctx.additionalContext?'Additional context: '+ctx.additionalContext:''}
 ${_piDocText}${_piEnrichment}
@@ -766,7 +766,7 @@ Return ONLY this JSON — no markdown, no backticks:
   "capabilities": [
     {
       "name": "${capabilityName}",
-      "why": "why this capability matters for the PI goal — one sentence, specific",
+      "why": "why this capability matters for the release goal — one sentence, specific",
       "sub_capabilities": [
         {"name": "sub-cap name", "why": "specific contribution"}
       ],
@@ -779,12 +779,12 @@ Rules:
 - Return exactly 1 capability — the one named above, expanded with why and optional sub-caps
 - sub_capabilities: ${(typeof appSettings==='undefined'||appSettings.includeSubCaps)?'include ONLY if the capability is genuinely complex. Return null if not needed':'always return null — sub-capabilities are disabled for this workspace'}
 - If sub_capabilities exist, return 2-3 of them
-- why must reference the PI business goal if provided
+- why must reference the release goal if provided
 - features array always empty`;
 }
 
 // v8.98 — Rearchitected (see CHANGELOG). The model now supplies ONLY the four
-// semantic judgments that genuinely require reasoning: PI-Goal alignment,
+// semantic judgments that genuinely require reasoning: Release Goal alignment,
 // business value, time criticality, risk reduction, plus dependency-edge
 // extraction/inference and VoC/doc grounding sentences (written once, never
 // re-expanded). Diagnostic_Boost, composite scoring, MoSCoW gating, dependency
@@ -800,15 +800,15 @@ function buildPIGeneratePrompt(productName,industry,piGoal,stories,knownDeps,piS
     origin:s.origin||'kpi'
   })));
   const depStr=knownDeps?knownDeps.trim():'None provided';
-  return `You are a senior PI Planning facilitator. Provide the judgment-based inputs a deterministic sequencing engine needs to build a PI sprint plan. You do NOT sequence, score composite values, assign squads, or assign sprints — a separate engine does that from the fields you provide here.
+  return `You are a senior Release Planning facilitator. Provide the judgment-based inputs a deterministic sequencing engine needs to build a release sprint plan. You do NOT sequence, score composite values, assign squads, or assign sprints — a separate engine does that from the fields you provide here.
 
 Product: ${productName}
 Industry: ${industry}
-PI Goal: ${piGoal||'Deliver highest-value capabilities this PI'}
-PI Start: ${piStartDate||'TBD'}
+Release Goal: ${piGoal||'Deliver highest-value capabilities this release'}
+Release Start: ${piStartDate||'TBD'}
 Product Problem: ${productProblem||'Not specified'}
 Product KPIs: ${productKpis||'Not specified'}
-PI Constraints: ${constraints||'None declared'}
+Release Constraints: ${constraints||'None declared'}
 ${docContext||''}
 
 Stories (${stories.length} total):
@@ -825,12 +825,12 @@ If feedback/VoC content is present (complaints, NPS/CSAT verbatims, reviews, sur
 
 Return ONLY this JSON — no markdown, no backticks:
 {
-  "businessValueOneLiner": "one sentence — what this PI delivers commercially",
+  "businessValueOneLiner": "one sentence — what this release delivers commercially",
   "businessValueBullets": ["bullet 1","bullet 2","bullet 3"],
   "storyScores": {
     "storyId": {
       "piGoalAlignment": 5,
-      "alignmentReason": "max 18 words, names which entity in the PI Goal this story connects to",
+      "alignmentReason": "max 18 words, names which entity in the Release Goal this story connects to",
       "businessValue": 7,
       "timeCriticality": 5,
       "riskReduction": 3,
@@ -848,13 +848,13 @@ Every story in the input list must appear exactly once as a key in storyScores, 
 Scoring guidance:
 
 piGoalAlignment (1-5):
-  5 (Direct) — story outcome directly moves the metric, behavior, or user action named in the PI Goal. Shared entities: if the PI Goal names a metric and the story's linked metric/capability/feature matches or directly drives it, score 5.
-  3 (Supports) — same product area/user journey as the PI Goal, but does not directly move the named metric.
-  1 (Unrelated) — maintenance, polish, or unrelated area with no reasoning path back to the PI Goal.
+  5 (Direct) — story outcome directly moves the metric, behavior, or user action named in the Release Goal. Shared entities: if the Release Goal names a metric and the story's linked metric/capability/feature matches or directly drives it, score 5.
+  3 (Supports) — same product area/user journey as the Release Goal, but does not directly move the named metric.
+  1 (Unrelated) — maintenance, polish, or unrelated area with no reasoning path back to the Release Goal.
   For EVERY story write alignmentReason. If you cannot articulate a specific connection, score 1 — do not default to 3 out of uncertainty.
 
 businessValue (1-10) — use Product Problem, Product KPIs, and any PRD/RFP/VoC document signal as reference frame, not the story title in isolation.
-timeCriticality (1-10) — use PI Constraints and any roadmap document signal. Do not factor in PI start date proximity — the engine handles date-based sequencing.
+timeCriticality (1-10) — use Release Constraints and any roadmap document signal. Do not factor in release start date proximity — the engine handles date-based sequencing.
 riskReduction (1-10) — security, compliance, defect-fix, and technical-debt work scores higher than net-new feature work.
 
 Dependencies — combine two sources: (1) parse the PM's free-text known-dependencies into fromId/toId edges (source:"pm"), matching against the story list by title/feature similarity; (2) infer additional genuine technical-sequencing dependencies you can identify from story content alone (source:"ai") — only where there is real technical necessity, not loose thematic relation. fromId blocks toId means fromId must complete before toId can start. Do not fabricate an edge for stories with no clear technical or PM-declared relationship.`;}
@@ -867,7 +867,7 @@ const SYS_MI='You are a senior market research analyst and product strategy cons
 
 const SYS_MI_DOCX='You are a senior market research consultant. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.';
 
-const SYS_PI='You are a senior PI Planning facilitator. Respond ONLY with valid JSON. No markdown, no backticks, no preamble.';
+const SYS_PI='You are a senior Release Planning facilitator. Respond ONLY with valid JSON. No markdown, no backticks, no preamble.';
 
 // ── buildSummariseDocumentPrompt ──
 // Extracted from summariseDocument() in utils.js.
@@ -897,7 +897,7 @@ function buildSummariseDocumentPrompt(truncatedText, fileName){
     +'- feedback: customer feedback, NPS, CSAT, app store reviews, VoC report, verbatim quotes, survey results\n'
     +'- roadmap: product roadmap, release plan, delivery timeline, Now/Next/Later, themes, horizons, initiatives table\n'
     +'- strategy: product strategy, OKR document, objectives, key results, SWOT, competitive positioning, north star, product vision\n'
-    +'- backlog: prior sprint backlog, PI plan export, JIRA export, story list\n'
+    +'- backlog: prior sprint backlog, release plan export, JIRA export, story list\n'
     +'- other: Slack export, chat transcript, exploratory notes, general reference\n\n'
     +'Rules:\n'
     +'- Use the filename as a strong signal for docType. A file named "strategy", "roadmap", "prd", "backlog", "voc" etc. should bias heavily toward that docType unless the content clearly contradicts it.\n'

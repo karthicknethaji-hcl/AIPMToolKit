@@ -766,7 +766,7 @@ function _demoLoadFocusly(){
   const _demoPlan1={
     id:'rp-demo-1',
     createdAt:Date.now(),
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+    name:'REL-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStart2.toISOString().split('T')[0],
     sprintCount:5,sprintDuration:14,
     sprints:demoSprints2,
@@ -786,7 +786,7 @@ function _demoLoadFocusly(){
       'Deliver personalised nudge engine — 20% lift in weekly sessions',
       'Platform analytics + notification foundation for Q4 growth features'
     ],
-    businessValueOneLiner:'This PI builds the habit formation and platform infrastructure needed to convert first-week users into long-term subscribers.',
+    businessValueOneLiner:'This release builds the habit formation and platform infrastructure needed to convert first-week users into long-term subscribers.',
     backlogNotes:{
       'ST-GR7':'Low priority — rating trend data not available until ST-PL3 analytics schema lands'
     },
@@ -1359,7 +1359,7 @@ function _demoLoadOrderHub(){
   ];
   piInputs={type:'caps-only',
     piGoal:'Improve order fill rate and reduce return processing time before Q4 peak season.',
-    constraints:'Carrier integration work is out of scope for this PI — focus on capture accuracy and returns automation.',
+    constraints:'Carrier integration work is out of scope for this release — focus on capture accuracy and returns automation.',
     parsedCaps:[],parsedFeatures:[],
     carryForwardItems:['Address serviceability validation (partially complete from PI-2026-Q1)'],
     overlapResolutions:{}};
@@ -1410,7 +1410,7 @@ function _demoLoadOrderHub(){
   const _demoPlanOH={
     id:'rp-demo-oh',
     createdAt:Date.now(),
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+    name:'REL-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStartOH.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
     sprints:demoSprintsOH,
@@ -1426,7 +1426,7 @@ function _demoLoadOrderHub(){
       'Reduce return processing time through guided reasons and in-store drop-off',
       'Lay groundwork for carrier-dependent capabilities (address validation, refund-on-scan)'
     ],
-    businessValueOneLiner:'This PI improves order capture accuracy and returns processing speed ahead of Q4 peak season.',
+    businessValueOneLiner:'This release improves order capture accuracy and returns processing speed ahead of Q4 peak season.',
     backlogNotes:{
       'ST-CAP4':'Blocked on carrier zone data feed — see external dependency',
       'ST-RET5':'Blocked on carrier scan webhook integration'
@@ -2159,7 +2159,7 @@ function _demoLoadUnifiedCart(){
   ];
   piInputs={type:'caps-only',
     piGoal:'Increase cross-business attach rate and ship WCAG 2.2 AA compliance for unified checkout before the Q3 regulatory deadline.',
-    constraints:'Accessibility Squad is dedicated to compliance work this PI and cannot pick up cart/checkout features.',
+    constraints:'Accessibility Squad is dedicated to compliance work this release and cannot pick up cart/checkout features.',
     parsedCaps:[],parsedFeatures:[],
     carryForwardItems:['Multi-business bundle price preview (partially complete from PI-2026-Q1)'],
     overlapResolutions:{}};
@@ -2208,7 +2208,7 @@ function _demoLoadUnifiedCart(){
   const _demoPlanOC={
     id:'rp-demo-oc',
     createdAt:Date.now(),
-    name:'PI-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
+    name:'REL-'+new Date().getFullYear()+'-Q'+Math.ceil((new Date().getMonth()+1)/3),
     startDate:demoStartOC.toISOString().split('T')[0],
     sprintCount:2,sprintDuration:14,
     sprints:demoSprintsOC,
@@ -2222,12 +2222,12 @@ function _demoLoadUnifiedCart(){
     businessValueBullets:[
       'Increase cross-business attach rate via in-cart suggestions, date-conflict resolution, and single-charge checkout',
       'Ship WCAG 2.2 AA compliance for unified checkout ahead of the Q3 regulatory deadline',
-      'Lay groundwork for bundle templates and points expiry nudges in the following PI'
+      'Lay groundwork for bundle templates and points expiry nudges in the following release'
     ],
-    businessValueOneLiner:'This PI increases cross-business attach rate through cart and checkout improvements while delivering accessibility compliance ahead of the Q3 deadline.',
+    businessValueOneLiner:'This release increases cross-business attach rate through cart and checkout improvements while delivering accessibility compliance ahead of the Q3 deadline.',
     backlogNotes:{
-      'ST-CC4':'Blocked on bundle pricing engine carry-forward from PI-2026-Q1',
-      'ST-A3':'Lower priority — itinerary calendar view accessibility scoped for next PI'
+      'ST-CC4':'Blocked on bundle pricing engine carry-forward from REL-2026-Q1',
+      'ST-A3':'Lower priority — itinerary calendar view accessibility scoped for next release'
     },
     squads:_demoSquadsOC
   };

@@ -517,7 +517,7 @@ function _mmShowRegenConfirm(refinementText){
         <div style="font-size:13px;font-weight:500;color:var(--t1);">Regenerate Discovery Map?</div>
       </div>
       <div class="modal-body">
-        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and PI Planning</strong> data for this session. This cannot be undone.
+        This will permanently clear your <strong>Capability Canvas, Feature Canvas, Story Canvas and Release Canvas</strong> data for this session. This cannot be undone.
         <div style="margin-top:12px;">
           <button id="mm-regen-export-btn" style="width:100%;background:none;border:1px solid var(--divider);border-radius:6px;padding:7px 12px;font-size:11px;color:var(--t2);cursor:pointer;text-align:left;display:flex;align-items:center;gap:6px;" onclick="_mmRegenExport()">
             <i class="ti ti-download" style="font-size:11px;" aria-hidden="true"></i> Export current work before clearing

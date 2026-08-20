@@ -778,10 +778,10 @@ async function piGenerate(){
     try{parsed=JSON.parse(clean);}
     catch(pe){
       const s=clean.indexOf('{');const l=clean.lastIndexOf('}');
-      if(s>=0&&l>s)try{parsed=JSON.parse(clean.substring(s,l+1));}catch(pe2){throw new Error('Could not parse PI plan response.');}
-      else throw new Error('Could not parse PI plan response.');
+      if(s>=0&&l>s)try{parsed=JSON.parse(clean.substring(s,l+1));}catch(pe2){throw new Error('Could not parse release plan response.');}
+      else throw new Error('Could not parse release plan response.');
     }
-    if(!parsed||!parsed.storyScores)throw new Error('Invalid PI plan response — missing storyScores.');
+    if(!parsed||!parsed.storyScores)throw new Error('Invalid release plan response — missing storyScores.');
 
     // ── Validate AI response before the deterministic engine ever touches it ──
     const _knownIds=new Set(selectedStories.map(s=>s.id));
@@ -838,7 +838,7 @@ async function piGenerate(){
     });
 
     const backlogNotes={};
-    backlogIds.forEach(id=>{backlogNotes[id]='Did not fit within available squad capacity, or a dependency could not be scheduled within this PI.';});
+    backlogIds.forEach(id=>{backlogNotes[id]='Did not fit within available squad capacity, or a dependency could not be scheduled within this release.';});
     cyclicIds.forEach(id=>{backlogNotes[id]='Dependency cycle detected — excluded pending PM review.';});
     const backlogStoryIds=backlogIds.concat(Array.from(cyclicIds));
 
@@ -1333,7 +1333,7 @@ function piRenderBoard(){
   const backlogHtml=`<div class="pi-backlog-resize-handle" id="pi-backlog-resize" onmousedown="piBacklogResizeStart(event)" title="Drag to resize"></div>
   <div class="pi-backlog-tray" id="pi-backlog-tray" ondragover="piDragOver(event)" ondrop="piDropToBacklog(event)">
     <div class="pi-backlog-hdr">Backlog tray (${backlogStories.length} stories)</div>
-    <div class="pi-backlog-cards">${backlogStories.map(s=>{const shortId=s.id?s.id.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';const _canEditPiBl=(typeof canEditSession!=='function')||canEditSession();return`<div class="pi-backlog-card" draggable="${_canEditPiBl}" ${_canEditPiBl?`ondragstart="piDragStart(event,'${e(s.id)}')"`:''} onclick="piOpenBacklogPanel('${e(s.id)}')" title="${e(s.statement)}" style="cursor:${_canEditPiBl?'pointer':'not-allowed'};"><div class="pi-card-hdr-row"><span class="pi-card-id" style="display:block;">${e(shortId)}</span>${_canEditPiBl?`<button type="button" class="pi-card-remove" onclick="event.stopPropagation();event.preventDefault();piRemoveStoryFromBacklog('${e(s.id)}')" title="Move to Story Canvas" aria-label="Remove story from PI backlog">✕</button>`:''}</div>${e((s.statement||s.title||'').substring(0,55))}…</div>`;}).join('')}</div>
+    <div class="pi-backlog-cards">${backlogStories.map(s=>{const shortId=s.id?s.id.replace(/[^a-z0-9]/gi,'').substring(0,6).toUpperCase():'';const _canEditPiBl=(typeof canEditSession!=='function')||canEditSession();return`<div class="pi-backlog-card" draggable="${_canEditPiBl}" ${_canEditPiBl?`ondragstart="piDragStart(event,'${e(s.id)}')"`:''} onclick="piOpenBacklogPanel('${e(s.id)}')" title="${e(s.statement)}" style="cursor:${_canEditPiBl?'pointer':'not-allowed'};"><div class="pi-card-hdr-row"><span class="pi-card-id" style="display:block;">${e(shortId)}</span>${_canEditPiBl?`<button type="button" class="pi-card-remove" onclick="event.stopPropagation();event.preventDefault();piRemoveStoryFromBacklog('${e(s.id)}')" title="Move to Story Canvas" aria-label="Remove Story from Release Backlog">✕</button>`:''}</div>${e((s.statement||s.title||'').substring(0,55))}…</div>`;}).join('')}</div>
   </div>`;
 
   main.innerHTML=`<div class="pi-main-content" id="pi-main-content">${unsavedHtml+toolbarHtml+staleBannerHtml+boardHtml+backlogHtml}</div>`;
@@ -1913,14 +1913,14 @@ function piRenderRightPanel(storyId){
         ${_canEditPiRp?`<button class="pi-rp-add-dep-link" onclick="piShowAddDepForm('${e(storyId)}')">+ Add Dependency</button>`:''}
       </div>
       <div class="pi-rp-section">
-        <div class="pi-rp-section-lbl">Note <span style="font-size:9px;color:var(--label);">(exported in PI DOCX)</span></div>
+        <div class="pi-rp-section-lbl">Note <span style="font-size:9px;color:var(--label);">(Exported in Release Plan)</span></div>
         <textarea class="pi-rp-note-area" id="pi-rp-note-${storyId}" maxlength="300" ${_canEditPiRp?`onblur="piSaveNote('${e(storyId)}',this.value)"`:'readonly'}>${e(note)}</textarea>
         <div class="pi-rp-counter" id="pi-rp-note-count-${storyId}">${note.length} / 300</div>
       </div>
     </div>
     <div class="pi-rp-footer">
       <div id="pi-rp-remove-confirm-${storyId}" style="margin-bottom:6px;display:none;"></div>
-      ${_canEditPiRp?`<button class="pi-rp-remove-link" onclick="piShowRemoveConfirm('${e(storyId)}')"><i class="ti ti-trash" style="font-size:10px;" aria-hidden="true"></i> Remove from PI?</button>`:''}
+      ${_canEditPiRp?`<button class="pi-rp-remove-link" onclick="piShowRemoveConfirm('${e(storyId)}')"><i class="ti ti-trash" style="font-size:10px;" aria-hidden="true"></i> Remove from Release?</button>`:''}
     </div>`;
   // Wire note counter
   const noteArea=document.getElementById('pi-rp-note-'+storyId);

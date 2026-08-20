@@ -401,7 +401,7 @@ function ccShowDualEntry(){
       </div>
       <div class="cc-entry-divider">or</div>
       <div class="cc-entry-card">
-        <div class="cc-entry-eyebrow">PI-first path</div>
+        <div class="cc-entry-eyebrow">Release-First Path</div>
         <div class="cc-entry-label">I already have a capability plan</div>
         <div class="cc-entry-desc">Paste or upload your capabilities. AI generates features for each — skip the Discovery Map entirely.</div>
         <button class="cc-btn-ghost" onclick="ccActivatePIFirst()"><i class="ti ti-clipboard-list" style="font-size:12px;" aria-hidden="true"></i> Use my own plan</button>
@@ -2419,7 +2419,7 @@ function ccShowPIFirstForm(isEditing){
         </div>
         <div class="form-scroll" id="cc-pif-scroll">
           <div class="fl">
-            <label>Business Outcome / PI Goal</label>
+            <label>Business Outcome / Release Goal</label>
             <textarea id="cc-pi-goal" class="f-textarea" rows="2"
               placeholder="e.g. Reduce cart abandonment by 12% before peak season."
               maxlength="300"
@@ -2729,12 +2729,12 @@ async function ccBuildPICanvas(){
           gData.stages.push(_piStage);
         }
         if(!Array.isArray(_piStage.l1_metrics))_piStage.l1_metrics=[];
-        _piStage.l1_metrics.push({name:cap.name,why:'Auto-created from your PI-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
+        _piStage.l1_metrics.push({name:cap.name,why:'Auto-created from your release-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
       }
       const _piLbl=typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage';
       capStore[key2]={metricName:cap.name,stageLabel:_piLbl,stageId:'pi',bucketId:_bucketId,_piFirst:true,
-        capabilities:[{name:cap.name,why:piGoal||'PI-first capability',subCaps:null,features:[],
-          featStore:{top:feats.map(f=>({name:f.name,why:f.why||'PI-first feature',selected:false,metric:'',stage:_piLbl,cap:cap.name,subCap:null}))}}]};
+        capabilities:[{name:cap.name,why:piGoal||'release-first capability',subCaps:null,features:[],
+          featStore:{top:feats.map(f=>({name:f.name,why:f.why||'release-first feature',selected:false,metric:'',stage:_piLbl,cap:cap.name,subCap:null}))}}]};
     } else {
       // AI generates capabilities for this name
       try{
@@ -2764,10 +2764,10 @@ async function ccBuildPICanvas(){
               gData.stages.push(_piStage);
             }
             if(!Array.isArray(_piStage.l1_metrics))_piStage.l1_metrics=[];
-            _piStage.l1_metrics.push({name:_capName,why:'Auto-created from your PI-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
+            _piStage.l1_metrics.push({name:_capName,why:'Auto-created from your release-first capability plan.',bucketId:_bucketId,_isDefaultCustomMetric:false});
           }
           capStore[key2]={metricName:_capName,stageLabel:(typeof getPiStageLabel==='function'?getPiStageLabel(gData):'Custom Value Stage'),stageId:'pi',bucketId:_bucketId,_piFirst:true,
-            capabilities:[{name:_capName,why:c.why||piGoal||'PI-first capability',
+            capabilities:[{name:_capName,why:c.why||piGoal||'release-first capability',
               subCaps:c.sub_capabilities&&c.sub_capabilities.length>0?c.sub_capabilities:null,
               features:[],featStore:{}}]};
         }
