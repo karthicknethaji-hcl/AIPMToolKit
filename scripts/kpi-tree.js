@@ -155,6 +155,11 @@ async function generateConfirmed(extra){
   piDdPanelOpen=false;
   piDdPanelMetricKey=null;
   piStoryPool={};
+  // v9.27 fix: piReadinessPlans (Adoption Readiness) was missing from this
+  // reset — same gap already fixed once in home.js's New Session reset (see
+  // its own comment there) but never carried over to this regenerate path,
+  // so the tab stayed revealed with fully intact stale data after regen.
+  piReadinessPlans=[];
   const dvTabEl=document.getElementById('tab-dv');
   const laTabEl=document.getElementById('tab-la');
   const miTabEl=document.getElementById('tab-mi');
@@ -168,6 +173,29 @@ async function generateConfirmed(extra){
   if(fcTabEl)fcTabEl.style.display='none';
   if(scTabEl)scTabEl.classList.remove('revealed');
   if(piTabEl)piTabEl.classList.remove('revealed');
+  // v9.27 fix: tab-cc (Capability Canvas) and tab-arp (Adoption Readiness)
+  // were missing from this hide list — capStore was correctly wiped above,
+  // but the tab itself stayed reachable and showing an empty/reset canvas;
+  // tab-arp had both the data AND the tab left stale (see piReadinessPlans
+  // reset above). tab-cc is revealed via style.display (session-store.js),
+  // tab-arp via classList (readiness-canvas.js's rcRevealTab) — un-reveal
+  // each the same way its own reveal function does.
+  const ccTabEl2=document.getElementById('tab-cc');
+  const arpTabEl2=document.getElementById('tab-arp');
+  if(ccTabEl2)ccTabEl2.style.display='none';
+  if(arpTabEl2)arpTabEl2.classList.remove('revealed');
+  // v9.27 fix: tab-ra (Requirement Agent) was also missing — raConversations
+  // stamp intakeBriefId onto Capability Canvas capabilities (see
+  // ra_FinalizeSequence in requirement-agent.js), so once capStore is wiped
+  // above, any existing brief's capability linkage is already orphaned;
+  // reuse raResetState() (the same reset home.js's New Session flow calls)
+  // rather than duplicating its cleanup here. tab-op (Outcome Pulse) is
+  // deliberately NOT touched — opUnlocked is a documented one-way,
+  // whole-session flag (state.js) that only resets on an actual new
+  // session, not a same-session regenerate.
+  if(typeof raResetState==='function')raResetState();
+  const raTabEl=document.getElementById('tab-ra');
+  if(raTabEl)raTabEl.classList.remove('revealed');
   const analyzeBar=document.getElementById('dv-analyze-bar');
   if(analyzeBar)analyzeBar.remove();
   const dvLeft=document.getElementById('dv-left');
@@ -179,7 +207,13 @@ async function generateConfirmed(extra){
   fcRenderCanvas();
   if(typeof newScRender==='function')newScRender();
   if(typeof newScUpdateTabBadge==='function')newScUpdateTabBadge();
-  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc')switchTab('mm');
+  // v9.27 fix: 'cc', 'pi', 'arp', and 'ra' were missing here too — a PM
+  // sitting on Capability Canvas, Release Canvas, Adoption Readiness, or
+  // Requirement Agent when they regenerated stayed on a tab that had just
+  // been hidden out from under them, same class of bug as the tab-hide gap
+  // above. 'op' is deliberately excluded — Outcome Pulse is never hidden by
+  // this reset (see tab-op note above), so there's nothing to bounce out of.
+  if(curTab==='dv'||curTab==='la'||curTab==='fc'||curTab==='sc'||curTab==='cc'||curTab==='pi'||curTab==='arp'||curTab==='ra')switchTab('mm');
 
   // Industry fallback: product profile -> company profile -> empty (ST-14)
   const industry=_p.industry||_cp.companyIndustry||'';

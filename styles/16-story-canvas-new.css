@@ -99,3 +99,12 @@
 .nsc-empty-desc{font-size:11px;color:var(--t3);max-width:280px;line-height:1.5;margin-bottom:16px;}
 .nsc-empty-cta{background:var(--purple-pale);color:var(--purple);border:1px solid #CECBF6;border-radius:7px;padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:var(--font);display:inline-flex;align-items:center;gap:5px;transition:all 0.15s;}
 .nsc-empty-cta:hover{background:var(--purple);color:#fff;}
+
+/* ── Filter/Brief filter dropdowns - .cc-export-drop is position:fixed
+   globally with no default offsets, so without an explicit right-alignment
+   it renders wherever normal flow places it and can run off the right edge
+   of the viewport on a toolbar button this close to the edge (same fix
+   already proven for PI Planning's #pi-brief-filter-drop in
+   14-pi-planning.css — that rule's selector doesn't match these two ids,
+   so it never applied here). ── */
+#nsc-filter-drop,#nsc-brief-filter-drop{position:absolute!important;top:calc(100% + 4px)!important;right:0!important;left:auto!important;}

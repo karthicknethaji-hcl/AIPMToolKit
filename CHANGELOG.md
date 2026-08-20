@@ -1,5 +1,13 @@
 # Changelog — Product Studio
 
+## v9.26.02 - 2026-08-20: Filter dropdowns ran off the right edge of the viewport in Capability/Feature/Story Canvas
+
+- Fixed - The shared `.cc-export-drop` filter-dropdown component is `position:fixed` with no default offsets, so any instance rendered near the right edge of the toolbar ran off-screen; added the same right-alignment override already proven for PI Planning's own Brief filter (`#pi-brief-filter-drop`) to Capability Canvas's `#cc-cap-filter-drop`, Feature Canvas's `#fc-filter-drop`, and Story Canvas's `#nsc-filter-drop`/`#nsc-brief-filter-drop` - Story Canvas's Brief filter had been completely unfixed since its id never matched the existing PI Planning-specific rule.
+
+## v9.26.01 - 2026-08-20: Regenerating Discovery Map left Capability Canvas, Adoption Readiness, and Requirement Agent tabs/data stale
+
+- Fixed - Regenerating the Discovery Map correctly wiped Capability Canvas/Story Canvas/Release Canvas data but never cleared `piReadinessPlans` (Adoption Readiness) or Requirement Agent's `raConversations`, and never hid the `tab-cc`/`tab-arp`/`tab-ra` tabs at all (Capability Canvas's data was wiped yet its tab stayed reachable; Adoption Readiness and Requirement Agent kept both their stale data - including RA briefs' now-orphaned links to wiped capabilities - and fully browsable tabs) - the same class of gap already fixed once in home.js's New Session reset, just never carried over to this second reset path in kpi-tree.js; also added the same four tab keys to the post-regen "redirect back to Discovery Map" check, which was missing all of `cc`/`pi`/`arp`/`ra`. Outcome Pulse (`tab-op`) is deliberately left untouched - `opUnlocked` is a documented one-way, whole-session flag, not session-transient state.
+
 ## v9.26 - 2026-08-20: Product renamed from AI PM Toolkit to Product Studio
 
 - Renamed the product from "AI PM Toolkit" to "Product Studio" across all user-facing surfaces: browser tab titles and header text (index.html, login.html), and the masthead/footer text on all four DOCX exports (Market Intelligence, PI Release Plan, Experiment Canvas, Adoption Readiness Brief).

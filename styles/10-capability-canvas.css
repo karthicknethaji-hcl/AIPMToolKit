@@ -771,3 +771,10 @@
 .cc-cap-review-remove{display:flex;align-items:center;justify-content:center;width:24px;height:24px;flex-shrink:0;border-radius:5px;color:var(--red);cursor:pointer;transition:background 0.1s;}
 .cc-cap-review-remove:hover{background:#FCEBEB;}
 .cc-cap-review-remove i{font-size:12px;color:var(--red);}
+
+/* ── Capability filter dropdown - .cc-export-drop is position:fixed globally
+   with no default offsets, so without an explicit right-alignment it renders
+   wherever normal flow places it and can run off the right edge of the
+   viewport on a toolbar button this close to the edge (same fix already
+   proven for PI Planning's #pi-brief-filter-drop in 14-pi-planning.css). ── */
+#cc-cap-filter-drop{position:absolute!important;top:calc(100% + 4px)!important;right:0!important;left:auto!important;}
