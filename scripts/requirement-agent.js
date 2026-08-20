@@ -59,6 +59,11 @@ function raClearInMemoryState(){
   // id from _raUid()'s generation scheme.
   _raChatDraftByConvId={};
   _raLastRenderedConvId=null;
+  // v14 code-review fix — same unbounded-growth-across-clears reasoning as
+  // _raChatDraftByConvId above; this is view-scoped, per-conversation
+  // cache state, not something that should survive past whichever
+  // conversations are about to disappear.
+  _raDocsExistCache={};
   // Confirmed pre-existing bug (predates the Discovery-First redesign):
   // this used to hardcode raEnabled=false unconditionally, so every
   // session relaunch after the first one in a browser tab reset raEnabled
@@ -108,20 +113,34 @@ async function raResetState(p_sessionId){
     // or double-processing a conversation if anything else mutated it
     // concurrently (e.g. a rename, or another reset firing) mid-loop.
     var _rrsSnapshot=raConversations.slice();
-    for(var _rrsI=0;_rrsI<_rrsSnapshot.length;_rrsI++){
-      var _rrsConvId=_rrsSnapshot[_rrsI].id;
-      try{
-        var _rrsListRes=await _pgtRpc('ra_list_documents',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId});
-        if(_rrsListRes&&_rrsListRes.error)throw _rrsListRes.error;
-        var _rrsDocs=(_rrsListRes&&_rrsListRes.data)||[];
-        for(var _rrsJ=0;_rrsJ<_rrsDocs.length;_rrsJ++){
-          var _rrsRemoveRes=await _pgtRpc('ra_remove_document',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId,p_doc_id:_rrsDocs[_rrsJ].doc_id});
-          if(_rrsRemoveRes&&_rrsRemoveRes.error)console.warn('[requirement-agent] raResetState: failed to remove document',_rrsDocs[_rrsJ].doc_id,_rrsRemoveRes.error);
+    // v14 code-review fix (efficiency) — parallelized ACROSS conversations,
+    // sequential only WITHIN one. sql/ra-doc-chunks.sql's advisory lock key
+    // is hashtext(conversation_id)-scoped, so different conversations never
+    // contend with each other and gain nothing from being serialized; this
+    // turned an O(total documents across every conversation) sequential
+    // chain — which generateConfirmed() (kpi-tree.js) now awaits, blocking
+    // Regenerate Discovery Map from continuing — into O(the single slowest
+    // conversation's own document count). Removals WITHIN one conversation
+    // MUST stay sequential: they share that conversation's lock, and
+    // ra_remove_document()'s own pg_try_advisory_xact_lock is a non-
+    // blocking try-lock that would fail a concurrent second call outright,
+    // not queue behind it.
+    await Promise.all(_rrsSnapshot.map(function(_rrsConv){
+      var _rrsConvId=_rrsConv.id;
+      return (async function(){
+        try{
+          var _rrsListRes=await _pgtRpc('ra_list_documents',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId});
+          if(_rrsListRes&&_rrsListRes.error)throw _rrsListRes.error;
+          var _rrsDocs=(_rrsListRes&&_rrsListRes.data)||[];
+          for(var _rrsJ=0;_rrsJ<_rrsDocs.length;_rrsJ++){
+            var _rrsRemoveRes=await _pgtRpc('ra_remove_document',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId,p_doc_id:_rrsDocs[_rrsJ].doc_id});
+            if(_rrsRemoveRes&&_rrsRemoveRes.error)console.warn('[requirement-agent] raResetState: failed to remove document',_rrsDocs[_rrsJ].doc_id,_rrsRemoveRes.error);
+          }
+        }catch(err){
+          console.warn('[requirement-agent] raResetState: document cleanup failed for conversation '+_rrsConvId+' — relying on ra_purge_orphaned_documents() to catch it later',err);
         }
-      }catch(err){
-        console.warn('[requirement-agent] raResetState: document cleanup failed for conversation '+_rrsConvId+' — relying on ra_purge_orphaned_documents() to catch it later',err);
-      }
-    }
+      })();
+    }));
   }
   raClearInMemoryState();
 }
@@ -136,21 +155,25 @@ async function raResetState(p_sessionId){
 // action buttons render as usable, while every underlying RPC's own DB-side
 // authorization (session ownership, scoped by mt_sessions.user_id) rejected
 // them anyway — "the button works but every call fails" is a worse failure
-// mode than the button never rendering. Reuses the exact same primitives
-// canEditSession() itself reads (currentUserRole via canEditSession(),
-// _activeSessionIsShared, _activeSessionOwnerId, currentUser.id) rather
-// than inventing new state. Every gate in THIS file uses this, never bare
-// canEditSession() — canEditSession() itself is untouched and stays correct
-// for every other surface that calls it directly.
+// mode than the button never rendering. Every gate in THIS file uses this,
+// never bare canEditSession() — canEditSession() itself is untouched and
+// stays correct for every other surface that calls it directly.
+//
+// v14 code-review fix (round 4, reuse) — the ownership comparison itself
+// is now session-store.js's shared _ssIsSessionOwner() primitive, not a
+// third hand-copy of the same three-variable check already duplicated
+// there twice (hdrApplySessionNameVisibility()/hdrRenameSession()). Those
+// two fail OPEN on unknown ownership (legacy-record compatibility); RA has
+// no such legacy gap, so this fails CLOSED (=== true, not !== false) —
+// same deliberate divergence as before, just expressed through the shared
+// primitive instead of re-deriving it.
 function _raCanEditOwner(){
   if(typeof canEditSession==='function'&&!canEditSession())return false;
   // Private (non-shared) session: canEditSession() already returning true
   // here means "I own it" — RLS never lets a non-owner load a private
   // session at all, matching canEditSession()'s own line for this exact case.
   if(typeof _activeSessionIsShared==='undefined'||_activeSessionIsShared!==true)return true;
-  var uid=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
-  var ownerId=(typeof _activeSessionOwnerId!=='undefined')?_activeSessionOwnerId:null;
-  return !!(uid&&ownerId&&ownerId===uid);
+  return (typeof _ssIsSessionOwner==='function')&&_ssIsSessionOwner()===true;
 }
 
 // Escapes literal control characters (newline/CR/tab) but ONLY while inside
@@ -599,6 +622,17 @@ function raOnTabEnter(){
 // is a background reconciliation pass, not something that needs to re-run
 // every time the tab is revisited in one sitting.
 var _raPurgedSessionIds=new Set();
+
+// v14 code-review fix (efficiency) — conv.id -> boolean, "does this
+// conversation have at least one active document." Populated by
+// raRenderAttachedDocs() (which already fetches ra_list_documents() on
+// conversation open/upload/removal) and consulted by _raRunTurn()'s
+// retrieval block before deciding whether to bother with the embed+search
+// round trip at all — undefined (never primed) is the only state that
+// falls back to a real fetch. Deliberately never explicitly invalidated on
+// upload/removal: both of those already call raRenderAttachedDocs() on
+// success, which overwrites the entry with the freshly-fetched truth.
+var _raDocsExistCache={};
 function _raPurgeOrphanedDocsOpportunistic(){
   // The RPC itself requires active, non-readonly membership
   // (sql/ra-doc-chunks.sql), so a readonly viewer's call was never going to
@@ -984,6 +1018,31 @@ function _raSetBusy(busy){
   // touching the textarea's value, so an Enter press mid-generation is a
   // safe no-op that leaves whatever the PM was typing intact.
 }
+
+// v14 code-review fix (altitude) — raBusy is a bare flag with no owning
+// abstraction, hand-guarded at every RA action's own call site. That gap
+// caused two real bugs in this same build: raNewConversation() became a
+// second concurrent writer of raBusy alongside raRunOpeningTurn(), and the
+// first fix for that left raBusy stuck true forever on a failed save, with
+// nothing left to ever clear it. _raWithBusy() is the actual invariant
+// that kept getting hand-rolled and getting one part wrong: set busy, run
+// the async work, ALWAYS clear busy after, success or failure, via a real
+// try/finally rather than a hand-placed pair of _raSetBusy() calls. New RA
+// actions with a single async critical section should build on this
+// rather than re-deriving the shape by hand; functions with more layered
+// state around their busy window (raRunOpeningTurn(), _raRunTurn(),
+// raHandleUpload() — typing/indexing indicators, streaming bubbles, error-
+// specific messaging interleaved with the busy window) are left as their
+// own already-correct, already-reviewed try/finally blocks rather than
+// force-fit into this simpler shape for no behavior change.
+async function _raWithBusy(fn){
+  _raSetBusy(true);
+  try{
+    return await fn();
+  }finally{
+    _raSetBusy(false);
+  }
+}
 // v14 code-review fix — _raShowTyping/_raHideTyping and the newer
 // _raShowIndexing/_raHideIndexing were near-identical copies of each other
 // (same transient, never-persisted-to-conv.messages DOM row: insert on
@@ -1143,16 +1202,17 @@ async function raNewConversation(){
   // since ra_ingest_document_chunks()'s authorization check reads the
   // database's current snapshot, which won't contain this conversation's
   // id until this resolves.
-  _raSetBusy(true);
-  var _raNcPersisted=await _raPersist();
-  // Round-2 code-review fix — ALWAYS clear raBusy here, success or not.
-  // The original failure branch left it permanently true with no other
-  // writer left to clear it: raRenderCenter()'s freshly-rendered composer
-  // has no actual disabled attribute on its Send button/upload chip (that
-  // only reflects raBusy at the moment of rendering, not afterward), so
-  // this looked clickable but silently no-opped forever, for THIS
-  // conversation and every OTHER already-healthy one, until a page reload.
-  _raSetBusy(false);
+  // Round-2 code-review fix — ALWAYS clear raBusy after this, success or
+  // not. The original failure branch left it permanently true with no
+  // other writer left to clear it: raRenderCenter()'s freshly-rendered
+  // composer has no actual disabled attribute on its Send button/upload
+  // chip (that only reflects raBusy at the moment of rendering, not
+  // afterward), so this looked clickable but silently no-opped forever,
+  // for THIS conversation and every OTHER already-healthy one, until a
+  // page reload. Round-4 fix: expressed via _raWithBusy() (see its own
+  // comment) instead of a hand-placed _raSetBusy(true)/(false) pair —
+  // this exact function is the one whose bug motivated that helper.
+  var _raNcPersisted=await _raWithBusy(function(){return _raPersist();});
   if(!_raNcPersisted){
     // Warn via toast, not a persisted chat message — an earlier version
     // used raAppendMessage(), which pushes into conv.messages, which is
@@ -1387,8 +1447,20 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var _raRetrievalSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
     try{
       if(_raRetrievalSessionId&&typeof _pgtRpc==='function'){
-        var _raDocsRes=await _pgtRpc('ra_list_documents',{p_session_id:_raRetrievalSessionId,p_conversation_id:conv.id});
-        if(_raDocsRes&&!_raDocsRes.error&&Array.isArray(_raDocsRes.data)&&_raDocsRes.data.length){
+        // v14 code-review fix (efficiency) — _raDocsExistCache (populated by
+        // raRenderAttachedDocs(), which already fetches this same list on
+        // conversation open/upload/removal) lets most turns skip this RPC
+        // entirely instead of re-fetching the full document list purely to
+        // check its length. Only a genuinely unknown state (undefined —
+        // cache never primed for this conversation yet) falls back to a
+        // real fetch, which then primes the cache for every turn after it.
+        var _raHasDocs=_raDocsExistCache[conv.id];
+        if(_raHasDocs===undefined){
+          var _raDocsRes=await _pgtRpc('ra_list_documents',{p_session_id:_raRetrievalSessionId,p_conversation_id:conv.id});
+          _raHasDocs=!!(_raDocsRes&&!_raDocsRes.error&&Array.isArray(_raDocsRes.data)&&_raDocsRes.data.length);
+          _raDocsExistCache[conv.id]=_raHasDocs;
+        }
+        if(_raHasDocs){
           var _raQuery=_raBuildRetrievalQuery(conv,userMessage);
           if(_raQuery){
             var _raQueryEmbedRes=await _raEmbedTexts([_raQuery]);
@@ -1660,6 +1732,13 @@ async function raRenderAttachedDocs(conv){
     console.warn('[requirement-agent] raRenderAttachedDocs failed',err);
     if(_raActiveConv()===conv)box.innerHTML='';
     return;
+  }
+  // v14 code-review fix (efficiency) — primes _raDocsExistCache with this
+  // fetch's real answer regardless of whether THIS render turns out to be
+  // stale below; the data is accurate for conv.id either way, and this is
+  // what lets _raRunTurn() skip its own existence-check RPC on later turns.
+  if(res&&!res.error&&Array.isArray(res.data)){
+    _raDocsExistCache[conv.id]=res.data.length>0;
   }
   // Re-check we're still looking at the same conversation's box — a slow
   // fetch landing after the PM has since switched conversations must not
