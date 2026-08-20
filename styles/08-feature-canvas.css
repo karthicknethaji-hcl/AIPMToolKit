@@ -373,12 +373,6 @@
 
 /* ── FC Filter button active state ── */
 #fc-filter-btn.active{border-color:var(--purple);background:var(--purple-pale);color:var(--purple);}
-/* ── Filter dropdown - .cc-export-drop is position:fixed globally with no
-   default offsets, so without an explicit right-alignment it renders wherever
-   normal flow places it and can run off the right edge of the viewport on a
-   toolbar button this close to the edge (same fix already proven for PI
-   Planning's #pi-brief-filter-drop in 14-pi-planning.css). ── */
-#fc-filter-drop{position:absolute!important;top:calc(100% + 4px)!important;right:0!important;left:auto!important;}
 .fc-filter-row{display:flex;align-items:center;gap:6px;padding:5px 12px;font-size:11px;color:var(--t2);cursor:pointer;transition:background 0.1s;}
 .fc-filter-row:hover{background:var(--card);}
 .fc-filter-row input[type=checkbox]{accent-color:var(--purple);}

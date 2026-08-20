@@ -340,11 +340,17 @@ async function sessionStoreSyncFromDB() {
             var localRegenAt = localSnap.dmRegenAt || 0;
             var remoteRegenAt = remoteSnapshot.dmRegenAt || 0;
             if (localRegenAt > remoteRegenAt) {
-              // Local cleared more recently — preserve local downstream keys
+              // Local cleared more recently — preserve local downstream keys.
+              // v9.27 code-review fix: piReadinessPlans/raConversations were
+              // missing from this merge — same class of gap as the
+              // localStorage pre-clear in kpi-tree.js's _mmRegenProceed(),
+              // and _SS_CONTENT_FIELDS below already lists both correctly.
               remoteSnapshot = Object.assign({}, remoteSnapshot, {
                 capStore:   localSnap.capStore,
                 scCanvas:   localSnap.scCanvas,
                 piPlans:    localSnap.piPlans,
+                piReadinessPlans: localSnap.piReadinessPlans,
+                raConversations:  localSnap.raConversations,
                 dmRegenAt:  localSnap.dmRegenAt
               });
             }

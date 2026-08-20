@@ -1,5 +1,14 @@
 # Changelog — Product Studio
 
+## v9.26.03 - 2026-08-20: Code-review fixes on v9.26.01 + v9.26.02
+
+Note: bundling 4 fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05).
+
+- Fixed - The v9.26.01 regenerate reset only cleared `piReadinessPlans`/`raConversations` in memory; the localStorage pre-clear in `_mmRegenProceed()` and the `dmRegenAt`-based merge in `sessionStoreSyncFromDB()` both still had older, un-updated field allowlists, so a tab close/crash before the Supabase write confirmed (or a stale-remote-snapshot merge) could resurrect the exact stale Adoption Readiness/Requirement Agent data the in-memory reset was meant to fix. Added both fields to each allowlist.
+- Fixed - v9.26.02's per-id `!important` overrides fought the shared `.cc-export-drop` base class's `position:fixed` default rather than fixing it; corrected the base class itself (matching the already-correct sibling `.cc-addcap-drop`) and removed all 4 now-redundant per-id overrides, including the pre-existing PI Planning one.
+- Changed - Renamed `ccTabEl2`/`arpTabEl2` (kpi-tree.js) to `ccTabEl`/`arpTabEl` - the numeric suffix implied a name collision that never existed.
+- Changed - `generateConfirmed()` now wipes `#ra-tab`'s innerHTML before calling `raResetState()`, matching the ordering `raResetState()`'s own comments document as an assumption (home.js's New Session flow already does this); currently unreachable given the regenerate button only exists on the Discovery Map tab, but closes the gap for any future change that might make it reachable.
+
 ## v9.26.02 - 2026-08-20: Filter dropdowns ran off the right edge of the viewport in Capability/Feature/Story Canvas
 
 - Fixed - The shared `.cc-export-drop` filter-dropdown component is `position:fixed` with no default offsets, so any instance rendered near the right edge of the toolbar ran off-screen; added the same right-alignment override already proven for PI Planning's own Brief filter (`#pi-brief-filter-drop`) to Capability Canvas's `#cc-cap-filter-drop`, Feature Canvas's `#fc-filter-drop`, and Story Canvas's `#nsc-filter-drop`/`#nsc-brief-filter-drop` - Story Canvas's Brief filter had been completely unfixed since its id never matched the existing PI Planning-specific rule.

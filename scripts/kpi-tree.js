@@ -180,10 +180,10 @@ async function generateConfirmed(extra){
   // reset above). tab-cc is revealed via style.display (session-store.js),
   // tab-arp via classList (readiness-canvas.js's rcRevealTab) — un-reveal
   // each the same way its own reveal function does.
-  const ccTabEl2=document.getElementById('tab-cc');
-  const arpTabEl2=document.getElementById('tab-arp');
-  if(ccTabEl2)ccTabEl2.style.display='none';
-  if(arpTabEl2)arpTabEl2.classList.remove('revealed');
+  const ccTabEl=document.getElementById('tab-cc');
+  const arpTabEl=document.getElementById('tab-arp');
+  if(ccTabEl)ccTabEl.style.display='none';
+  if(arpTabEl)arpTabEl.classList.remove('revealed');
   // v9.27 fix: tab-ra (Requirement Agent) was also missing — raConversations
   // stamp intakeBriefId onto Capability Canvas capabilities (see
   // ra_FinalizeSequence in requirement-agent.js), so once capStore is wiped
@@ -193,6 +193,14 @@ async function generateConfirmed(extra){
   // deliberately NOT touched — opUnlocked is a documented one-way,
   // whole-session flag (state.js) that only resets on an actual new
   // session, not a same-session regenerate.
+  // v9.27 code-review follow-up: also wipe #ra-tab's innerHTML the same way
+  // home.js's homeClearSession() does immediately before calling
+  // raResetState() — that function's own comments document this ordering
+  // as an assumption, not just a convenience, so this reset path should
+  // honor it too even though today's UI gating makes it unreachable while
+  // Requirement Agent is the active tab.
+  const raTabContentEl=document.getElementById('ra-tab');
+  if(raTabContentEl){raTabContentEl.innerHTML='';raTabContentEl.classList.remove('on');}
   if(typeof raResetState==='function')raResetState();
   const raTabEl=document.getElementById('tab-ra');
   if(raTabEl)raTabEl.classList.remove('revealed');
@@ -625,6 +633,14 @@ async function _mmRegenProceed(refinementText){
           localEntry.snapshot.capStore={};
           localEntry.snapshot.scCanvas=[];
           localEntry.snapshot.piPlans=[];
+          // v9.27 code-review fix: this allowlist wasn't updated when
+          // piReadinessPlans/raConversations gained their own in-memory
+          // reset above - without these two, a tab close/crash before the
+          // async Supabase write confirms would resume from this stale
+          // localStorage snapshot and resurrect the exact stale Adoption
+          // Readiness/Requirement Agent data the in-memory reset just fixed.
+          localEntry.snapshot.piReadinessPlans=[];
+          localEntry.snapshot.raConversations=[];
           localEntry.snapshot.dmRegenAt=sessionContext.dmRegenAt;
           localStorage.setItem(_SS_PREFIX+_activeSessionId,JSON.stringify(localEntry));
         }

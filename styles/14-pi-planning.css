@@ -385,9 +385,3 @@ input[type=date]:focus,input[type=number]:focus{border-color:var(--blue);}
    per explicit feedback that the dashed style wasn't evident enough. ── */
 .pi-add-plan-btn{font-size:11px;font-weight:700;color:#fff;background:var(--purple);border:none;border-radius:7px;padding:9px 12px;width:100%;cursor:pointer;margin-top:2px;display:flex;align-items:center;justify-content:center;gap:6px;font-family:var(--font);}
 .pi-add-plan-btn:hover{background:var(--purple-deep);}
-
-/* ── Brief filter dropdown - .cc-export-drop is position:fixed globally
-   with no default offsets, so without an explicit right-alignment it
-   renders wherever normal flow places it and can run off the right edge
-   of the viewport on a toolbar button this close to the edge. ── */
-#pi-brief-filter-drop{position:absolute!important;top:calc(100% + 4px)!important;right:0!important;left:auto!important;}
