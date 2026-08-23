@@ -1,5 +1,9 @@
 # Changelog — Product Studio
 
+## v9.27.01 - 2026-08-23: Company-wide toggle to run Requirement Agent without document RAG
+
+- Added - A new "Requirement Agent Document RAG" toggle under Settings > Company Profile & Access (off by default) lets a company fall back to the pre-v9.27 ephemeral upload behavior - extract, use for that one reply, nothing persisted - while Azure OpenAI embedding connectivity is blocked by IT network/compliance policy; turning it on restores the full chunk/embed/index/retrieve pipeline. Both paths now share a uniform 20,000-word extraction cap with a disclosed truncation notice, replacing an unrelated, undisclosed 8,000-character prompt-time truncation that applied regardless of the toggle.
+
 ## v9.27 - 2026-08-20: Requirement Agent documents now persist for the conversation's full lifetime (RAG)
 
 - Added - Mid-chat document uploads in Requirement Agent are no longer one-shot: uploaded files are chunked, embedded, and indexed so they stay retrievable for the conversation's entire lifetime (including after pause/resume), surfaced in a new attached-documents list that supports removal, with the 5-document-per-conversation cap and filename length checked before any extraction/embedding work runs.

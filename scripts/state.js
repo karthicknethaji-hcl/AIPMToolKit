@@ -45,6 +45,14 @@ const appSettings={
   // different model response contract (prompts.js's streamingMode param)
   // that's had less real-world mileage than the existing buffered path.
   aiStreamingEnabled:false,
+  // v9.27.01 — company-wide switch between Requirement Agent's persistent-
+  // document RAG (chunk/embed/ingest, retrieval every turn) and the pre-
+  // v9.27 ephemeral one-shot upload (extract, feed into that single turn,
+  // nothing persisted). Default OFF: RAG depends on an Azure OpenAI
+  // embedding call that's currently blocked by IT network/compliance
+  // policy, so this ships inert until that's resolved and a company
+  // explicitly opts in via Settings > Company Profile & Access.
+  raRagEnabled:false,
   // Section 2 — Feature Modules
   featDD:true,
   featCap:true,   // always true — core workflow, not user-configurable

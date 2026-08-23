@@ -400,6 +400,8 @@ async function settingsPageSave() {
   if(modelEl) appSettings.model = modelEl.value;
   const togAis = document.getElementById('sp-tog-ais');
   if(togAis) appSettings.aiStreamingEnabled = _spTogState('ais');
+  const togRag = document.getElementById('sp-tog-rag');
+  if(togRag) appSettings.raRagEnabled = _spTogState('rag');
 
   // Section 2 — Feature Modules (read toggle states)
   const togMd = document.getElementById('sp-tog-md');
@@ -893,7 +895,7 @@ function spTogRow(k) {
 }
 function _spReadTogInit(k) {
   // Read from appSettings for known keys
-  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled' };
+  const map = { md:'featDD', pd:'featDiag', mi:'featMI', pi:'featPI', sc:'includeSubCaps', ais:'aiStreamingEnabled', rag:'raRagEnabled' };
   const key = map[k];
   return key ? appSettings[key] : true;
 }
@@ -945,8 +947,15 @@ function _spTabLabel() {
 }
 
 // ── Toggle HTML builder ──
-function _spTog(k, initOn) {
-  return `<div id="sp-tog-${k}" onclick="spTogRow('${k}')" style="position:relative;width:34px;height:18px;cursor:pointer;flex-shrink:0;">
+// v9.27.01 code-review fix — optional 3rd param `disabled` (default false,
+// every pre-existing call site is unaffected) drops the onclick entirely
+// for a non-admin instead of leaving every toggle on this page clickable
+// regardless of role. spTogRow('rag') never runs for that click, so
+// _spTogStates.rag never gets set and settingsPageSave() falls back to
+// _spReadTogInit('rag') — appSettings.raRagEnabled's current, unchanged
+// value — rather than a non-admin's locally-flipped one.
+function _spTog(k, initOn, disabled) {
+  return `<div id="sp-tog-${k}" onclick="${disabled?'':`spTogRow('${k}')`}" style="position:relative;width:34px;height:18px;cursor:${disabled?'not-allowed':'pointer'};flex-shrink:0;opacity:${disabled?'0.5':'1'};">
     <div id="sp-trk-${k}" style="position:absolute;inset:0;background:${initOn?'#5F1EBE':'#D0D5E8'};border-radius:18px;"></div>
     <div id="sp-tth-${k}" style="position:absolute;top:2px;left:${initOn?'16px':'2px'};width:14px;height:14px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></div>
   </div>`;
@@ -1306,6 +1315,14 @@ function spP1() {
     'Requirement Agent replies reveal token-by-token as they generate, instead of appearing all at once when the full response is ready.',
     _spTog('ais', appSettings.aiStreamingEnabled),
     'Experimental — off by default.',
+    true
+  )}
+
+  ${_spRow(
+    'Requirement Agent Document RAG',
+    'Documents uploaded in Requirement Agent are embedded and stay searchable for the rest of that conversation.',
+    _spTog('rag', appSettings.raRagEnabled, readOnly),
+    readOnly?'Only admins can change this.':'Off by default until your organization\'s embedding service is approved.',
     true
   )}`;
 }

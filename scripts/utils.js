@@ -621,10 +621,21 @@ function _loadXlsx(){
 // {text, truncated} instead, so the caller can disclose truncation rather
 // than silently dropping content (RA-Persistent-Doc-RAG-Spec-v14, OI-3/OI-5).
 function extractTextFromFile(file,maxWords){
-  return _extractTextFromFileRaw(file).then(function(text){
+  return _extractTextFromFileRaw(file).then(function(raw){
+    // v9.27.01 code-review fix — pdf/xlsx apply their own internal word cap
+    // (MAX_EXTRACT_WORDS/MAX_XLSX_WORDS below, well under any maxWords a
+    // caller passes) before this function ever sees the text, so a plain
+    // word-count comparison against maxWords could never detect THEIR
+    // truncation. Those two branches now resolve {text,truncated} instead
+    // of a bare string so that signal survives to here and gets OR'd into
+    // this function's own truncated flag — otherwise a PDF/XLSX cut off by
+    // the internal cap would report truncated:false and the caller's
+    // disclosure-to-the-user message would never fire.
+    var text=(raw&&typeof raw==='object')?raw.text:raw;
+    var rawTruncated=!!(raw&&typeof raw==='object'&&raw.truncated);
     if(!maxWords)return text;
     var words=(text||'').trim().split(/\s+/).filter(Boolean);
-    if(words.length<=maxWords)return {text:text,truncated:false};
+    if(words.length<=maxWords)return {text:text,truncated:rawTruncated};
     return {text:words.slice(0,maxWords).join(' '),truncated:true};
   });
 }
@@ -648,16 +659,18 @@ function _extractTextFromFileRaw(file){
             var wb=XL.read(arrayBuffer,{type:'array'});
             var parts=[];
             var wordCount=0;
+            var xlsxTruncated=false;
             var MAX_XLSX_WORDS=6000;
             wb.SheetNames.forEach(function(sName){
-              if(wordCount>=MAX_XLSX_WORDS)return;
+              if(wordCount>=MAX_XLSX_WORDS){xlsxTruncated=true;return;}
               var csv=XL.utils.sheet_to_csv(wb.Sheets[sName]);
               var words=csv.trim().split(/\s+/).filter(Boolean);
               var remaining=MAX_XLSX_WORDS-wordCount;
+              if(words.length>remaining)xlsxTruncated=true;
               parts.push(words.slice(0,remaining).join(' '));
               wordCount+=Math.min(words.length,remaining);
             });
-            resolve(parts.join('\n'));
+            resolve({text:parts.join('\n'),truncated:xlsxTruncated});
           }catch(ex){reject(ex);}
         }).catch(reject);
       };
@@ -692,11 +705,14 @@ function _extractTextFromFileRaw(file){
             var pageNum=1;
             function nextPage(){
               if(pageNum>pdf.numPages||wordsSeen>=MAX_EXTRACT_WORDS){
+                // Stopped early (pageNum<=pdf.numPages) means the word cap
+                // was hit before every page was read — real content was cut.
+                var pdfTruncated=(pageNum<=pdf.numPages);
                 // Cleanup and resolve
                 var cleanup=[];
                 if(pdf&&typeof pdf.cleanup==='function')cleanup.push(pdf.cleanup().catch(function(){}));
                 if(typeof loadingTask.destroy==='function')cleanup.push(loadingTask.destroy().catch(function(){}));
-                Promise.all(cleanup).then(function(){resolve(parts.join('\n'));});
+                Promise.all(cleanup).then(function(){resolve({text:parts.join('\n'),truncated:pdfTruncated});});
                 return;
               }
               pdf.getPage(pageNum).then(function(page){

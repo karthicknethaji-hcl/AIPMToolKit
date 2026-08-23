@@ -918,7 +918,7 @@ function raRenderCenter(){
       +'</div>'
       +'<div class="gl-upload-chip" id="ra-upload-chip" onclick="if(!raBusy)document.getElementById(\'ra-file-input\').click()" title="Click to select a file to upload">'
         +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
-        +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix"> to add context anytime</span>'
+        +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix">'+(_raRagEnabled()?' to add context anytime':' to add context for this reply')+'</span>'
       +'</div>'
       +'<input type="file" id="ra-file-input" accept=".docx,.pdf,.txt,.xlsx,.csv" style="display:none;" onchange="raHandleUpload(this)">'
       +'</div>');
@@ -1093,6 +1093,15 @@ function _raHideIndexing(){
 // together, never one without the other.
 function _raStreamingEnabled(){
   return (typeof appSettings!=='undefined'&&appSettings)?appSettings.aiStreamingEnabled===true:false;
+}
+// v9.27.01 — company-wide switch between the persistent-document RAG
+// pipeline (chunk/embed/ingest, retrieval every turn) and the pre-v9.27
+// ephemeral one-shot upload (extract, feed into that single turn, nothing
+// persisted). Default OFF: RAG depends on an Azure OpenAI embedding call
+// currently blocked by IT network/compliance policy. See raHandleUpload()
+// and _raRunTurn() for the two gated code paths.
+function _raRagEnabled(){
+  return (typeof appSettings!=='undefined'&&appSettings)?appSettings.raRagEnabled===true:false;
 }
 // Live streaming bubble - a plain DOM element updated as deltas arrive,
 // entirely separate from conv.messages/raAppendMessage() until the stream
@@ -1446,7 +1455,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     // would just silently degrade to "no retrieved context."
     var _raRetrievalSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
     try{
-      if(_raRetrievalSessionId&&typeof _pgtRpc==='function'){
+      if(_raRagEnabled()&&_raRetrievalSessionId&&typeof _pgtRpc==='function'){
         // v14 code-review fix (efficiency) — _raDocsExistCache (populated by
         // raRenderAttachedDocs(), which already fetches this same list on
         // conversation open/upload/removal) lets most turns skip this RPC
@@ -1555,6 +1564,18 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
 // make: retrieval happens later, per-turn, in _raRunTurn(); this function's
 // only job is getting the document indexed.
 var RA_MAX_UPLOAD_WORDS=20000;
+// v9.27.01 code-review fix — shared by both raHandleUpload() branches (RAG-
+// on ingest and RAG-off ephemeral), which otherwise duplicated this same
+// extract-and-normalize preamble verbatim and had already begun to drift
+// in their fallback-unavailable error message.
+async function _raExtractUpload(file){
+  var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
+  var extracted=await extractFn(file,RA_MAX_UPLOAD_WORDS);
+  return {
+    text:(extracted&&typeof extracted==='object')?extracted.text:extracted,
+    wasTruncated:!!(extracted&&typeof extracted==='object'&&extracted.truncated)
+  };
+}
 // v14 code-review fix (round 3) — the original deterministic-hash approach
 // (derived purely from name+size+lastModified, no randomness at all) meant
 // re-uploading the EXACT same file after deliberately removing it always
@@ -1591,6 +1612,50 @@ async function raHandleUpload(inputEl){
   inputEl.value='';
   if(!file||!conv||raBusy||conv.status!=='draft')return;
   if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+
+  if(!_raRagEnabled()){
+    // v9.27.01 — RAG off: restored pre-v9.27 ephemeral one-shot upload
+    // (exact logic from commit 4b88d68), except the extraction now shares
+    // the same 20k-word cap as the RAG-on path, with its own truncation
+    // disclosure — see the approved RAG-toggle build notes for why a
+    // uniform cap replaced the old unbounded read.
+    raAppendMessage(conv,'user','Uploaded: '+file.name);
+    _raSetBusy(true);
+    _raShowTyping();
+    try{
+      var _raExt=await _raExtractUpload(file);
+      var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
+      if(!text||!text.trim()){
+        _raHideTyping();
+        _raSetBusy(false);
+        raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+        return;
+      }
+      _raHideTyping();
+      _raSetBusy(false);
+      // v9.27.01 code-review fix — the truncation notice is appended AFTER
+      // _raRunTurn() returns, not before: _raRunTurn() builds its prompt's
+      // chat history as conv.messages.slice(0,-1), assuming the "Uploaded:
+      // X" message just above is still the last entry (the current turn's
+      // own placeholder). Appending anything in between would make THAT
+      // the new last entry instead, so slice(0,-1) would strip the notice
+      // and leak "Uploaded: X" into the model's history as if it were an
+      // ordinary prior turn.
+      await _raRunTurn(conv,null,text,file.name);
+      if(wasTruncated){
+        raAppendMessage(conv,'agent','Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words of '+file.name+' were used - for a longer document, consider uploading just the most relevant section.');
+      }
+    }catch(err){
+      _raHideTyping();
+      _raSetBusy(false);
+      var msg=(err&&err.message==='PASSWORD_PROTECTED')
+        ?file.name+' is password-protected - remove the password and re-upload.'
+        :'Could not read '+file.name+'.';
+      raAppendMessage(conv,'agent',msg);
+    }
+    return;
+  }
+
   // v14 code-review fix — captured into a local now, before any async work
   // below, per AI_EDITING_RULES.md's "capture session identity BEFORE async
   // work" rule: reading the _activeSessionId global again after the
@@ -1639,10 +1704,8 @@ async function raHandleUpload(inputEl){
   _raSetBusy(true);
   _raShowIndexing(file.name);
   try{
-    var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
-    var extracted=await extractFn(file,RA_MAX_UPLOAD_WORDS);
-    var text=(extracted&&typeof extracted==='object')?extracted.text:extracted;
-    var wasTruncated=!!(extracted&&typeof extracted==='object'&&extracted.truncated);
+    var _raExt=await _raExtractUpload(file);
+    var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
     if(!text||!text.trim()){
       _raHideIndexing();
       _raSetBusy(false);
@@ -1713,7 +1776,18 @@ async function raHandleUpload(inputEl){
 async function raRenderAttachedDocs(conv){
   var box=document.getElementById('ra-attached-docs');
   if(!box)return;
-  if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function'){box.innerHTML='';return;}
+  // v9.27.01 code-review fix — ra_list_documents()/ra_remove_document() are
+  // plain Supabase RPCs with no Azure OpenAI embedding dependency, so a PM
+  // must still be able to see and remove documents ingested while RAG was
+  // previously ON even after the toggle is switched off — otherwise those
+  // rows become permanently invisible and unremovable through the UI for
+  // as long as the toggle stays off, while still silently occupying the
+  // 5-document cap. Only the embedding-dependent bits (new-upload ingest in
+  // raHandleUpload(), and retrieval search in _raRunTurn()) stay gated by
+  // _raRagEnabled() — fetching/removing the existing list is not.
+  var ragOff=!_raRagEnabled();
+  var offNote='<div style="font-size:11px;color:var(--t3);">RAG is off - uploads apply only to your next message.</div>';
+  if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function'){box.innerHTML=ragOff?offNote:'';return;}
   // v14 code-review fix — these two calls don't depend on each other's
   // result (embedInfo is only used to flag the "stale" badge on whatever
   // ra_list_documents returns), so they run concurrently rather than one
@@ -1730,7 +1804,7 @@ async function raRenderAttachedDocs(conv){
     res=_raResults[0];embedInfo=_raResults[1];
   }catch(err){
     console.warn('[requirement-agent] raRenderAttachedDocs failed',err);
-    if(_raActiveConv()===conv)box.innerHTML='';
+    if(_raActiveConv()===conv)box.innerHTML=ragOff?offNote:'';
     return;
   }
   // v14 code-review fix (efficiency) — primes _raDocsExistCache with this
@@ -1745,9 +1819,10 @@ async function raRenderAttachedDocs(conv){
   // paint the wrong conversation's documents into a box that survived the
   // switch only because #ra-attached-docs is part of the same DOM subtree.
   if(_raActiveConv()!==conv)return;
-  if(!res||res.error||!Array.isArray(res.data)||!res.data.length){box.innerHTML='';return;}
+  if(!res||res.error||!Array.isArray(res.data)||!res.data.length){box.innerHTML=ragOff?offNote:'';return;}
   var canEdit=(typeof _raCanEditOwner!=='function')||_raCanEditOwner();
-  box.innerHTML='<div class="ra-doc-list">'+res.data.map(function(d){
+  box.innerHTML=(ragOff?'<div style="font-size:11px;color:var(--t3);margin-bottom:4px;">RAG is off - these won\'t be searched, but you can still remove them.</div>':'')
+    +'<div class="ra-doc-list">'+res.data.map(function(d){
     var stale=!!(embedInfo&&embedInfo.embedding_schema_version&&d.embedding_schema_version&&d.embedding_schema_version!==embedInfo.embedding_schema_version);
     return '<div class="ra-doc-chip" title="'+e(d.doc_name)+'">'
       +'<i class="ti ti-file-text" style="font-size:11px;" aria-hidden="true"></i>'
@@ -1760,6 +1835,10 @@ async function raRenderAttachedDocs(conv){
 }
 
 async function raRemoveDocument(convId,docId){
+  // v9.27.01 code-review fix — no _raRagEnabled() guard here: ra_remove_document
+  // is a plain Supabase RPC with no embedding dependency, and raRenderAttachedDocs()
+  // now renders this button even while RAG is off (see its own comment) so a PM
+  // can still remove documents ingested from before the toggle was switched off.
   if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   var conv=_raFindConv(convId);
   if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function')return;
