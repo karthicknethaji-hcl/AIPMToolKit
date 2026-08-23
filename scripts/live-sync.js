@@ -751,6 +751,14 @@ function _lsTriggerKickout(sessionId){
   // BEFORE calling homeClearSession(), makes its own guard condition skip
   // that attempt entirely — homeClearSession() itself is untouched again,
   // no further edit to the sacred function needed.
+  //
+  // v14 code-review fix: this null-out is exactly the pattern that starves
+  // homeClearSession()'s own occupancy-release capture of the real session
+  // id (the same bug already fixed once for home.js's homeSessionDeleteConfirm(),
+  // which is why homeClearSession() now takes an optional p_releaseSessionId
+  // parameter) — this call site was missed. sessionId (this function's own
+  // parameter) is passed through explicitly below instead of relying on the
+  // global, which by then is already null.
   _activeSessionId = null;
   _activeSessionIsShared = false;
 
@@ -761,7 +769,7 @@ function _lsTriggerKickout(sessionId){
   if (typeof showToast === 'function') {
     showToast(_safeName + ' unshared ' + _sessLabel + '. You no longer have access. Any unsaved changes here could not be saved.', 'warn');
   }
-  if (typeof homeClearSession === 'function') homeClearSession();
+  if (typeof homeClearSession === 'function') homeClearSession(sessionId);
   if (typeof switchTab === 'function') switchTab('home');
   if (typeof homeRenderSessionLibrary === 'function') homeRenderSessionLibrary();
 }

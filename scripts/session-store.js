@@ -79,6 +79,26 @@ function canEditSession(){
   return false;
 }
 
+// v14 code-review fix (reuse) — the core "is the current user this
+// session's owner" check was independently hand-copied three times
+// (hdrApplySessionNameVisibility() and hdrRenameSession() below,
+// requirement-agent.js's _raCanEditOwner()), with hdrApplySessionNameVisibility()
+// deliberately failing OPEN when _activeSessionOwnerId is missing (a
+// legacy-record compatibility carve-out, same precedent as the session
+// card's own 3-dot menu) while _raCanEditOwner() deliberately fails
+// CLOSED (RA has no legacy-record gap to accommodate). Centralizing the
+// primitive here lets each caller keep its own, already-correct fail
+// direction explicit at the call site instead of re-deriving the
+// three-variable comparison by hand: true/false when ownership is known,
+// null when unknown — callers choose `!== false` to fail open or
+// `=== true` to fail closed.
+function _ssIsSessionOwner(){
+  var uid=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
+  if(!uid)return false;
+  if(typeof _activeSessionOwnerId==='undefined'||!_activeSessionOwnerId)return null;
+  return _activeSessionOwnerId===uid;
+}
+
 // ── Supabase client helper ──
 // Returns the initialised Supabase client, or null if unavailable.
 // All DB functions call this first and skip silently if null.
@@ -658,9 +678,7 @@ function hdrApplySessionNameVisibility(){
   // same existing precedent exactly, not a stricter new rule.
   var _canRename=true;
   if(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared){
-    var _ownerId=(typeof _activeSessionOwnerId!=='undefined')?_activeSessionOwnerId:null;
-    var _myId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
-    _canRename=(!_ownerId||_ownerId===_myId);
+    _canRename=(_ssIsSessionOwner()!==false); // fails open on unknown ownership — see _ssIsSessionOwner()'s own comment
   }
   el.classList.toggle('has-name',hasName);
   if(onHome||!hasName){
@@ -704,9 +722,7 @@ function hdrRenameSession(event){
   // gate, in case this is ever reachable by something other than the
   // (correctly hidden) button.
   if(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared){
-    var _ownerId=(typeof _activeSessionOwnerId!=='undefined')?_activeSessionOwnerId:null;
-    var _myId=(typeof currentUser!=='undefined'&&currentUser)?currentUser.id:null;
-    if(_ownerId&&_ownerId!==_myId)return;
+    if(_ssIsSessionOwner()===false)return; // fails open on unknown ownership, same as hdrApplySessionNameVisibility()'s gate above
   }
   var wrap=document.getElementById('hdr-session-wrap');
   var el=document.getElementById('hdr-product-name');

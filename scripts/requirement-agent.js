@@ -28,7 +28,16 @@
 // Reset (mirrors guided-launch.js's glResetState(), called from the same
 // call site in home.js's homeClearSession())
 // ══════════════════════════════════════════════════════════════════════════
-function raResetState(){
+// v14 product decision (post-v9.27 review) — NON-destructive. Resets only
+// RA's in-memory/UI view; never touches the database, never removes a
+// document. Used whenever a session is being LEFT/paused, not permanently
+// destroyed — home.js's homeClearSession() (New Session, product change,
+// load demo, resume a different session) calls THIS, not raResetState()
+// below. The outgoing session's own sessionStoreSave() call (which runs
+// before this, inside homeClearSession()) already persisted its real
+// conversations and documents intact, so this function only needs to blank
+// the view for whatever comes next.
+function raClearInMemoryState(){
   // v9.24.02 — a mic session left listening must not survive into whichever
   // session is opened next. This is the SOLE cleanup point that fires during
   // homeClearSession()'s live-sync kickout path (home.js wipes #ra-tab's
@@ -50,6 +59,11 @@ function raResetState(){
   // id from _raUid()'s generation scheme.
   _raChatDraftByConvId={};
   _raLastRenderedConvId=null;
+  // v14 code-review fix — same unbounded-growth-across-clears reasoning as
+  // _raChatDraftByConvId above; this is view-scoped, per-conversation
+  // cache state, not something that should survive past whichever
+  // conversations are about to disappear.
+  _raDocsExistCache={};
   // Confirmed pre-existing bug (predates the Discovery-First redesign):
   // this used to hardcode raEnabled=false unconditionally, so every
   // session relaunch after the first one in a browser tab reset raEnabled
@@ -67,9 +81,101 @@ function raResetState(){
   raBusy=false;
 }
 
+// DESTRUCTIVE — product decision (post-v9.27 review): reachable ONLY from a
+// genuine, permanent reset of this session's RA state. Today that's
+// kpi-tree.js's generateConfirmed() (Regenerate Discovery Map) alone — NOT
+// home.js's homeClearSession(), which calls raClearInMemoryState() above
+// instead (an earlier build of this feature called this function from both,
+// on the mistaken premise that every raConversations wipe is equally
+// permanent; it isn't — a New Session/session-switch is a pause, and its
+// documents must survive for later resume).
+//
+// p_sessionId (optional) — the caller's own session id, captured by the
+// CALLER before any of its own state resets could null the global
+// _activeSessionId. Falls back to the live global for a caller like
+// generateConfirmed(), which never nulls it before this function runs.
+//
+// Cleans up documents belonging to every conversation about to disappear
+// BEFORE clearing raConversations (and before that clear is persisted) —
+// these conversation ids are only valid to operate against right now, while
+// they still exist in the database's current snapshot; once gone,
+// _ra_is_authorized() permanently and correctly blocks every document RPC
+// from ever touching them again. Best-effort per conversation: a failure is
+// logged and skipped, never thrown — the opportunistic
+// ra_purge_orphaned_documents() call (see raOnTabEnter()) is the self-
+// healing backstop for anything this pass misses.
+async function raResetState(p_sessionId){
+  var _rrsSessionId=p_sessionId||((typeof _activeSessionId!=='undefined')?_activeSessionId:null);
+  if(_rrsSessionId&&typeof _pgtRpc==='function'){
+    // v14 code-review fix — snapshot BEFORE the async loop starts, and
+    // iterate the snapshot only. raConversations is a live global; reading
+    // it fresh on every loop iteration across several awaits risked skipping
+    // or double-processing a conversation if anything else mutated it
+    // concurrently (e.g. a rename, or another reset firing) mid-loop.
+    var _rrsSnapshot=raConversations.slice();
+    // v14 code-review fix (efficiency) — parallelized ACROSS conversations,
+    // sequential only WITHIN one. sql/ra-doc-chunks.sql's advisory lock key
+    // is hashtext(conversation_id)-scoped, so different conversations never
+    // contend with each other and gain nothing from being serialized; this
+    // turned an O(total documents across every conversation) sequential
+    // chain — which generateConfirmed() (kpi-tree.js) now awaits, blocking
+    // Regenerate Discovery Map from continuing — into O(the single slowest
+    // conversation's own document count). Removals WITHIN one conversation
+    // MUST stay sequential: they share that conversation's lock, and
+    // ra_remove_document()'s own pg_try_advisory_xact_lock is a non-
+    // blocking try-lock that would fail a concurrent second call outright,
+    // not queue behind it.
+    await Promise.all(_rrsSnapshot.map(function(_rrsConv){
+      var _rrsConvId=_rrsConv.id;
+      return (async function(){
+        try{
+          var _rrsListRes=await _pgtRpc('ra_list_documents',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId});
+          if(_rrsListRes&&_rrsListRes.error)throw _rrsListRes.error;
+          var _rrsDocs=(_rrsListRes&&_rrsListRes.data)||[];
+          for(var _rrsJ=0;_rrsJ<_rrsDocs.length;_rrsJ++){
+            var _rrsRemoveRes=await _pgtRpc('ra_remove_document',{p_session_id:_rrsSessionId,p_conversation_id:_rrsConvId,p_doc_id:_rrsDocs[_rrsJ].doc_id});
+            if(_rrsRemoveRes&&_rrsRemoveRes.error)console.warn('[requirement-agent] raResetState: failed to remove document',_rrsDocs[_rrsJ].doc_id,_rrsRemoveRes.error);
+          }
+        }catch(err){
+          console.warn('[requirement-agent] raResetState: document cleanup failed for conversation '+_rrsConvId+' — relying on ra_purge_orphaned_documents() to catch it later',err);
+        }
+      })();
+    }));
+  }
+  raClearInMemoryState();
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 // Small helpers
 // ══════════════════════════════════════════════════════════════════════════
+// v14 code-review fix (post-v9.27 review) — RA is owner-only by product
+// decision, stricter than the general canEditSession() (which also returns
+// true for a shared session's OTHER edit-mode collaborator, not just its
+// owner). Without this, a non-owner editor could see RA's composer and
+// action buttons render as usable, while every underlying RPC's own DB-side
+// authorization (session ownership, scoped by mt_sessions.user_id) rejected
+// them anyway — "the button works but every call fails" is a worse failure
+// mode than the button never rendering. Every gate in THIS file uses this,
+// never bare canEditSession() — canEditSession() itself is untouched and
+// stays correct for every other surface that calls it directly.
+//
+// v14 code-review fix (round 4, reuse) — the ownership comparison itself
+// is now session-store.js's shared _ssIsSessionOwner() primitive, not a
+// third hand-copy of the same three-variable check already duplicated
+// there twice (hdrApplySessionNameVisibility()/hdrRenameSession()). Those
+// two fail OPEN on unknown ownership (legacy-record compatibility); RA has
+// no such legacy gap, so this fails CLOSED (=== true, not !== false) —
+// same deliberate divergence as before, just expressed through the shared
+// primitive instead of re-deriving it.
+function _raCanEditOwner(){
+  if(typeof canEditSession==='function'&&!canEditSession())return false;
+  // Private (non-shared) session: canEditSession() already returning true
+  // here means "I own it" — RLS never lets a non-owner load a private
+  // session at all, matching canEditSession()'s own line for this exact case.
+  if(typeof _activeSessionIsShared==='undefined'||_activeSessionIsShared!==true)return true;
+  return (typeof _ssIsSessionOwner==='function')&&_ssIsSessionOwner()===true;
+}
+
 // Escapes literal control characters (newline/CR/tab) but ONLY while inside
 // a JSON string value - tracks quote/escape state char-by-char so it never
 // touches real structural whitespace between tokens. Confirmed root cause
@@ -497,6 +603,57 @@ function raOnTabEnter(){
   // they call raRenderCenter() directly with no destructive wrapper first.
   _raCaptureChatDraft();
   raRenderShell();
+  _raPurgeOrphanedDocsOpportunistic();
+}
+
+// v14 — self-healing safety net (RA-Persistent-Doc-RAG-Spec-v14 D4/OI-20).
+// Fire-and-forget by design: background reconciliation, not something the
+// PM needs to wait on or see, and its failure must never block entering the
+// tab. Catches any document left orphaned by a reset path raResetState()'s
+// own cleanup missed (a tab closed mid-cleanup, a network error, or a
+// future reset flow added without knowing it needs to cooperate) — see
+// ra_purge_orphaned_documents()'s own comment in sql/ra-doc-chunks.sql for
+// why it's safe to call unconditionally, on any session, at any time,
+// including one with nothing to purge.
+// v14 code-review fix — throttled to once per session per page load
+// (a Set, not a single boolean, since a PM can switch between sessions
+// within one browser tab and each session's orphans are independent). Every
+// RA tab RE-entry for the SAME session skipped after the first, since this
+// is a background reconciliation pass, not something that needs to re-run
+// every time the tab is revisited in one sitting.
+var _raPurgedSessionIds=new Set();
+
+// v14 code-review fix (efficiency) — conv.id -> boolean, "does this
+// conversation have at least one active document." Populated by
+// raRenderAttachedDocs() (which already fetches ra_list_documents() on
+// conversation open/upload/removal) and consulted by _raRunTurn()'s
+// retrieval block before deciding whether to bother with the embed+search
+// round trip at all — undefined (never primed) is the only state that
+// falls back to a real fetch. Deliberately never explicitly invalidated on
+// upload/removal: both of those already call raRenderAttachedDocs() on
+// success, which overwrites the entry with the freshly-fetched truth.
+var _raDocsExistCache={};
+function _raPurgeOrphanedDocsOpportunistic(){
+  // The RPC itself requires active, non-readonly membership
+  // (sql/ra-doc-chunks.sql), so a readonly viewer's call was never going to
+  // succeed; gating here avoids a guaranteed, predictable failed round trip
+  // on every single RA tab entry for that viewer, same as every other new
+  // RA entry point in this build is gated.
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+  if(typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function')return;
+  if(_raPurgedSessionIds.has(_activeSessionId))return;
+  // v14 code-review fix — mark this session purged only on actual success,
+  // not before the call even fires. Marking it upfront meant a failed call
+  // (network error, transient RPC failure) permanently skipped this session
+  // for the rest of the page's lifetime, since the throttle set had already
+  // recorded it as done — the opposite of "self-healing." Now a failure
+  // leaves the session unmarked, so the next tab entry/session load retries.
+  _pgtRpc('ra_purge_orphaned_documents',{p_session_id:_activeSessionId}).then(function(res){
+    if(res&&res.error){console.warn('[requirement-agent] ra_purge_orphaned_documents failed',res.error);return;}
+    _raPurgedSessionIds.add(_activeSessionId);
+  }).catch(function(err){
+    console.warn('[requirement-agent] ra_purge_orphaned_documents failed',err);
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -565,7 +722,7 @@ function raRenderShell(){
       +'<div class="ra-left-body">'
         +'<div class="ra-filter-chips" id="ra-filter-chips"></div>'
         +'<div class="ra-conv-list" id="ra-conv-list"></div>'
-        +'<button class="ra-new-conv-btn" id="ra-new-conv-btn" onclick="raNewConversation()"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> New Conversation</button>'
+        +(((typeof _raCanEditOwner!=='function')||_raCanEditOwner())?'<button class="ra-new-conv-btn" id="ra-new-conv-btn" onclick="raNewConversation()"><i class="ti ti-plus" style="font-size:11px;" aria-hidden="true"></i> New Conversation</button>':'')
       +'</div>'
     +'</div>'
     +'<div class="ra-center" id="ra-center"></div>'
@@ -659,7 +816,7 @@ function raRenderConvList(){
     return '<div class="ra-conv-card'+(isActive?' active':'')+'" onclick="raOpenConversation(\''+c.id+'\')">'
       +'<div class="ra-conv-title-row">'
         +'<div class="ra-conv-title" id="ra-conv-title-'+c.id+'">'+tag+e(c.title||'Untitled conversation')+'</div>'
-        +(isActive?'<button class="ra-conv-rename-btn" onclick="event.stopPropagation();raRenameConversation(\''+c.id+'\')" title="Rename"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>':'')
+        +((isActive&&((typeof _raCanEditOwner!=='function')||_raCanEditOwner()))?'<button class="ra-conv-rename-btn" onclick="event.stopPropagation();raRenameConversation(\''+c.id+'\')" title="Rename"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>':'')
       +'</div>'
       +'<div class="ra-conv-summary">'+e(summary)+'</div>'
     +'</div>';
@@ -667,6 +824,7 @@ function raRenderConvList(){
 }
 
 function raRenameConversation(id){
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   var conv=_raFindConv(id);
   if(!conv)return;
   var titleEl=document.getElementById('ra-conv-title-'+id);
@@ -731,11 +889,22 @@ function raRenderCenter(){
   // eyebrow + a fixed, friendly status line - the conversation's own
   // contextualized title now lives in the Live Draft banner (raRenderLiveDraft())
   // instead, so it isn't lost by dropping it from here.
+  // v14 — RA's whole composer (textarea, mic, send, upload chip, file
+  // input) is hidden together as one unit for a non-editable session,
+  // matching the exact precedent already established elsewhere in this
+  // codebase (e.g. capability-canvas.js's .cc-chat-bar) — the mic is never
+  // gated on its own, it's just a sibling inside whatever gets hidden here.
+  // Reuses the existing .ra-finalized-note treatment rather than inventing
+  // a second "closed" visual for a second reason.
+  var _raCanEdit=(typeof _raCanEditOwner!=='function')||_raCanEditOwner();
   center.innerHTML=
     '<div class="ra-chat-hdr"><div class="ra-chat-hdr-eyebrow">Requirement Agent</div><div class="ra-chat-hdr-title">'+(conv.status==='finalized'?('Finalized'+(conv.rqNumber?(' — '+e(conv.rqNumber)):'')):'Drafting requirements together')+'</div></div>'
     +'<div class="ra-chat-body" id="ra-chat-body"></div>'
+    +'<div class="ra-attached-docs" id="ra-attached-docs"></div>'
     +(conv.status==='finalized'
       ?'<div class="ra-chat-input-wrap"><div class="ra-finalized-note">This conversation is finalized — chat is closed.</div></div>'
+      :!_raCanEdit
+      ?'<div class="ra-chat-input-wrap"><div class="ra-finalized-note">You have view-only access to this session, chat is closed.</div></div>'
       :'<div class="ra-chat-input-wrap"><div class="ra-chat-input-row">'
         +'<textarea class="ra-chat-input" id="ra-chat-input" rows="1" placeholder="Type your response..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();raSendMessage();}"></textarea>'
         +'<div class="ra-chat-btn-group">'
@@ -749,20 +918,21 @@ function raRenderCenter(){
       +'</div>'
       +'<div class="gl-upload-chip" id="ra-upload-chip" onclick="if(!raBusy)document.getElementById(\'ra-file-input\').click()" title="Click to select a file to upload">'
         +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
-        +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix"> to add context anytime</span>'
+        +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix">'+(_raRagEnabled()?' to add context anytime':' to add context for this reply')+'</span>'
       +'</div>'
       +'<input type="file" id="ra-file-input" accept=".docx,.pdf,.txt,.xlsx,.csv" style="display:none;" onchange="raHandleUpload(this)">'
       +'</div>');
   // Restore this SAME conversation's preserved draft, if any — one-shot,
   // deleted after restoring so a later re-render of this conversation
   // (once it's genuinely empty again) doesn't reapply a stale value.
-  if(conv.status!=='finalized'&&_raChatDraftByConvId[conv.id]){
+  if(conv.status!=='finalized'&&_raCanEdit&&_raChatDraftByConvId[conv.id]){
     var _newChatInput=document.getElementById('ra-chat-input');
     if(_newChatInput)_newChatInput.value=_raChatDraftByConvId[conv.id];
     delete _raChatDraftByConvId[conv.id];
   }
   raRenderChatHistory();
   raRenderLiveDraft();
+  raRenderAttachedDocs(conv);
   if(!conv.messages||!conv.messages.length){
     raRunOpeningTurn(conv);
   }
@@ -798,7 +968,7 @@ function _raBubbleHtml(m,idx,total){
   var isUser=m.role==='user';
   var highlightId='ra-msg-'+idx;
   var conv=_raActiveConv();
-  var showChips=!isUser&&idx===(total-1)&&conv&&conv.status==='draft'&&m.clarifyingQuestions&&m.clarifyingQuestions.length>0;
+  var showChips=!isUser&&idx===(total-1)&&conv&&conv.status==='draft'&&m.clarifyingQuestions&&m.clarifyingQuestions.length>0&&((typeof _raCanEditOwner!=='function')||_raCanEditOwner());
   return '<div class="gl-msg-row '+(isUser?'user':'agent')+'" id="'+highlightId+'">'
     +'<div class="gl-avatar '+(isUser?'user-av':'agent-av')+'">'+(isUser?e((typeof _glUserInitials==='function')?_glUserInitials():'You'):'AI')+'</div>'
     +'<div class="gl-bubble">'+(typeof _glFormatChatText==='function'?_glFormatChatText(m.text):e(m.text||''))
@@ -848,16 +1018,67 @@ function _raSetBusy(busy){
   // touching the textarea's value, so an Enter press mid-generation is a
   // safe no-op that leaves whatever the PM was typing intact.
 }
+
+// v14 code-review fix (altitude) — raBusy is a bare flag with no owning
+// abstraction, hand-guarded at every RA action's own call site. That gap
+// caused two real bugs in this same build: raNewConversation() became a
+// second concurrent writer of raBusy alongside raRunOpeningTurn(), and the
+// first fix for that left raBusy stuck true forever on a failed save, with
+// nothing left to ever clear it. _raWithBusy() is the actual invariant
+// that kept getting hand-rolled and getting one part wrong: set busy, run
+// the async work, ALWAYS clear busy after, success or failure, via a real
+// try/finally rather than a hand-placed pair of _raSetBusy() calls. New RA
+// actions with a single async critical section should build on this
+// rather than re-deriving the shape by hand; functions with more layered
+// state around their busy window (raRunOpeningTurn(), _raRunTurn(),
+// raHandleUpload() — typing/indexing indicators, streaming bubbles, error-
+// specific messaging interleaved with the busy window) are left as their
+// own already-correct, already-reviewed try/finally blocks rather than
+// force-fit into this simpler shape for no behavior change.
+async function _raWithBusy(fn){
+  _raSetBusy(true);
+  try{
+    return await fn();
+  }finally{
+    _raSetBusy(false);
+  }
+}
+// v14 code-review fix — _raShowTyping/_raHideTyping and the newer
+// _raShowIndexing/_raHideIndexing were near-identical copies of each other
+// (same transient, never-persisted-to-conv.messages DOM row: insert on
+// show, getElementById().remove() on hide). Consolidated into one shared
+// pair; _raTypingRowHtml()/_raIndexingRowHtml() are kept as named builders
+// since nothing about their own signatures needed to change.
+function _raStatusRowHtml(rowId,innerHtml){
+  return '<div class="gl-msg-row agent" id="'+rowId+'"><div class="gl-avatar agent-av">AI</div><div class="gl-bubble gl-typing-bubble">'+innerHtml+'</div></div>';
+}
+function _raShowStatusRow(rowId,innerHtml){
+  var body=document.getElementById('ra-chat-body');
+  if(body){body.insertAdjacentHTML('beforeend',_raStatusRowHtml(rowId,innerHtml));body.scrollTop=body.scrollHeight;}
+}
+function _raHideStatusRow(rowId){
+  var row=document.getElementById(rowId);
+  if(row)row.remove();
+}
+var _RA_TYPING_DOTS_HTML='<div class="gl-typing-dots"><span></span><span></span><span></span></div>';
 function _raTypingRowHtml(){
-  return '<div class="gl-msg-row agent" id="ra-typing-row"><div class="gl-avatar agent-av">AI</div><div class="gl-bubble gl-typing-bubble"><div class="gl-typing-dots"><span></span><span></span><span></span></div></div></div>';
+  return _raStatusRowHtml('ra-typing-row',_RA_TYPING_DOTS_HTML);
 }
 function _raShowTyping(){
-  var body=document.getElementById('ra-chat-body');
-  if(body){body.insertAdjacentHTML('beforeend',_raTypingRowHtml());body.scrollTop=body.scrollHeight;}
+  _raShowStatusRow('ra-typing-row',_RA_TYPING_DOTS_HTML);
 }
 function _raHideTyping(){
-  var row=document.getElementById('ra-typing-row');
-  if(row)row.remove();
+  _raHideStatusRow('ra-typing-row');
+}
+
+function _raIndexingRowHtml(fileName){
+  return _raStatusRowHtml('ra-indexing-row',_RA_TYPING_DOTS_HTML+' Indexing '+e(fileName)+'… don’t close this tab yet');
+}
+function _raShowIndexing(fileName){
+  _raShowStatusRow('ra-indexing-row',_RA_TYPING_DOTS_HTML+' Indexing '+e(fileName)+'… don’t close this tab yet');
+}
+function _raHideIndexing(){
+  _raHideStatusRow('ra-indexing-row');
 }
 
 // ── v-next: dual-mode streaming switch, default OFF ──
@@ -872,6 +1093,15 @@ function _raHideTyping(){
 // together, never one without the other.
 function _raStreamingEnabled(){
   return (typeof appSettings!=='undefined'&&appSettings)?appSettings.aiStreamingEnabled===true:false;
+}
+// v9.27.01 — company-wide switch between the persistent-document RAG
+// pipeline (chunk/embed/ingest, retrieval every turn) and the pre-v9.27
+// ephemeral one-shot upload (extract, feed into that single turn, nothing
+// persisted). Default OFF: RAG depends on an Azure OpenAI embedding call
+// currently blocked by IT network/compliance policy. See raHandleUpload()
+// and _raRunTurn() for the two gated code paths.
+function _raRagEnabled(){
+  return (typeof appSettings!=='undefined'&&appSettings)?appSettings.raRagEnabled===true:false;
 }
 // Live streaming bubble - a plain DOM element updated as deltas arrive,
 // entirely separate from conv.messages/raAppendMessage() until the stream
@@ -933,7 +1163,16 @@ async function _raCallModel(sys,usr,signal){
 }
 
 // ── New conversation ──
-function raNewConversation(){
+async function raNewConversation(){
+  // Round-2 code-review fix — this function has an await in the middle
+  // (the persist below) with no guard of its own, so a double-click before
+  // the first call's persist resolves used to push a SECOND conversation,
+  // whose later raRenderCenter()/raRunOpeningTurn() could start a second,
+  // concurrent opening-turn AI call once the first click's persist finally
+  // resolved and re-enabled everything. Checked first, same convention as
+  // every other RA entry point (raSendMessage, raHandleUpload, etc.).
+  if(raBusy)return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   var conv={
     id:_raUid(),
     title:'New Conversation',
@@ -956,8 +1195,52 @@ function raNewConversation(){
   var tabRa=document.getElementById('tab-ra');
   if(tabRa)tabRa.classList.add('revealed');
   raRenderConvList();
+  // v14 (OI-9, reordered per post-v9.27 code review) — persistence must
+  // happen, and resolve, BEFORE raRenderCenter() runs, not after: that
+  // function fires raRunOpeningTurn() (fire-and-forget) whenever a
+  // conversation has no messages yet, and raRunOpeningTurn() checks and
+  // owns this SAME raBusy flag itself (its own guard, its own
+  // finally{_raSetBusy(false)}). Doing the busy/persist dance AFTER calling
+  // raRenderCenter() made this function a SECOND concurrent writer of
+  // raBusy — this function's own _raSetBusy(false) could fire while the
+  // opening turn was still generating, silently re-enabling upload/send
+  // mid-turn. Persisting first means the opening turn becomes the sole
+  // subsequent owner of raBusy once persistence is confirmed done, never a
+  // second one racing it. Also closes OI-9 itself: an upload immediately
+  // after creating this conversation would otherwise race this same save,
+  // since ra_ingest_document_chunks()'s authorization check reads the
+  // database's current snapshot, which won't contain this conversation's
+  // id until this resolves.
+  // Round-2 code-review fix — ALWAYS clear raBusy after this, success or
+  // not. The original failure branch left it permanently true with no
+  // other writer left to clear it: raRenderCenter()'s freshly-rendered
+  // composer has no actual disabled attribute on its Send button/upload
+  // chip (that only reflects raBusy at the moment of rendering, not
+  // afterward), so this looked clickable but silently no-opped forever,
+  // for THIS conversation and every OTHER already-healthy one, until a
+  // page reload. Round-4 fix: expressed via _raWithBusy() (see its own
+  // comment) instead of a hand-placed _raSetBusy(true)/(false) pair —
+  // this exact function is the one whose bug motivated that helper.
+  var _raNcPersisted=await _raWithBusy(function(){return _raPersist();});
+  if(!_raNcPersisted){
+    // Warn via toast, not a persisted chat message — an earlier version
+    // used raAppendMessage(), which pushes into conv.messages, which is
+    // part of the persisted snapshot: the very next successful save (this
+    // conversation's own opening turn ends with one, fire-and-forget)
+    // would bake that error in permanently, AND raRenderCenter()'s
+    // "no messages yet -> auto-run the opening turn" branch would then
+    // never fire again for this conversation (conv.messages.length>0
+    // forever), leaving it stuck empty with no opening summary. A toast
+    // has none of that persistence baggage. The opening turn proceeds
+    // regardless of this save's outcome — it needs no database at all;
+    // only an upload (gated by its own fresh session/RPC checks in
+    // raHandleUpload()) actually depends on this row existing yet, and
+    // that call's own error surfacing already explains a failure clearly
+    // if the retry (this conversation's own later persists) hasn't
+    // caught up yet.
+    if(typeof showToast==='function')showToast('This conversation may not have saved yet - it will retry automatically.','warn');
+  }
   raRenderCenter();
-  _raPersist();
 }
 
 async function raRunOpeningTurn(conv){
@@ -1073,6 +1356,7 @@ async function raSendMessage(){
   // pure no-op that leaves whatever they were typing untouched, not
   // silently clear it out from under them.
   if(raBusy)return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   var conv=_raActiveConv();
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
@@ -1087,6 +1371,7 @@ async function raSendMessage(){
 function raQuickReplyClick(btnEl){
   var conv=_raActiveConv();
   if(!conv||raBusy||conv.status!=='draft')return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   var answer=btnEl.dataset.answer;
   if(!answer)return;
   // Remove the whole quick-reply block immediately - confirms the pick
@@ -1101,14 +1386,115 @@ function raQuickReplyClick(btnEl){
 // Guided Launch's existing convention exactly (see guided-launch.js's
 // _glRunRevisionTurn()) — the raw text is never persisted, only whatever
 // the model merges into liveDraftMd survives a refresh.
+// v14 (D6) — retrieval query priority order: current message in full, then
+// the agent's prior reply, then the PM's prior message. By the time this
+// runs, conv.messages already has the CURRENT user message appended as its
+// last entry (raAppendMessage() in _raSubmitUserMessage()/raQuickReplyClick()
+// runs before _raRunTurn() is called) — scans backward from before that
+// entry, by role, rather than assuming strict turn alternation.
+function _raBuildRetrievalQuery(conv,userMessage){
+  var parts=[];
+  if(userMessage)parts.push(userMessage);
+  var msgs=(conv.messages||[]).slice(0,-1);
+  var priorAgent=null,priorUser=null;
+  for(var i=msgs.length-1;i>=0&&(priorAgent===null||priorUser===null);i--){
+    if(priorAgent===null&&msgs[i].role==='agent')priorAgent=msgs[i].text;
+    else if(priorUser===null&&msgs[i].role==='user')priorUser=msgs[i].text;
+  }
+  if(priorAgent)parts.push(priorAgent);
+  if(priorUser)parts.push(priorUser);
+  return parts.join('\n\n').trim();
+}
+
+// Below this similarity, a retrieved chunk is treated as not actually
+// relevant to the current turn and dropped rather than injected — an
+// initial, conservative value; tune against real retrieval quality once
+// this is live (not specified numerically anywhere in the spec, unlike the
+// 20,000-word upload cap in OI-3, so treated as a tunable default here
+// rather than a fixed requirement).
+var RA_RETRIEVAL_RELEVANCE_THRESHOLD=0.3;
+
+// v14 (D3) — groups retrieved chunks by source document and formats each
+// document's group once via the shared, existing _docFormatBlock() (D3) —
+// not a new framing mechanism.
+function _raFormatRetrievedChunks(rows){
+  if(!rows||!rows.length)return '';
+  var byDoc={};
+  var order=[];
+  rows.forEach(function(r){
+    if(!byDoc[r.doc_name]){byDoc[r.doc_name]=[];order.push(r.doc_name);}
+    byDoc[r.doc_name].push(r.chunk_text);
+  });
+  if(typeof _docFormatBlock!=='function')return '';
+  return order.map(function(name){
+    var doc={name:name,docType:'other',scope:'session',sessionScoped:true};
+    return _docFormatBlock(doc,byDoc[name].join('\n\n...\n\n'));
+  }).join('\n\n');
+}
+
 async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
   _raSetBusy(true);
   _raShowTyping();
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is updating the draft. Leaving now discards this update, you\'ll need to resend your message.'):null;
   var _streaming=_raStreamingEnabled();
   try{
+    // v14 (D5/D6/D8) — existence-only gate first: skip the embed+search
+    // round trip entirely when this conversation has no active documents.
+    // Every step below degrades to "no retrieved context" on any failure
+    // (network, embedding service down, schema-version mismatch) rather
+    // than blocking the turn — a PM's ability to keep chatting must never
+    // depend on the embedding service being up.
+    var _raRetrievedCtx='';
+    // v14 code-review fix — captured once, before any of the awaits below,
+    // per this project's own "capture session identity BEFORE async work"
+    // convention (already followed in raHandleUpload()). Re-reading the
+    // global separately for the list-documents call and the later
+    // search-chunks call meant a PM switching sessions mid-turn could pair
+    // the NEW session's id with this (OLD) conversation's id on the second
+    // call, producing a spurious authorization error the surrounding catch
+    // would just silently degrade to "no retrieved context."
+    var _raRetrievalSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
+    try{
+      if(_raRagEnabled()&&_raRetrievalSessionId&&typeof _pgtRpc==='function'){
+        // v14 code-review fix (efficiency) — _raDocsExistCache (populated by
+        // raRenderAttachedDocs(), which already fetches this same list on
+        // conversation open/upload/removal) lets most turns skip this RPC
+        // entirely instead of re-fetching the full document list purely to
+        // check its length. Only a genuinely unknown state (undefined —
+        // cache never primed for this conversation yet) falls back to a
+        // real fetch, which then primes the cache for every turn after it.
+        var _raHasDocs=_raDocsExistCache[conv.id];
+        if(_raHasDocs===undefined){
+          var _raDocsRes=await _pgtRpc('ra_list_documents',{p_session_id:_raRetrievalSessionId,p_conversation_id:conv.id});
+          _raHasDocs=!!(_raDocsRes&&!_raDocsRes.error&&Array.isArray(_raDocsRes.data)&&_raDocsRes.data.length);
+          _raDocsExistCache[conv.id]=_raHasDocs;
+        }
+        if(_raHasDocs){
+          var _raQuery=_raBuildRetrievalQuery(conv,userMessage);
+          if(_raQuery){
+            var _raQueryEmbedRes=await _raEmbedTexts([_raQuery]);
+            if(_raQueryEmbedRes&&Array.isArray(_raQueryEmbedRes.embeddings)&&_raQueryEmbedRes.embeddings[0]){
+              var _raSearchRes=await _pgtRpc('ra_search_doc_chunks',{
+                p_session_id:_raRetrievalSessionId,
+                p_conversation_id:conv.id,
+                p_query_embedding:_raQueryEmbedRes.embeddings[0],
+                p_current_schema_version:_raQueryEmbedRes.embedding_schema_version,
+                p_limit:4
+              });
+              if(_raSearchRes&&!_raSearchRes.error&&Array.isArray(_raSearchRes.data)){
+                var _raRelevant=_raSearchRes.data.filter(function(r){return typeof r.similarity==='number'&&r.similarity>=RA_RETRIEVAL_RELEVANCE_THRESHOLD;});
+                _raRetrievedCtx=_raFormatRetrievedChunks(_raRelevant);
+              }
+            }
+          }
+        }
+      }
+    }catch(_raRetrievalErr){
+      console.warn('[requirement-agent] document retrieval failed — continuing without retrieved context',_raRetrievalErr);
+    }
+
     var _raDocCtx2=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
-    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName,_streaming);
+    var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName,_streaming,_raRetrievedCtx);
     var raw,parsed;
     if(_streaming){
       var _bubbleEl=null;
@@ -1168,42 +1554,321 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
   }
 }
 
-// ── Mid-chat upload ──
+// ── Mid-chat upload (persistent, RA-Persistent-Doc-RAG-Spec-v14) ──
 // Extracts text client-side (extractTextFromFile, shared with Home's
-// session docs and Guided Launch's own mid-chat upload — see utils.js)
-// then feeds it into the SAME turn call so the model summarizes/merges it
-// into the Live Draft. Ephemeral by design, matching Guided Launch's
-// exact convention — the raw extracted text is never persisted, only the
-// AI's resulting chatReply/liveDraftMd survives a refresh.
+// session docs and Guided Launch's own mid-chat upload — see utils.js),
+// chunks + caps it, embeds every chunk via the proxy, then ingests it via
+// ra_ingest_document_chunks() so it's retrievable for this conversation's
+// FULL lifetime (including after pause/resume) — not fed into the current
+// turn directly. This is the actual behavior change this spec exists to
+// make: retrieval happens later, per-turn, in _raRunTurn(); this function's
+// only job is getting the document indexed.
+var RA_MAX_UPLOAD_WORDS=20000;
+// v9.27.01 code-review fix — shared by both raHandleUpload() branches (RAG-
+// on ingest and RAG-off ephemeral), which otherwise duplicated this same
+// extract-and-normalize preamble verbatim and had already begun to drift
+// in their fallback-unavailable error message.
+async function _raExtractUpload(file){
+  var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
+  var extracted=await extractFn(file,RA_MAX_UPLOAD_WORDS);
+  return {
+    text:(extracted&&typeof extracted==='object')?extracted.text:extracted,
+    wasTruncated:!!(extracted&&typeof extracted==='object'&&extracted.truncated)
+  };
+}
+// v14 code-review fix (round 3) — the original deterministic-hash approach
+// (derived purely from name+size+lastModified, no randomness at all) meant
+// re-uploading the EXACT same file after deliberately removing it always
+// regenerated the identical doc_id — which D4's lifecycle model correctly
+// treats as terminal and never resurrects, so that specific file could
+// never be re-attached to that conversation again, and the RPC's own
+// "upload it again as a new document" advice was impossible to satisfy
+// (re-selecting the same file always produces the same id).
+//
+// Replaced with a short-lived, in-memory-only retry cache instead: the
+// SAME file re-selected while an earlier attempt for it is still pending
+// (not yet confirmed success, and not explicitly removed since) reuses
+// that attempt's id — which is what D4's idempotency path actually exists
+// for (a client-side timeout after the server already committed). Any
+// other case — a fresh upload, or re-uploading after the earlier attempt
+// succeeded or was removed — gets a brand new random id via _raUid(),
+// exactly like every other identity in this file. Cleared on confirmed
+// ingest success (raHandleUpload()) and on removal (raRemoveDocument()) —
+// see both call sites below.
+var _raPendingUploadIds={}; // key: "convId|name|size|lastModified" -> doc_id
+function _raUploadIdKey(conv,file){
+  return conv.id+'|'+file.name+'|'+file.size+'|'+(file.lastModified||0);
+}
+function _raClearPendingUploadIdsForConv(convId){
+  var prefix=convId+'|';
+  Object.keys(_raPendingUploadIds).forEach(function(k){
+    if(k.indexOf(prefix)===0)delete _raPendingUploadIds[k];
+  });
+}
+
 async function raHandleUpload(inputEl){
   var conv=_raActiveConv();
   var file=inputEl.files&&inputEl.files[0];
   inputEl.value='';
   if(!file||!conv||raBusy||conv.status!=='draft')return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+
+  if(!_raRagEnabled()){
+    // v9.27.01 — RAG off: restored pre-v9.27 ephemeral one-shot upload
+    // (exact logic from commit 4b88d68), except the extraction now shares
+    // the same 20k-word cap as the RAG-on path, with its own truncation
+    // disclosure — see the approved RAG-toggle build notes for why a
+    // uniform cap replaced the old unbounded read.
+    raAppendMessage(conv,'user','Uploaded: '+file.name);
+    _raSetBusy(true);
+    _raShowTyping();
+    try{
+      var _raExt=await _raExtractUpload(file);
+      var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
+      if(!text||!text.trim()){
+        _raHideTyping();
+        _raSetBusy(false);
+        raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+        return;
+      }
+      _raHideTyping();
+      _raSetBusy(false);
+      // v9.27.01 code-review fix — the truncation notice is appended AFTER
+      // _raRunTurn() returns, not before: _raRunTurn() builds its prompt's
+      // chat history as conv.messages.slice(0,-1), assuming the "Uploaded:
+      // X" message just above is still the last entry (the current turn's
+      // own placeholder). Appending anything in between would make THAT
+      // the new last entry instead, so slice(0,-1) would strip the notice
+      // and leak "Uploaded: X" into the model's history as if it were an
+      // ordinary prior turn.
+      await _raRunTurn(conv,null,text,file.name);
+      if(wasTruncated){
+        raAppendMessage(conv,'agent','Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words of '+file.name+' were used - for a longer document, consider uploading just the most relevant section.');
+      }
+    }catch(err){
+      _raHideTyping();
+      _raSetBusy(false);
+      var msg=(err&&err.message==='PASSWORD_PROTECTED')
+        ?file.name+' is password-protected - remove the password and re-upload.'
+        :'Could not read '+file.name+'.';
+      raAppendMessage(conv,'agent',msg);
+    }
+    return;
+  }
+
+  // v14 code-review fix — captured into a local now, before any async work
+  // below, per AI_EDITING_RULES.md's "capture session identity BEFORE async
+  // work" rule: reading the _activeSessionId global again after the
+  // extract/embed awaits below could pick up a DIFFERENT session's id if
+  // the PM switched sessions mid-upload.
+  var sessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
+  if(!sessionId){
+    raAppendMessage(conv,'agent','Could not upload '+file.name+' - no active session.');
+    return;
+  }
+  // v14 code-review fix — filename length checked client-side, before
+  // anything else runs. mt_ra_docs' own doc_name CHECK (1-300 chars) would
+  // catch this too, but only after extraction AND embedding already ran -
+  // this rejects it for free, before any of that work starts.
+  if(file.name.length>300){
+    raAppendMessage(conv,'agent','That filename is too long (over 300 characters) - rename the file and try again.');
+    return;
+  }
+
+  // v14 code-review fix (round 2) — moved before the "Uploaded: X" message
+  // below, and out of the main try block: fetch the CURRENT document count
+  // fresh (never a stale client-held count) and reject before anything is
+  // added to the transcript. This used to run AFTER "Uploaded: X" was
+  // already appended, so a rejected upload left a permanent, false record
+  // in the conversation history claiming something was uploaded when
+  // nothing was — the same class of persisted-false-state bug
+  // raNewConversation()'s own fix (elsewhere in this file) was careful to
+  // avoid by using a toast instead of raAppendMessage() on failure.
+  var _raCountRes;
+  try{
+    _raCountRes=await _pgtRpc('ra_list_documents',{p_session_id:sessionId,p_conversation_id:conv.id});
+  }catch(err){
+    raAppendMessage(conv,'agent',(err&&err.message)||('Could not upload '+file.name+'.'));
+    return;
+  }
+  if(_raCountRes&&_raCountRes.error){
+    raAppendMessage(conv,'agent',_raCountRes.error.message||('Could not upload '+file.name+'.'));
+    return;
+  }
+  if(Array.isArray(_raCountRes&&_raCountRes.data)&&_raCountRes.data.length>=5){
+    raAppendMessage(conv,'agent','Maximum 5 documents per conversation reached - remove one before uploading another.');
+    return;
+  }
 
   raAppendMessage(conv,'user','Uploaded: '+file.name);
   _raSetBusy(true);
-  _raShowTyping();
+  _raShowIndexing(file.name);
   try{
-    var extractFn=(typeof extractTextFromFile==='function')?extractTextFromFile:function(){return Promise.reject(new Error('extractTextFromFile not available'));};
-    var text=await extractFn(file);
+    var _raExt=await _raExtractUpload(file);
+    var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
     if(!text||!text.trim()){
-      _raHideTyping();
+      _raHideIndexing();
       _raSetBusy(false);
-      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text — try a different file, or tell me about it directly in chat.');
+      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
       return;
     }
-    _raHideTyping();
+
+    // D3 — word-based chunks from the shared chunker, then capped to
+    // mt_ra_doc_chunks' 4000-character CHECK constraint (a chunk of short,
+    // dense words can exceed 4000 characters despite being under the word
+    // cap — see _raCapChunkChars()'s own comment in utils.js).
+    var chunks=_raCapChunkChars(chunkText(text));
+    if(!chunks.length){
+      _raHideIndexing();
+      _raSetBusy(false);
+      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+      return;
+    }
+
+    var embedRes=await _raEmbedTexts(chunks);
+    if(!embedRes||!Array.isArray(embedRes.embeddings)||embedRes.embeddings.length!==chunks.length){
+      throw new Error('Embedding response did not match the number of chunks sent.');
+    }
+
+    var payloadChunks=chunks.map(function(t,i){return {chunk_text:t,embedding:embedRes.embeddings[i]};});
+    var _raUpKey=_raUploadIdKey(conv,file);
+    var docId=_raPendingUploadIds[_raUpKey]||_raUid();
+    _raPendingUploadIds[_raUpKey]=docId;
+    var ingestRes=await _pgtRpc('ra_ingest_document_chunks',{
+      p_session_id:sessionId,
+      p_conversation_id:conv.id,
+      p_doc_id:docId,
+      p_doc_name:file.name,
+      p_embedding_schema_version:embedRes.embedding_schema_version,
+      p_chunks:payloadChunks
+    });
+    // Surfaces the RPC's own exact message per D4's lifecycle model
+    // (previously-removed, reused-with-different-content, max-5-documents,
+    // lock-contention/BUSY) rather than a generic failure — D8. Lock
+    // contention is never auto-retried here; the RPC's own message already
+    // tells the PM to try again shortly, on their own action.
+    if(ingestRes&&ingestRes.error)throw ingestRes.error;
+    delete _raPendingUploadIds[_raUpKey]; // confirmed success - no longer "pending"; a future re-upload of this same file gets a fresh id
+
+    _raHideIndexing();
     _raSetBusy(false);
-    await _raRunTurn(conv,null,text,file.name);
+    raAppendMessage(conv,'agent','Indexed '+file.name+'.'+(wasTruncated?' Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words were indexed - for a longer document, consider uploading just the most relevant section.':'')+' You can ask me about it anytime while this conversation is open.');
+    raRenderAttachedDocs(conv);
   }catch(err){
-    _raHideTyping();
+    _raHideIndexing();
     _raSetBusy(false);
-    var msg=(err&&err.message==='PASSWORD_PROTECTED')
-      ?file.name+' is password-protected — remove the password and re-upload.'
-      :'Could not read '+file.name+'.';
+    var msg;
+    if(err&&err.message==='PASSWORD_PROTECTED'){
+      msg=file.name+' is password-protected - remove the password and re-upload.';
+    }else if(err&&err.message){
+      msg=err.message;
+    }else{
+      msg='Could not upload '+file.name+'.';
+    }
     raAppendMessage(conv,'agent',msg);
   }
+}
+
+// ── Attached-documents display + removal (D5, D7) ──
+// Fetches fresh from ra_list_documents() every time — never cached, per D5
+// — since a stale client-side list could show a document as attached after
+// it (or its whole conversation) was removed elsewhere.
+async function raRenderAttachedDocs(conv){
+  var box=document.getElementById('ra-attached-docs');
+  if(!box)return;
+  // v9.27.01 code-review fix — ra_list_documents()/ra_remove_document() are
+  // plain Supabase RPCs with no Azure OpenAI embedding dependency, so a PM
+  // must still be able to see and remove documents ingested while RAG was
+  // previously ON even after the toggle is switched off — otherwise those
+  // rows become permanently invisible and unremovable through the UI for
+  // as long as the toggle stays off, while still silently occupying the
+  // 5-document cap. Only the embedding-dependent bits (new-upload ingest in
+  // raHandleUpload(), and retrieval search in _raRunTurn()) stay gated by
+  // _raRagEnabled() — fetching/removing the existing list is not.
+  var ragOff=!_raRagEnabled();
+  var offNote='<div style="font-size:11px;color:var(--t3);">RAG is off - uploads apply only to your next message.</div>';
+  if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function'){box.innerHTML=ragOff?offNote:'';return;}
+  // v14 code-review fix — these two calls don't depend on each other's
+  // result (embedInfo is only used to flag the "stale" badge on whatever
+  // ra_list_documents returns), so they run concurrently rather than one
+  // full round trip after another. Wrapped in try/catch — confirmed
+  // _pgtRpc() can still reject (not just resolve to {error}) if authInit()
+  // itself throws, so this degrades the same way the rest of RA's
+  // retrieval code does rather than surfacing an uncaught rejection.
+  var res,embedInfo;
+  try{
+    var _raResults=await Promise.all([
+      _pgtRpc('ra_list_documents',{p_session_id:_activeSessionId,p_conversation_id:conv.id}),
+      (typeof _raGetEmbedInfo==='function')?_raGetEmbedInfo():Promise.resolve(null)
+    ]);
+    res=_raResults[0];embedInfo=_raResults[1];
+  }catch(err){
+    console.warn('[requirement-agent] raRenderAttachedDocs failed',err);
+    if(_raActiveConv()===conv)box.innerHTML=ragOff?offNote:'';
+    return;
+  }
+  // v14 code-review fix (efficiency) — primes _raDocsExistCache with this
+  // fetch's real answer regardless of whether THIS render turns out to be
+  // stale below; the data is accurate for conv.id either way, and this is
+  // what lets _raRunTurn() skip its own existence-check RPC on later turns.
+  if(res&&!res.error&&Array.isArray(res.data)){
+    _raDocsExistCache[conv.id]=res.data.length>0;
+  }
+  // Re-check we're still looking at the same conversation's box — a slow
+  // fetch landing after the PM has since switched conversations must not
+  // paint the wrong conversation's documents into a box that survived the
+  // switch only because #ra-attached-docs is part of the same DOM subtree.
+  if(_raActiveConv()!==conv)return;
+  if(!res||res.error||!Array.isArray(res.data)||!res.data.length){box.innerHTML=ragOff?offNote:'';return;}
+  var canEdit=(typeof _raCanEditOwner!=='function')||_raCanEditOwner();
+  box.innerHTML=(ragOff?'<div style="font-size:11px;color:var(--t3);margin-bottom:4px;">RAG is off - these won\'t be searched, but you can still remove them.</div>':'')
+    +'<div class="ra-doc-list">'+res.data.map(function(d){
+    var stale=!!(embedInfo&&embedInfo.embedding_schema_version&&d.embedding_schema_version&&d.embedding_schema_version!==embedInfo.embedding_schema_version);
+    return '<div class="ra-doc-chip" title="'+e(d.doc_name)+'">'
+      +'<i class="ti ti-file-text" style="font-size:11px;" aria-hidden="true"></i>'
+      +'<span class="ra-doc-chip-name">'+e(d.doc_name)+'</span>'
+      +'<span class="ra-doc-chip-date">'+e(_raRelTime(d.created_at))+'</span>'
+      +(stale?'<span class="ra-doc-chip-stale" title="Indexed under an older embedding model - not matched against your current questions until it is re-uploaded">older index</span>':'')
+      +(canEdit?('<button type="button" class="ra-doc-chip-remove" onclick="raRemoveDocument(\''+e(conv.id)+'\',\''+e(d.doc_id)+'\')" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>'):'')
+    +'</div>';
+  }).join('')+'</div>';
+}
+
+async function raRemoveDocument(convId,docId){
+  // v9.27.01 code-review fix — no _raRagEnabled() guard here: ra_remove_document
+  // is a plain Supabase RPC with no embedding dependency, and raRenderAttachedDocs()
+  // now renders this button even while RAG is off (see its own comment) so a PM
+  // can still remove documents ingested from before the toggle was switched off.
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+  var conv=_raFindConv(convId);
+  if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function')return;
+  // v14 code-review fix — wrapped in try/catch, same reasoning as
+  // raRenderAttachedDocs() above: confirmed _pgtRpc() can still reject
+  // (authInit() itself throwing), not just resolve to {error}.
+  var res;
+  try{
+    res=await _pgtRpc('ra_remove_document',{p_session_id:_activeSessionId,p_conversation_id:convId,p_doc_id:docId});
+  }catch(err){
+    if(typeof showToast==='function')showToast((err&&err.message)||'Could not remove document.','warn');
+    else console.warn('[requirement-agent] raRemoveDocument failed',err);
+    return;
+  }
+  if(res&&res.error){
+    if(typeof showToast==='function')showToast(res.error.message||'Could not remove document.','warn');
+    else console.warn('[requirement-agent] raRemoveDocument failed',res.error);
+    return;
+  }
+  // v14 code-review fix (round 3) — a removal invalidates any cached
+  // pending-upload id for this conversation, so a future re-upload of the
+  // same file (deliberately re-attaching it, not retrying a failed
+  // attempt) gets a fresh random id instead of colliding with the one that
+  // was just tombstoned. Coarse (clears every pending id for this
+  // conversation, not just the removed doc's own file) but safe — the
+  // worst case is a legitimate in-flight retry loses its cached id and
+  // falls back to a fresh one, which is exactly this file's pre-round-2
+  // behavior, not a regression.
+  _raClearPendingUploadIdsForConv(convId);
+  raRenderAttachedDocs(conv);
 }
 
 // ── Live draft (right panel) ──
@@ -1236,10 +1901,15 @@ function raRenderLiveDraft(){
     +'<div class="ra-md-body" id="ra-md-body">'+_raMdToHtml(_raStripLeadingH1(conv.liveDraftMd))+'</div>'
     +(conv.status==='finalized'
       ?'<div class="ra-md-footer"><div class="ra-status-badge ra-status-final">Finalized'+(conv.rqNumber?(' · '+e(conv.rqNumber)):'')+'</div></div>'
-      :'<div class="ra-md-footer"><div class="ra-footer-row">'
+      :((typeof _raCanEditOwner!=='function')||_raCanEditOwner())
+      ?'<div class="ra-md-footer"><div class="ra-footer-row">'
         +'<div class="ra-footer-note">Creates the capabilities and opens Capability Canvas.</div>'
         +'<button class="ra-finalize-btn'+(hasDraftContent?'':' ra-finalize-btn-disabled')+'" id="ra-finalize-btn" '+(hasDraftContent?'onclick="raFinalizeClick()"':'disabled title="Start the conversation to build a draft before finalizing"')+'><i class="ti ti-check" style="font-size:12px;" aria-hidden="true"></i> Finalize</button>'
-      +'</div></div>');
+      +'</div></div>'
+      // v14 (D7) — Finalize is a standalone action button, hidden entirely
+      // for a non-editable session rather than disabled, per the same
+      // hidden-vs-disabled rule the rest of this app already follows.
+      :'');
   _raEnhanceLiveDraftDom();
 }
 
@@ -1320,6 +1990,7 @@ function _raEnhanceLiveDraftDom(){
 function raFinalizeClick(){
   var conv=_raActiveConv();
   if(!conv||conv.status==='finalized'||raBusy)return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
   // §9 — Finalize would create zero capabilities. Confirmed gap: previously
   // nothing checked this, so Finalize would silently "succeed" while
   // creating nothing. Surfaced explicitly, distinct from the unresolved-
@@ -1765,8 +2436,21 @@ async function raRunFinalizeSequence(conv,withAssumptions){
 // Persistence — same optimistic pattern glMessages/glDraftMd use via
 // _glPersistMessage()/_glPersistDraft(): mutate the live global first (every
 // function above already did that before calling this), then save.
+// v14 code-review fix — returns a real boolean instead of resolving to
+// undefined regardless of outcome (which every caller that awaits this and
+// then proceeds was silently treating as "it worked"). No active session to
+// persist against (e.g. demo/local mode) is NOT a failure — there's
+// genuinely nothing to save, so that resolves true. A real save attempt
+// that returns false or throws resolves false — callers that await this
+// must check the result and not proceed as if nothing went wrong.
 async function _raPersist(){
-  if(typeof sessionStoreSave!=='function'||typeof _activeSessionId==='undefined'||!_activeSessionId)return;
-  try{ await sessionStoreSave(_activeSessionId); }
-  catch(err){ console.warn('[requirement-agent] persist failed',err); }
+  if(typeof sessionStoreSave!=='function'||typeof _activeSessionId==='undefined'||!_activeSessionId)return true;
+  try{
+    var ok=await sessionStoreSave(_activeSessionId);
+    if(!ok)console.warn('[requirement-agent] persist failed — sessionStoreSave returned false');
+    return !!ok;
+  }catch(err){
+    console.warn('[requirement-agent] persist failed',err);
+    return false;
+  }
 }

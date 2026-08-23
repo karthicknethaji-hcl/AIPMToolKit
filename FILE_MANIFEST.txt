@@ -92,6 +92,10 @@ prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style
 capabilityfeaturestemplate.xlsx    ← camelCase, matches actual source filename — do not rename
 capabilitylisttemplate.xlsx        ← camelCase, matches actual source filename — do not rename
 
+## sql/
+ra-requirement-agent.sql      ← v9.16; RQ sequence counter + atomic RPC (ra_next_seq); NOT run by Claude — Nethaji applies to Supabase manually. Previously missing from this manifest — added now alongside the v14 file below, not itself a v14 change.
+ra-doc-chunks.sql             ← v14 (RA-Persistent-Doc-RAG-Spec-v14); Requirement Agent persistent-document RPCs + orphan-cleanup safety net (ra_ingest_document_chunks, ra_remove_document, ra_list_documents, ra_search_doc_chunks, ra_purge_orphaned_documents, _ra_is_authorized). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Distinct from ra-requirement-agent.sql above — never merge the two.
+
 ## netlify/functions/
 anthropic-proxy.js            ← lives only here; never duplicated into scripts/
 
