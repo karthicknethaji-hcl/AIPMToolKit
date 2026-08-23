@@ -869,7 +869,15 @@ function rcStatusPillHtml(plan){
 function rcTopActionsHtml(plan){
   const isFinalized=plan.status==='finalized';
   const reopenLink=isFinalized?`<button class="rc-reopen-link" onclick="rcReopenForEdit()">Reopen for edits</button>`:'';
-  return `<div class="rc-top-actions">${reopenLink}<button class="rc-export-btn" onclick="rcExportDocx()"><i class="ti ti-download" aria-hidden="true"></i> Export</button></div>`;
+  // Item 6 fix — Export only shown on the Readiness Summary section.
+  // rcActiveSection is the existing module-level tracker, already
+  // accessible here without a signature change. Derived from RC_SECTIONS'
+  // actual last entry (code-review fix) rather than a hardcoded `6`, so
+  // this stays correct if RC_SECTIONS is ever reordered or a section is
+  // added/removed.
+  const isSummarySection=rcActiveSection===RC_SECTIONS[RC_SECTIONS.length-1].n;
+  const exportBtn=isSummarySection?`<button class="rc-export-btn" onclick="rcExportDocx()"><i class="ti ti-download" aria-hidden="true"></i> Export</button>`:'';
+  return `<div class="rc-top-actions">${reopenLink}${exportBtn}</div>`;
 }
 
 // ── Master render ────────────────────────────────────────────────────────

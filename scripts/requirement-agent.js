@@ -64,6 +64,13 @@ function raClearInMemoryState(){
   // cache state, not something that should survive past whichever
   // conversations are about to disappear.
   _raDocsExistCache={};
+  // Item 3 code-review fix — same reasoning as _raChatDraftByConvId above,
+  // missed when the staged-upload map was first added: without this, a
+  // staged-but-unsent document's full extracted text stays resident in
+  // memory under a now-gone conversation id indefinitely (bounded only by
+  // page reload), contradicting this map's own stated design intent of
+  // never letting an ephemeral upload survive past its conversation.
+  _raStagedUploadByConvId={};
   // Confirmed pre-existing bug (predates the Discovery-First redesign):
   // this used to hardcode raEnabled=false unconditionally, so every
   // session relaunch after the first one in a browser tab reset raEnabled
@@ -686,6 +693,13 @@ var raPanelOpen=true;    // left panel expand/collapse state — view-scoped onl
 var raRightPanelOpen=true; // Live Draft panel expand/collapse — view-scoped only, mirrors guided-launch.js's glMdOpen (not persisted)
 var _raLastRenderedConvId=null; // which conversation's DOM was actually on screen before the CURRENT capture call — see _raCaptureChatDraft()
 var _raChatDraftByConvId={};    // unsent #ra-chat-input text, keyed by conversation id — view-scoped only, not persisted
+// Item 3 fix — single staged attachment (RAG-off path only), keyed by
+// conversation id, mirroring _raChatDraftByConvId's existing convention.
+// Discarded (not carried over) on conversation switch — matches the
+// existing "uploaded doc text is ephemeral, never persisted" convention
+// already documented in this file, and avoids one client's document
+// silently surviving into a different client's brief.
+var _raStagedUploadByConvId={}; // convId -> {name, text, wasTruncated}
 
 // Shared by raOnTabEnter() (before raRenderShell()'s own destructive wipe of
 // #ra-tab) and raRenderCenter() (for its other two callers, raOpenConversation()/
@@ -699,6 +713,21 @@ function _raCaptureChatDraft(){
   var _oldChatInput=document.getElementById('ra-chat-input');
   if(_oldChatInput&&_raLastRenderedConvId){
     _raChatDraftByConvId[_raLastRenderedConvId]=_oldChatInput.value;
+    // Item 3 code-review fix — only discard the staged attachment (and
+    // toast) when the conversation is ACTUALLY changing, not on every
+    // capture call. raActiveConversationId already reflects whichever
+    // conversation is about to render next: raOpenConversation()/
+    // raNewConversation() reassign it BEFORE calling raRenderCenter(), and
+    // a plain tab re-entry via raOnTabEnter() leaves it untouched. Without
+    // this check, simply leaving the RA tab and coming back (same
+    // conversation still active) silently discarded a staged upload with a
+    // false "switched conversations" toast, since this function has no
+    // other way to distinguish that from a genuine switch.
+    var _upcomingConvId=(typeof raActiveConversationId!=='undefined')?raActiveConversationId:null;
+    if(_raLastRenderedConvId!==_upcomingConvId&&_raStagedUploadByConvId[_raLastRenderedConvId]){
+      delete _raStagedUploadByConvId[_raLastRenderedConvId];
+      if(typeof showToast==='function')showToast('Attachment discarded — switched conversations.','info');
+    }
   }
 }
 
@@ -920,6 +949,7 @@ function raRenderCenter(){
         +'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'
         +' <span id="ra-upload-chip-text" style="text-decoration:underline;">Upload a document</span><span id="ra-upload-chip-suffix">'+(_raRagEnabled()?' to add context anytime':' to add context for this reply')+'</span>'
       +'</div>'
+      +'<div id="ra-staged-attachment" style="margin-top:4px;"></div>'
       +'<input type="file" id="ra-file-input" accept=".docx,.pdf,.txt,.xlsx,.csv" style="display:none;" onchange="raHandleUpload(this)">'
       +'</div>');
   // Restore this SAME conversation's preserved draft, if any — one-shot,
@@ -930,6 +960,9 @@ function raRenderCenter(){
     if(_newChatInput)_newChatInput.value=_raChatDraftByConvId[conv.id];
     delete _raChatDraftByConvId[conv.id];
   }
+  // Item 3 — a staged attachment survives a re-render that doesn't destroy
+  // the conversation (mirrors the chat-draft restore just above).
+  _raRenderStagedAttachment(conv);
   raRenderChatHistory();
   raRenderLiveDraft();
   raRenderAttachedDocs(conv);
@@ -1327,8 +1360,19 @@ async function raRunOpeningTurn(conv){
 // the quick-select chip click (raQuickReplyClick()) so there is exactly one
 // place that appends the user message and runs the turn, not two competing
 // copies of the same three lines.
-async function _raSubmitUserMessage(conv,text){
-  if(!conv||raBusy||conv.status!=='draft'||!text)return;
+// Item 3 code-review fix — takes the whole `staged` attachment object
+// (or null/undefined) instead of three separate uploadedDocText/
+// uploadedDocName/wasTruncated params that only ever came from one object
+// at the single call site that populates them; avoids a signature that
+// grows a new parameter (and a new caller-side ternary to keep in sync)
+// for every future attachment field. Returns true if the message actually
+// went through the guard below, false if it was rejected — callers use
+// this to know whether it's safe to discard a staged attachment.
+async function _raSubmitUserMessage(conv,text,staged){
+  var uploadedDocText=staged?staged.text:null;
+  var uploadedDocName=staged?staged.name:null;
+  var wasTruncated=staged?staged.wasTruncated:false;
+  if(!conv||raBusy||conv.status!=='draft'||(!text&&!uploadedDocText))return false;
   // v9.25.04 — stop-on-send (product decision), centralized here rather
   // than duplicated in raSendMessage()/raQuickReplyClick(): RA's mic
   // previously stayed listening across Sends by design (a multi-turn chat,
@@ -1344,9 +1388,17 @@ async function _raSubmitUserMessage(conv,text){
   // both callers route through, one guarded call here covers both, and
   // any future third submit path automatically inherits it too.
   voiceStopActive('abort');
-  if(_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
-  raAppendMessage(conv,'user',text);
-  await _raRunTurn(conv,text);
+  if(text&&_raDetectsQuestionsOptOut(text))conv.raQuestionsOptedOut=true;
+  // Item 3 — transcript display: a text-line prepended to the message
+  // (not a new badge component), per confirmed decision — reuses the
+  // existing bubble renderer as-is, no new visual pattern.
+  var displayText=uploadedDocName?('📎 Uploaded: '+uploadedDocName+(text?('\n\n'+text):'')):text;
+  raAppendMessage(conv,'user',displayText);
+  await _raRunTurn(conv,text,uploadedDocText,uploadedDocName);
+  if(wasTruncated){
+    raAppendMessage(conv,'agent','Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words of '+uploadedDocName+' were used - for a longer document, consider uploading just the most relevant section.');
+  }
+  return true;
 }
 async function raSendMessage(){
   // Checked first, before ever touching the textarea's value - the
@@ -1357,13 +1409,40 @@ async function raSendMessage(){
   // silently clear it out from under them.
   if(raBusy)return;
   if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+  // Item 1 fix — Send-while-dictating stops the mic and leaves the
+  // transcribed text in the box for review/edit, matching Claude's own
+  // voice UX, instead of submitting immediately. Checked BEFORE reading/
+  // clearing the textarea. _viListening is true for both the 'connecting'
+  // and 'listening' UI states (it flips true synchronously on .start(),
+  // before the state moves from connecting to listening on the real
+  // onstart event) — so this single check covers both without a race where
+  // the mic finishes connecting a beat after Send is clicked and starts
+  // writing into a box that's already been cleared/submitted.
+  if(_viListening&&_viActive&&_viActive.textareaId==='ra-chat-input'){
+    voiceStopActive('stop'); // 'stop', not 'abort' — lets the last in-flight spoken segment land, same as the manual mic-toggle-off path
+    return;
+  }
   var conv=_raActiveConv();
   var input=document.getElementById('ra-chat-input');
   if(!input)return;
   var text=input.value.trim();
-  if(!text)return;
+  var staged=conv&&_raStagedUploadByConvId[conv.id];
+  if(!text&&!staged)return; // Item 3 — was `if(!text)return;`; now either is sufficient
   input.value='';
-  await _raSubmitUserMessage(conv,text);
+  if(staged){
+    delete _raStagedUploadByConvId[conv.id];
+    _raRenderStagedAttachment(conv); // clear the chip visually before the turn starts
+  }
+  var _raSubmitted=await _raSubmitUserMessage(conv,text,staged);
+  // Item 3 code-review fix — if the submit guard rejected the message
+  // (e.g. a collaborator finalized this conversation in the window between
+  // staging and clicking Send), restore the just-cleared attachment rather
+  // than silently losing the extracted document text with no way back
+  // short of re-uploading the file.
+  if(staged&&!_raSubmitted){
+    _raStagedUploadByConvId[conv.id]=staged;
+    _raRenderStagedAttachment(conv);
+  }
 }
 // Handles a click on a quick-select chip (_raQuickReplyHtml()) - forwards
 // the chosen option text through the same submit path as typing it would,
@@ -1606,6 +1685,22 @@ function _raClearPendingUploadIdsForConv(convId){
   });
 }
 
+// Item 3 — renders (or clears) the staged-attachment chip for the given
+// conversation, reusing the existing .sp-file-chip/.sp-file-chip-remove
+// component (styles/15-settings.css) rather than a new one-off style.
+function _raRenderStagedAttachment(conv){
+  var box=document.getElementById('ra-staged-attachment');
+  if(!box)return;
+  var staged=conv&&_raStagedUploadByConvId[conv.id];
+  if(!staged){box.innerHTML='';return;}
+  box.innerHTML='<span class="sp-file-chip"><i class="ti ti-file" style="font-size:9px;" aria-hidden="true"></i> '+e(staged.name)+'<button class="sp-file-chip-remove" onclick="_raClearStagedAttachment()" aria-label="Remove attachment"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button></span>';
+}
+function _raClearStagedAttachment(){
+  var conv=_raActiveConv();
+  if(conv)delete _raStagedUploadByConvId[conv.id];
+  _raRenderStagedAttachment(conv);
+}
+
 async function raHandleUpload(inputEl){
   var conv=_raActiveConv();
   var file=inputEl.files&&inputEl.files[0];
@@ -1614,37 +1709,34 @@ async function raHandleUpload(inputEl){
   if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
 
   if(!_raRagEnabled()){
-    // v9.27.01 — RAG off: restored pre-v9.27 ephemeral one-shot upload
-    // (exact logic from commit 4b88d68), except the extraction now shares
-    // the same 20k-word cap as the RAG-on path, with its own truncation
-    // disclosure — see the approved RAG-toggle build notes for why a
-    // uniform cap replaced the old unbounded read.
-    raAppendMessage(conv,'user','Uploaded: '+file.name);
+    // Item 3 fix — RAG off: stage the extracted text as a removable chip
+    // instead of submitting the instant extraction finishes, so a caption
+    // can be added before sending. Extraction still shares the same 20k-word
+    // cap as the RAG-on path, with its own truncation disclosure.
     _raSetBusy(true);
-    _raShowTyping();
+    _raShowTyping(); // reuse existing "reading file" indicator — no new UI for the extraction wait
     try{
       var _raExt=await _raExtractUpload(file);
       var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
+      _raHideTyping();
+      _raSetBusy(false);
       if(!text||!text.trim()){
-        _raHideTyping();
-        _raSetBusy(false);
         raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
         return;
       }
-      _raHideTyping();
-      _raSetBusy(false);
-      // v9.27.01 code-review fix — the truncation notice is appended AFTER
-      // _raRunTurn() returns, not before: _raRunTurn() builds its prompt's
-      // chat history as conv.messages.slice(0,-1), assuming the "Uploaded:
-      // X" message just above is still the last entry (the current turn's
-      // own placeholder). Appending anything in between would make THAT
-      // the new last entry instead, so slice(0,-1) would strip the notice
-      // and leak "Uploaded: X" into the model's history as if it were an
-      // ordinary prior turn.
-      await _raRunTurn(conv,null,text,file.name);
-      if(wasTruncated){
-        raAppendMessage(conv,'agent','Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words of '+file.name+' were used - for a longer document, consider uploading just the most relevant section.');
-      }
+      // Stage, don't submit — replaces any previously staged attachment for
+      // this conversation (single-attachment v1, confirmed with Nethaji).
+      _raStagedUploadByConvId[conv.id]={name:file.name,text:text,wasTruncated:wasTruncated};
+      // Item 3 code-review fix — raOpenConversation() has no busy guard, so
+      // the PM can switch to a different conversation while this extraction
+      // (an await above) is still in flight. #ra-staged-attachment is a
+      // single, non-namespaced DOM slot — writing into it unconditionally
+      // here would render THIS conversation's chip into whichever OTHER
+      // conversation is now on screen. Only write the DOM if this
+      // conversation is still the one actually displayed; otherwise the
+      // data is already correctly stored under conv.id and will render
+      // correctly whenever raRenderCenter() next shows this conversation.
+      if(_raActiveConv()===conv)_raRenderStagedAttachment(conv);
     }catch(err){
       _raHideTyping();
       _raSetBusy(false);
@@ -1982,6 +2074,14 @@ function _raEnhanceLiveDraftDom(){
       +'</span>'
       +(narrative?'<div class="ra-feat-narrative" id="'+toggleId+'" style="display:none;">'+e(narrative)+'</div>':'');
   });
+  // Item 2 fix — tag the Open Questions heading with a stable id so
+  // raReviewQuestions() can scroll the Live Draft panel to it, not just the
+  // chat transcript.
+  Array.prototype.slice.call(body.querySelectorAll('h2')).forEach(function(h){
+    if(h.textContent.replace(/^\d+\.\s*/,'').trim()==='Open Questions'){
+      h.id='ra-md-open-questions';
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -2102,6 +2202,16 @@ function raReviewQuestions(convId,overlayId){
     row.scrollIntoView({behavior:'smooth',block:'center'});
     row.classList.add('gl-flash');
     setTimeout(function(){row.classList.remove('gl-flash');},2600);
+  }
+  // Item 2 fix — also navigate the Live Draft (brief) panel to its own
+  // Open Questions section, expanding it first if collapsed (scrollIntoView
+  // on a display:none panel is a silent no-op).
+  if(!raRightPanelOpen&&typeof raOpenRightPanel==='function')raOpenRightPanel();
+  var oqHeading=document.getElementById('ra-md-open-questions');
+  if(oqHeading&&typeof oqHeading.scrollIntoView==='function'){
+    oqHeading.scrollIntoView({behavior:'smooth',block:'start'});
+    oqHeading.classList.add('gl-flash');
+    setTimeout(function(){oqHeading.classList.remove('gl-flash');},2600);
   }
   var input=document.getElementById('ra-chat-input');
   if(input)input.focus();

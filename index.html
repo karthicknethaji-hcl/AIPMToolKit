@@ -107,18 +107,19 @@
     <button class="tab-btn active" id="tab-home" onclick="switchTab('home')"><i class="ti ti-home"></i> Home</button>
     <button class="tab-btn" id="tab-gl" onclick="switchTab('gl')" style="display:none;"><i class="ti ti-message-2"></i> Guided Launch</button>
     <button class="tab-btn" id="tab-mm" onclick="switchTab('mm')" style="display:none;"><i class="ti ti-hierarchy-2"></i> Discovery Map</button>
+    <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <!-- Requirement Agent redesign (Discovery-First Entry Point) — tab-gl
       above is the pre-existing Guided Launch pre-Discovery-Map intake chat
       (a v9.16 commit briefly mislabeled it "Requirement Agent"; reverted).
       This tab-ra is the real, functionally distinct, global, multi-
       conversation release-requirements agent, and is the sole owner of the
-      "Requirement Agent" name going forward. It now sits PRE-Capability-
-      Canvas (immediately after Discovery Map) since it triggers from
-      Discovery Map's "Define Requirements" CTA and its own Finalize creates
-      capabilities into Capability Canvas, rather than being entered FROM
-      Capability Canvas as in the prior design. -->
+      "Requirement Agent" name going forward. It sits PRE-Capability-Canvas
+      (after Discovery Map and Market Intelligence, per Item 7's v9.27.02
+      tab-order fix) since it triggers from Discovery Map's "Define
+      Requirements" CTA and its own Finalize creates capabilities into
+      Capability Canvas, rather than being entered FROM Capability Canvas
+      as in the prior design. -->
     <button class="tab-btn tab-gated" id="tab-ra" onclick="switchTab('ra')"><i class="ti ti-clipboard-text"></i> Requirement Agent<span class="tab-pending-dot" id="tab-ra-dot"></span></button>
-    <button class="tab-btn" id="tab-mi" onclick="switchTab('mi')" style="display:none;"><i class="ti ti-world-search"></i> Market Intelligence</button>
     <button class="tab-btn" id="tab-cc" onclick="switchTab('cc')" style="display:none;"><i class="ti ti-layers-subtract"></i> Capability Canvas<span class="tab-pending-dot" id="tab-cc-dot"></span></button>
     <button class="tab-btn" id="tab-la" onclick="switchTab('la')" style="display:none;"><i class="ti ti-microscope"></i> Experiment Canvas</button>
     <button class="tab-btn" id="tab-fc" onclick="switchTab('fc')" style="display:none;"><i class="ti ti-writing"></i> Feature Canvas<span class="tab-pending-dot" id="tab-fc-dot"></span></button>

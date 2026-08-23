@@ -37,13 +37,31 @@ function newScRender(){
     newScRenderEmpty(layout);
     return;
   }
+  // Item 4 fix — preserve scroll position across the full innerHTML
+  // rebuild below, matching the identical pattern already proven in
+  // capability-canvas.js's ccRenderMainContent() (.cc-cap-grid-wrap) and
+  // kpi-tree.js's renderMM() (.stages), via the shared _uiCaptureScrollTop()/
+  // _uiRestoreScrollTop() helpers (utils.js). Capture BEFORE rebuild.
+  const _savedScrollTop=_uiCaptureScrollTop('nsc-scroll');
+  // Item 4 code-review fix — capture the active-feature scope BEFORE
+  // normalizing, so a restore is skipped if normalization actually changes
+  // it (e.g. the last visible story of the active feature just got removed,
+  // dropping the view out to "All Stories"). The saved scrollTop belongs to
+  // whatever list was on screen before the rebuild — restoring it into a
+  // different, differently-ordered list lands the PM at an arbitrary
+  // position instead of the top of genuinely new content.
+  const _navFeatBeforeNormalize=newScActiveNavFeat;
   // Normalize active feature before building layout
   newScNormalizeActiveFeature();
+  const _scopeChanged=(newScActiveNavFeat!==_navFeatBeforeNormalize);
   layout.innerHTML=newScBuildLayout();
   newScRenderLeftNav();
   newScRenderMain();
   newScUpdateActionBar();
   newScUpdateTabBadge();
+  // Restore AFTER rebuild, clamped (inside the helper) against the new
+  // content's scrollHeight in case the list is now shorter than before.
+  if(!_scopeChanged)_uiRestoreScrollTop('nsc-scroll',_savedScrollTop);
   // Re-open panel if previously open (only in stories view)
   if(!newScProtoView&&newScPanelStoryId&&newScPanelFeatId){
     const feat=scCanvas.find(f=>f.id===newScPanelFeatId);
@@ -1134,7 +1152,15 @@ function newScConfirmRemoveFromPI(storyId,featId){
       }
       newScRender();
       if(typeof piCheckStaleness==='function')piCheckStaleness();
-      showToast('Story removed from release plan.','success');
+      // Item 4 edge case — if a piStatus filter is active, removing this
+      // story may drop it out of the currently-filtered view; a scroll
+      // restore that lands on a shifted/empty list is confusing without
+      // this. Conservative approximation: fires whenever any piStatus
+      // filter is active, not only when THIS card would be hidden by it —
+      // worst case shows the more cautious message when the card would
+      // have stayed visible anyway, never the reverse.
+      const _filterActive=Array.isArray(newScFilter.piStatus)&&newScFilter.piStatus.length>0;
+      showToast(_filterActive?'Removed — filtered out of current view.':'Story removed from release plan.','success');
       // v8.146 fix: confirmed missing entirely. PI-staging state only —
       // deliberately no live-edit mark, matching the existing convention
       // that selection/staging state isn't live-synced (same as
