@@ -178,7 +178,9 @@ async function miGenerate(){
     const _miCtxFull=Object.assign({},ctx);
     _miCtxFull.companyStrategy=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.companyProfile)?sessionContext.companyProfile.companyStrategy||'':'';
     _miCtxFull.companyContext=(typeof sessionContext!=='undefined'&&sessionContext&&sessionContext.companyProfile)?sessionContext.companyProfile.companyContext||'':'';
-    _miCtxFull.docContext=(typeof buildDocContext==='function')?buildDocContext('mi'):'';
+    var _miDocRes2=(typeof buildDocContext==='function')?buildDocContext('mi',ctx.name):{text:'',truncated:false};
+    _miCtxFull.docContext=_miDocRes2.text;
+    _fireDocTruncatedToast(_miDocRes2.truncated);
     const usr=buildMarketIntelPrompt(_miCtxFull, gData);
     // 12000 tokens — enough for full screen JSON without docxSections prose
     const _signal=startAiGen(`Your Market Intelligence report for ${ctx.name||'this product'} is being put together. Leaving now discards it, you'll need to regenerate from scratch.`);

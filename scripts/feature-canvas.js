@@ -2211,7 +2211,9 @@ async function scGenerateStories(featureIds){
   // state) is deferred to inside the lock callback, below.
   document.getElementById('sc-gen-btn').disabled=true;
   const _scCtx=(typeof getFullProductCtx==='function')?getFullProductCtx():{name:(productContext&&productContext.name)||'the product',icp:(productContext&&productContext.icp)||'product manager'};
-  _scCtx.docContext=(typeof buildDocContext==='function')?buildDocContext('sc'):'';
+  var _scDocRes=(typeof buildDocContext==='function')?buildDocContext('sc',features.map(f=>f.name).filter(Boolean).join(' ')):{text:'',truncated:false};
+  _scCtx.docContext=_scDocRes.text;
+  _fireDocTruncatedToast(_scDocRes.truncated);
   // Collect refinement from any feature in the batch (used when called from scRefineStories)
   const refinement=features.length===1&&features[0]._refinement?features[0]._refinement:'';
   const prompt=scBuildStoryPrompt(_scCtx,features,refinement);

@@ -256,8 +256,15 @@ async function generateConfirmed(extra){
     approach:(_sc&&_sc.approach)||'outcome-based',
     companyStrategy:_cp.companyStrategy||'',
     companyContext:_cp.companyContext||'',
-    docContext:(typeof buildDocContext==='function')?buildDocContext('dm'):''
+    docContext:''
   };
+  // Shared across this call's dm-tier and (if Market Intelligence runs)
+  // mi-tier buildDocContext calls below, so a doc pool that's truncated in
+  // both tiers still only shows the disclosure once for this generation.
+  var _docToastShown={shown:false};
+  var _dmDocRes=(typeof buildDocContext==='function')?buildDocContext('dm'):{text:'',truncated:false};
+  fd.docContext=_dmDocRes.text;
+  _fireDocTruncatedToast(_dmDocRes.truncated,_docToastShown);
 
   // Check if MI is enabled for this session
   const runMIFirst=!!((_sc&&_sc.marketIntelligence)&&featMI);
@@ -291,7 +298,9 @@ async function generateConfirmed(extra){
       try{
         const sys=(typeof SYS_MI!=='undefined'?SYS_MI:'');
         const _miCtx=Object.assign({},fd);
-        _miCtx.docContext=(typeof buildDocContext==='function')?buildDocContext('mi'):'';
+        var _miDocRes1=(typeof buildDocContext==='function')?buildDocContext('mi',fd.name):{text:'',truncated:false};
+        _miCtx.docContext=_miDocRes1.text;
+        _fireDocTruncatedToast(_miDocRes1.truncated,_docToastShown);
         const usr=buildMarketIntelPrompt(_miCtx, null);
         const miTxt=await callAPI(sys, usr, 8000, _miSignal, 'claude-haiku-4-5', 'mi-suggest');
         const miClean=miTxt.replace(/```json|```/g,'').trim();

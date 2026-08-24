@@ -1292,7 +1292,9 @@ async function raRunOpeningTurn(conv){
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is drafting the opening summary. Leaving now discards it, you\'ll need to start over.'):null;
   var _streaming=_raStreamingEnabled();
   try{
-    var _raDocCtx1=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
+    var _raDocRes1=(typeof buildDocContext==='function')?buildDocContext('ra'):{text:'',truncated:false};
+    var _raDocCtx1=_raDocRes1.text;
+    _fireDocTruncatedToast(_raDocRes1.truncated);
     var built=buildRequirementAgentDMOpeningPrompt(typeof sessionContext!=='undefined'?sessionContext:{},_raFirstName(),_raDocCtx1,_streaming);
     var raw,parsed;
     if(_streaming){
@@ -1572,7 +1574,15 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
       console.warn('[requirement-agent] document retrieval failed — continuing without retrieved context',_raRetrievalErr);
     }
 
-    var _raDocCtx2=(typeof buildDocContext==='function')?buildDocContext('ra'):'';
+    // Reuse _raQuery from the retrieval block above (var-hoisted, so safely
+    // referenced even when that block never ran) instead of re-scanning
+    // conv.messages via _raBuildRetrievalQuery a second time — only recompute
+    // when it was never set (RAG off, or no docs yet), which also preserves
+    // D7's current-message/prior-reply/prior-message fallback chain for that case.
+    var _raRankQuery=(typeof _raQuery!=='undefined'&&_raQuery)?_raQuery:((typeof _raBuildRetrievalQuery==='function')?_raBuildRetrievalQuery(conv,userMessage):userMessage);
+    var _raDocRes2=(typeof buildDocContext==='function')?buildDocContext('ra',_raRankQuery):{text:'',truncated:false};
+    var _raDocCtx2=_raDocRes2.text;
+    _fireDocTruncatedToast(_raDocRes2.truncated);
     var built=buildRequirementAgentTurnPrompt(typeof sessionContext!=='undefined'?sessionContext:{},conv.liveDraftMd,(conv.messages||[]).slice(0,-1),userMessage,_raDocCtx2,uploadedDocText,uploadedDocName,_streaming,_raRetrievedCtx);
     var raw,parsed;
     if(_streaming){

@@ -436,14 +436,78 @@ var _DOC_CANVAS_ROUTING={
 };
 var _MAX_DOC_BLOCKS=3;
 
+// ── Relevance ranking (Item 1b, D5) ──
+// Swappable interface: a future embedding-based version (RAG-Roadmap Item 5)
+// replaces only this function's internals. Every call site and
+// buildDocContext()'s consumption of the result stay identical.
+// candidateDocs: array of {doc, text} — text is what _docGetText() returned.
+// queryText: string, may be '' or undefined. maxResults: number.
+// Returns array of {doc, text, score} sorted descending by score, length <= maxResults.
+function _rankDocsByRelevance(candidateDocs,queryText,maxResults){
+  // Skip ranking (return tier order, first maxResults) when either nothing
+  // needs to be dropped or there's no query to rank against — confines this
+  // fix's effect strictly to genuine oversubscription (>maxResults eligible
+  // docs with a real query), so block order never changes on a generation
+  // call that wasn't broken to begin with.
+  if(!queryText||candidateDocs.length<=maxResults){
+    return candidateDocs.slice(0,maxResults).map(function(c){return {doc:c.doc,text:c.text,score:0};});
+  }
+  var qTokens=_docTokenize(queryText);
+  var scored=candidateDocs.map(function(c){
+    var cTokens=_docTokenize(c.text);
+    var shared=qTokens.filter(function(t){return cTokens.indexOf(t)!==-1;});
+    // Normalized by the candidate's own token count (fraction of its content
+    // that matches the query) rather than a raw shared-token count — a long
+    // raw-fallback excerpt otherwise racks up more incidental matches than a
+    // short, on-topic aiSummary purely by having more words to match with.
+    var score=cTokens.length?shared.length/cTokens.length:0;
+    return {doc:c.doc,text:c.text,score:score};
+  });
+  // Stable sort by score descending — Array#sort is spec-guaranteed stable
+  // (ES2019+), so equal scores (including all-zero) preserve original tier
+  // order without needing an explicit tiebreak comparator.
+  scored.sort(function(a,b){return b.score-a.score;});
+  return scored.slice(0,maxResults).map(function(c){return {doc:c.doc,text:c.text,score:c.score};});
+}
+
+function _docTokenize(str){
+  var seen=new Set();
+  return (str||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').split(/\s+/).filter(function(t){
+    if(!t||seen.has(t))return false;
+    seen.add(t);
+    return true;
+  });
+}
+
+// ── Fire the shared "partial excerpt" disclosure toast for a buildDocContext()
+// result — every call site's single, centralized way to disclose truncation,
+// instead of each caller re-implementing the same check+message. Pass a
+// shownRef ({shown:false} kept alive across multiple buildDocContext() calls
+// in one user action) to dedupe repeat firings down to one; omit it to fire
+// unconditionally whenever truncated is true.
+function _fireDocTruncatedToast(truncated,shownRef){
+  if(!truncated)return;
+  if(shownRef){
+    if(shownRef.shown)return;
+    shownRef.shown=true;
+  }
+  if(typeof showToast==='function'){
+    showToast('Used a partial excerpt - one or more documents weren’t summarized','info');
+  }
+}
+
 // ── Build doc context block for a canvas ──
-// Returns formatted string for injection into prompt, or '' if no docs apply.
-// Token-capped at 3 docs. Session docs highest priority, then product docs, then company docs.
-function buildDocContext(canvasType){
+// Returns {text, truncated} — text is the formatted string for injection into
+// prompt ('' if no docs apply), truncated is true if any selected block came
+// from _docGetText()'s raw-fallback path rather than a ready aiSummary.
+// Token-capped at 3 docs. Among eligible docs, ranked by relevance to
+// queryText (optional) when there are more candidates than the cap allows;
+// otherwise tier order (session > product > company) is preserved as-is.
+function buildDocContext(canvasType,queryText){
   var allowedTypes=_DOC_CANVAS_ROUTING[canvasType]||[];
   var companyAllowed=(canvasType==='dm'||canvasType==='mi');
   var _sc=typeof sessionContext!=='undefined'?sessionContext:null;
-  var blocks=[];
+  var candidates=[];
 
   // 1. Session docs (highest priority)
   var sessionDocs=(_sc&&_sc.sessionDocs)?_sc.sessionDocs:[];
@@ -453,7 +517,7 @@ function buildDocContext(canvasType){
     if(!allowedTypes.includes(doc.docType||'other'))return;
     var text=_docGetText(doc);
     if(!text)return;
-    blocks.push(_docFormatBlock(doc,text));
+    candidates.push({doc:doc,text:text});
   });
 
   // 2. Product profile docs
@@ -464,7 +528,7 @@ function buildDocContext(canvasType){
     if(!allowedTypes.includes(doc.docType||'other'))return;
     var text=_docGetText(doc);
     if(!text)return;
-    blocks.push(_docFormatBlock(doc,text));
+    candidates.push({doc:doc,text:text});
   });
 
   // 3. Company profile docs (dm + mi only, strategy/research/feedback types only)
@@ -477,14 +541,15 @@ function buildDocContext(canvasType){
       if(!['strategy','research','feedback'].includes(dt))return;
       var text=_docGetText(doc);
       if(!text)return;
-      blocks.push(_docFormatBlock(doc,text));
+      candidates.push({doc:doc,text:text});
     });
   }
 
-  // Token budget cap
-  var injected=blocks.slice(0,_MAX_DOC_BLOCKS);
-  if(!injected.length)return'';
-  return'\n\n'+injected.join('\n\n');
+  // Relevance ranking + token budget cap
+  var ranked=_rankDocsByRelevance(candidates,queryText,_MAX_DOC_BLOCKS);
+  var truncated=ranked.some(function(c){return c.doc.summaryStatus!=='ready'||!c.doc.aiSummary;});
+  var injected=ranked.map(function(c){return _docFormatBlock(c.doc,c.text);});
+  return {text:injected.length?'\n\n'+injected.join('\n\n'):'',truncated:truncated};
 }
 
 // ── Memoized CDN loader — mammoth.js ──

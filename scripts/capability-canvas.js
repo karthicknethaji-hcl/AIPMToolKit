@@ -560,7 +560,9 @@ async function ccGenerateOne(metricKey,metricName,stageLabel,stageId,triggerEl){
   }
   if(expEl){expEl.style.display='none';}
   const _ctx1=getFullProductCtx();
-  _ctx1.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
+  var _ccDocRes1=(typeof buildDocContext==='function')?buildDocContext('cc',[metricName,stageLabel].filter(Boolean).join(' ')):{text:'',truncated:false};
+  _ctx1.docContext=_ccDocRes1.text;
+  _fireDocTruncatedToast(_ccDocRes1.truncated);
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
   const _capInfo1=ccFindMetricInGData(metricKey);
   const capDescription1=_capInfo1&&_capInfo1.why?_capInfo1.why:'';
@@ -756,7 +758,9 @@ async function ccGenerateAll(){
   if(!document.getElementById('cc-main-area'))ccOpenMetricNav();
   if(!document.getElementById('cc-main-area'))return;
   const _ctx2=getFullProductCtx();
-  _ctx2.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
+  var _ccDocRes2=(typeof buildDocContext==='function')?buildDocContext('cc'):{text:'',truncated:false};
+  _ctx2.docContext=_ccDocRes2.text;
+  _fireDocTruncatedToast(_ccDocRes2.truncated);
   const batchDocGrounded=String(_ctx2.docContext||'').trim().length>0;
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
 
@@ -1893,7 +1897,9 @@ async function ccGenerateFeatures(refinement){
   const subCapName=isSubCap?cap.subCaps[capActiveSubCapIdx].name:null;
   const featKey=isSubCap?'sc'+capActiveSubCapIdx:'top';
   const _ctxFC1=getFullProductCtx();
-  _ctxFC1.docContext=(typeof buildDocContext==='function')?buildDocContext('fc'):'';
+  var _fcDocRes1=(typeof buildDocContext==='function')?buildDocContext('fc',[cap&&cap.name,subCapName].filter(Boolean).join(' ')):{text:'',truncated:false};
+  _ctxFC1.docContext=_fcDocRes1.text;
+  _fireDocTruncatedToast(_fcDocRes1.truncated);
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
 
   // Phase 5 (v8.117): immediate disable, no rich loader until lock confirmed.
@@ -2155,6 +2161,7 @@ async function ccGenerateFeaturesForMetric(metricKey){
   const caps=entry.capabilities||[];
   if(!caps.length)return;
   const key=getKey();
+  const _docToastRef={truncated:false};
   try{
     await withGenerationLock(async (lockHandle) => {
       // Generate features only for caps without features (don't overwrite existing)
@@ -2162,7 +2169,7 @@ async function ccGenerateFeaturesForMetric(metricKey){
         const cap=caps[ci];
         if(cap.featStore&&cap.featStore.top&&cap.featStore.top.length>0)continue;
         capActiveCapIdx=ci;
-        await ccGenerateFeaturesForCap(metricKey,ci,'',null,{lockHandle});
+        await ccGenerateFeaturesForCap(metricKey,ci,'',null,{lockHandle,docToastRef:_docToastRef});
       }
     });
   }catch(lockErr){
@@ -2172,6 +2179,7 @@ async function ccGenerateFeaturesForMetric(metricKey){
     // function's own writes) before rethrowing; this just stops the loop
     // from continuing to the next capability.
   }
+  _fireDocTruncatedToast(_docToastRef.truncated);
   capActiveCapIdx=null;
   // Phase 5 (v8.117): only re-render if the user is still viewing THIS
   // metric — this batch's own loop never wrote directly to the DOM itself
@@ -2211,7 +2219,9 @@ async function ccRefineCapabilities(metricKey,refinement){
     </div>`;
   }
   const _ctx4=getFullProductCtx();
-  _ctx4.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
+  var _ccDocRes4=(typeof buildDocContext==='function')?buildDocContext('cc',metric.metricName):{text:'',truncated:false};
+  _ctx4.docContext=_ccDocRes4.text;
+  _fireDocTruncatedToast(_ccDocRes4.truncated);
   const nsm=gData?gData.nsm.metric:'';
   try{
     const _signal=startAiGen(`Capabilities for "${metric.metricName}" are being regenerated. Leaving now discards them, you'll need to start again.`);
@@ -2266,7 +2276,9 @@ async function ccRegenCapability(metricKey,capIdx){
   const refineTxt=document.getElementById('cc-cap-refine-txt');
   const refinement=refineTxt?refineTxt.value.trim():'';
   const _ctx5=getFullProductCtx();
-  _ctx5.docContext=(typeof buildDocContext==='function')?buildDocContext('cc'):'';
+  var _ccDocRes5=(typeof buildDocContext==='function')?buildDocContext('cc',entry.metricName):{text:'',truncated:false};
+  _ctx5.docContext=_ccDocRes5.text;
+  _fireDocTruncatedToast(_ccDocRes5.truncated);
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
   const treeEl=document.getElementById('cc-nav-tree');
   if(treeEl){const capEls=treeEl.querySelectorAll('.cc-tree-cap');if(capEls[capIdx])capEls[capIdx].style.opacity='0.5';}
@@ -2693,8 +2705,10 @@ async function ccBuildPICanvas(){
     else clearInterval(_pifMsgInterval);
   },4000);
   const _ctx7=getFullProductCtx();
-  _ctx7.docContext=(typeof buildDocContext==='function')?buildDocContext('pi'):'';
   const piGoal=(typeof piInputs!=='undefined'&&piInputs.piGoal)||'';
+  var _piDocRes1=(typeof buildDocContext==='function')?buildDocContext('pi',piGoal):{text:'',truncated:false};
+  _ctx7.docContext=_piDocRes1.text;
+  _fireDocTruncatedToast(_piDocRes1.truncated);
   const withFeatures=(typeof piInputs!=='undefined'&&piInputs.parsedFeatures&&piInputs.parsedFeatures.length>0);
   const _needsAI=!withFeatures&&caps.some(cap=>!capStore[ccPIKey(cap.name)]);
   if(_needsAI)startAiGen(`Capabilities for ${caps.length} item${caps.length!==1?'s':''} are being generated. Leaving now discards this batch, you'll need to start again.`);
@@ -3319,11 +3333,11 @@ async function ccGenerateFeaturesForCap(metricKey,capIdx,refinement,modelOverrid
     ctx.triggerEl.disabled=true;
   }
   if (ctx && ctx.lockHandle) {
-    return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,ctx.lockHandle);
+    return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,ctx.lockHandle,ctx.docToastRef);
   }
   try {
     return await withGenerationLock(async (lockHandle) => {
-      return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle);
+      return await _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle,ctx&&ctx.docToastRef);
     });
   } catch(err) {
     // Phase 5 fix (v8.118): re-enable on any rejection/error path — the
@@ -3368,7 +3382,7 @@ function ccGenerateFeaturesForCapClick(metricKey,capIdx,refinement,modelOverride
 // and throws immediately if not, turning an accidental unlocked call into
 // a loud error instead of a silent same-tab race. Always go through
 // ccGenerateFeaturesForCap() above.
-async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle){
+async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,capIdx,refinement,modelOverride,lockHandle,docToastRef){
   _assertGenerationLockHandle(lockHandle,'_ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE');
   const _wasAllCaps=(capActiveMetricKey===null);
   capActiveMetricKey=metricKey;
@@ -3383,7 +3397,16 @@ async function _ccGenerateFeaturesForCapInner_REQUIRES_LOCK_HANDLE(metricKey,cap
   const featKey='top';
   const isPIFirst=!!(entry._piFirst);
   const _ctxFC2=getFullProductCtx();
-  _ctxFC2.docContext=(typeof buildDocContext==='function')?buildDocContext('fc'):'';
+  var _fcDocRes2=(typeof buildDocContext==='function')?buildDocContext('fc',cap.name):{text:'',truncated:false};
+  _ctxFC2.docContext=_fcDocRes2.text;
+  if(_fcDocRes2.truncated){
+    // Batch callers (ccGenerateFeaturesForMetric/ccGenerateFeaturesForSelected)
+    // pass a shared docToastRef so this per-capability truncation just
+    // accumulates into one flag instead of re-firing the toast on every
+    // iteration; they fire it once, after their loop, themselves.
+    if(docToastRef)docToastRef.truncated=true;
+    else _fireDocTruncatedToast(true);
+  }
   const nsm=gData?gData.nsm.metric:(typeof piInputs!=='undefined'&&piInputs.piGoal?piInputs.piGoal:'');
   // Phase 5 (v8.117): this inner function only ever runs AFTER a lock is
   // already confirmed held (either its own caller's withGenerationLock,
@@ -3983,6 +4006,7 @@ async function ccGenerateFeaturesForSelected(){
     }
   }
   let doneCount=0;
+  const _docToastRef={truncated:false};
   const _attempt=newGenAttempt();
   // Phase 5: wraps the ENTIRE loop in ONE lock acquisition — same
   // reasoning as ccGenerateFeaturesForMetric above. Setup (selection
@@ -4023,7 +4047,7 @@ async function ccGenerateFeaturesForSelected(){
       }
       capActiveMetricKey=mk;
       ccPanelCapKey=mk+'|'+ci;
-      await ccGenerateFeaturesForCap(mk,ci,'',batchModel,{lockHandle});
+      await ccGenerateFeaturesForCap(mk,ci,'',batchModel,{lockHandle,docToastRef:_docToastRef});
       doneCount++;
     }
   }
@@ -4034,6 +4058,7 @@ async function ccGenerateFeaturesForSelected(){
     // already reset its own UI state before rethrowing; this just stops
     // the loop from continuing, scope restoration below still runs.
   }
+  _fireDocTruncatedToast(_docToastRef.truncated);
   // Restore the scope the user actually started from — fixes the bug where
   // capActiveMetricKey was left pointing at the last-processed capability
   // instead of returning to All Capabilities (null) or whichever single

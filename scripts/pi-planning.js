@@ -759,7 +759,9 @@ async function piGenerate(){
   </div>`);}
   try{
     const sys=(typeof SYS_PI!=='undefined'?SYS_PI:'');
-    const _piDocCtx=(typeof buildDocContext==='function')?buildDocContext('pi'):'';
+    const _piDocRes=(typeof buildDocContext==='function')?buildDocContext('pi',piGoal):{text:'',truncated:false};
+    const _piDocCtx=_piDocRes.text;
+    _fireDocTruncatedToast(_piDocRes.truncated);
     // v8.98: prompt no longer takes squads/sprintCount/sprintDuration — the AI
     // does not sequence or assign squads/sprints, so it doesn't need them.
     const usr=buildPIGeneratePrompt(

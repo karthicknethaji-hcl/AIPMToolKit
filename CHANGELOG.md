@@ -1,5 +1,12 @@
 # Changelog — Product Studio
 
+## v9.27.03 - 2026-08-24: Document context disclosure + relevance-based selection (Item 1)
+
+Note: bundling 2 fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02).
+
+- Fixed - Generation calls that inject uploaded-document context now disclose it when a document's AI summary wasn't ready yet and a raw text excerpt was used in its place instead, via a toast on all 14 generation call sites that pull document context (previously silent).
+- Changed - When more than 3 eligible documents are available across the session/product/company tiers, the 3 injected into a generation call are now chosen by relevance to that specific generation (metric, capability, feature, PI goal, or RA conversation turn) via lexical term-overlap scoring, instead of always taking the first 3 by tier order regardless of relevance; behavior is unchanged whenever 3 or fewer documents are eligible, or no query context is available (e.g. Discovery Map, Requirement Agent's opening turn).
+
 ## v9.27.02 - 2026-08-23: 7-item PM-reported fix batch (Requirement Agent, Story Canvas, Outcome Pulse, Adoption Readiness, tab order)
 
 Note: bundling 7 fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03).
