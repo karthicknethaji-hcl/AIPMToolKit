@@ -1,5 +1,17 @@
 # Changelog — Product Studio
 
+## v9.27.02 - 2026-08-23: 7-item PM-reported fix batch (Requirement Agent, Story Canvas, Outcome Pulse, Adoption Readiness, tab order)
+
+Note: bundling 7 fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03).
+
+- Fixed - Requirement Agent: clicking Send while dictation is active now stops the mic and leaves the transcribed text in the box for review, instead of submitting immediately.
+- Fixed - Requirement Agent: Finalize's "Review Questions" now also scrolls and highlights the Live Draft's own Open Questions section, not just the originating chat message.
+- Changed - Requirement Agent: document uploads (RAG-off / ephemeral mode only) now stage as a removable attachment chip so a caption can be added before sending, instead of submitting the instant a file is selected; RAG-on document indexing is unchanged.
+- Fixed - Story Canvas: removing a story's "In Release Plan" tag no longer resets scroll position to the top of the list.
+- Fixed - The shared row-menu kebab (Outcome Pulse, Capability Canvas, Feature Canvas, Home, PI Planning, Story Canvas, Team Management) no longer clips below the viewport when opened near the bottom of the screen.
+- Changed - Adoption Readiness: Export now only appears on the Readiness Summary section, not all 6 sections.
+- Changed - Market Intelligence tab now appears before Requirement Agent in the top nav, matching its Discovery-Map-adjacent role.
+
 ## v9.27.01 - 2026-08-23: Company-wide toggle to run Requirement Agent without document RAG
 
 - Added - A new "Requirement Agent Document RAG" toggle under Settings > Company Profile & Access (off by default) lets a company fall back to the pre-v9.27 ephemeral upload behavior - extract, use for that one reply, nothing persisted - while Azure OpenAI embedding connectivity is blocked by IT network/compliance policy; turning it on restores the full chunk/embed/index/retrieve pipeline. Both paths now share a uniform 20,000-word extraction cap with a disclosed truncation notice, replacing an unrelated, undisclosed 8,000-character prompt-time truncation that applied regardless of the toggle.

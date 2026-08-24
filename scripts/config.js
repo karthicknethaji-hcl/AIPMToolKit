@@ -1,7 +1,7 @@
 // ── App version — single source of truth ──
 // Both index.html and login.html read this on DOMContentLoaded via #hdr-version span.
 // Update ONLY this constant on every release — never hardcode version strings in HTML.
-const APP_VERSION = 'v9.27.01';
+const APP_VERSION = 'v9.27.02';
 
 // ── App name — single source of truth for script-generated content ──
 // index.html/login.html's <title> and .hdr-title markup are static HTML,

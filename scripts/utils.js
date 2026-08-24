@@ -897,6 +897,30 @@ async function _raGetEmbedInfo(){
   return _raEmbedInfoInFlight;
 }
 
+// ── Shared scroll-preserve across an innerHTML rebuild ──
+// Item 4 code-review fix — story-canvas-new.js's newScRender() was about to
+// become another independently inline-coded copy of "capture scrollTop
+// before a full innerHTML rebuild, clamp-restore after" (capability-
+// canvas.js's ccRenderMainContent() and kpi-tree.js's renderMM() each have
+// their own pre-existing inline version of this same idea, left as-is here
+// rather than migrated, to avoid touching unrelated working render paths as
+// part of this fix). New call sites should use this pair instead of
+// writing a new inline copy.
+// elId: the scrollable element's id (no leading '#'), looked up fresh both
+// before and after — the id is expected to already be attached to the live
+// document at capture time, not a detached fragment.
+function _uiCaptureScrollTop(elId){
+  var el=document.getElementById(elId);
+  return el?el.scrollTop:0;
+}
+function _uiRestoreScrollTop(elId, savedScrollTop){
+  if(!(savedScrollTop>0))return;
+  var el=document.getElementById(elId);
+  if(!el)return;
+  var maxScroll=el.scrollHeight-el.clientHeight;
+  el.scrollTop=Math.min(savedScrollTop,Math.max(0,maxScroll));
+}
+
 // ── Shared row-menu mechanics (Phase 4) ──
 // Content-agnostic open/position/close for a small dropdown menu anchored to a
 // trigger button — e.g. the 3-dot Actions menu on a Team Management row.
@@ -941,12 +965,35 @@ function _uiRowMenuToggle(triggerEl, menuHtml){
   var menuEl = document.createElement('div');
   menuEl.setAttribute('role','menu');
   menuEl.style.position='fixed';
-  menuEl.style.top=(rect.bottom+4)+'px';
   menuEl.style.left='auto';
   menuEl.style.right=(window.innerWidth-rect.right)+'px';
   menuEl.style.zIndex='999';
+  // Item 5 fix — mount invisibly first at the default (below-trigger)
+  // position so its real rendered height can be measured before deciding
+  // final placement; a naive top-only assignment has no way to know if it
+  // fits without this.
+  menuEl.style.visibility='hidden';
+  menuEl.style.top=(rect.bottom+4)+'px';
   menuEl.innerHTML = menuHtml;
   document.body.appendChild(menuEl);
+  var menuHeight=menuEl.offsetHeight;
+  var menuWidth=menuEl.offsetWidth;
+  var fitsBelow=(rect.bottom+4+menuHeight)<=window.innerHeight;
+  if(!fitsBelow){
+    var flippedTop=rect.top-menuHeight-4;
+    menuEl.style.top=Math.max(4,flippedTop)+'px'; // clamp so it never runs off the top edge either
+  }
+  // Item 5 code-review fix — the original fix only handled vertical
+  // clipping; right-aligning the menu to the trigger's right edge can still
+  // push its LEFT edge past the viewport's left edge for a trigger near the
+  // screen's left side (e.g. a narrow/collapsed left-nav row). Same
+  // measure-then-clamp approach, other axis.
+  var fitsLeft=(rect.right-menuWidth)>=4;
+  if(!fitsLeft){
+    menuEl.style.left='4px';
+    menuEl.style.right='auto';
+  }
+  menuEl.style.visibility='visible';
   triggerEl.setAttribute('aria-expanded','true');
 
   var firstItem = menuEl.querySelector('[role="menuitem"]');
