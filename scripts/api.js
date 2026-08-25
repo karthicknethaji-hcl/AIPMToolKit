@@ -848,7 +848,11 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
   // Prod env.js → product-diagnostics-proxy.onrender.com
   // Local dev falls back to localhost:3001 regardless of env.js value.
   // Note: onrender.com must be whitelisted on corporate networks for generation to work.
-  // AI Recommendations uses the Netlify function path (home.js) — works without whitelisting.
+  // AI Recommendations (home.js) also routes here, not through the Netlify
+  // function — rerouted in v9.01 after the Netlify Function URL was found
+  // to be blocked by HCL's corporate gateway ("Suspicious" category, keyed
+  // on "anthropic" in the path); see home.js's own call site for the full
+  // history. This comment previously claimed the opposite and was stale.
   const host=window.location.hostname;
   const isLocal=host===''||host==='localhost'||host==='127.0.0.1';
   const LOCAL_PROXY_URL='http://localhost:3001/api/anthropic';
@@ -1062,7 +1066,7 @@ function _pgtAnthropicErrorMessage(error){
     }
     return 'Your access to this company has changed. Refreshing — please try again.';
   }
-  const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':''};
+  const _elabels={'api_error':'Anthropic API error — ','overloaded_error':'Anthropic overloaded — ','invalid_request_error':'Invalid request — ','proxy_error':'Proxy error — ','permission_error':'API key permission error — ','auth_error':'','rate_limit_error':'','usage_stopped':''};
   const _eprefix=_elabels.hasOwnProperty(_etype)?_elabels[_etype]:(_etype?'['+_etype+'] ':'');
   return _eprefix+_emsg;
 }

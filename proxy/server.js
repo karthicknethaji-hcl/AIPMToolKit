@@ -211,6 +211,28 @@ function _utcMonthBoundary(offsetMonths) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + offsetMonths, 1));
 }
 
+// Shared "is this effective-dated row active at time T" predicate — used by
+// both _computeMonthToDateSpend() below (historical event timestamps) and
+// _resolveEconomicalModel() further down (the current moment), so the two
+// can't silently disagree about which pricing row applies to the same
+// provider+model at the same point in time.
+function _isPriceRowActiveAt(atMs, fromMs, toMs) {
+  return atMs >= fromMs && (toMs === null || atMs < toMs);
+}
+
+// Shared "the active overall budget row for this company" lookup — used by
+// both _checkBudgetAlertsOpportunistic() and _checkGovernanceState() below,
+// so the definition of "the active budget" can't drift between the two.
+function _fetchActiveBudget(companyId, selectCols) {
+  return supabaseAdmin
+    .from('mt_ai_budgets')
+    .select(selectCols)
+    .eq('company_id', companyId)
+    .eq('scope_type', 'overall')
+    .eq('is_active', true)
+    .maybeSingle();
+}
+
 // Recomputes calculated_cost the same way mt_ai_cost_events_list() does
 // (sql/ai-cost-tower.sql), in JS rather than SQL — supabaseAdmin runs under
 // the service role with no authenticated-user JWT context, so the RPC's own
@@ -269,7 +291,7 @@ async function _computeMonthToDateSpend(companyId) {
     if (!candidates) continue; // unpriced call — excluded, same as the RPC's LEFT JOIN + NULL calculated_cost
     const atMs = new Date(e.request_started_at).getTime();
     const match = candidates.find(function(p) {
-      return atMs >= p.effectiveFromMs && (p.effectiveToMs === null || atMs < p.effectiveToMs);
+      return _isPriceRowActiveAt(atMs, p.effectiveFromMs, p.effectiveToMs);
     });
     if (!match) continue;
     total += (e.input_tokens || 0) / 1000000 * match.input_price_per_mtok
@@ -287,13 +309,7 @@ async function _checkBudgetAlertsOpportunistic(companyId) {
   if (Date.now() - lastChecked < BUDGET_ALERT_CHECK_THROTTLE_MS) return;
   _budgetAlertLastCheckedAt.set(companyId, Date.now());
 
-  const { data: budget, error: budgetErr } = await supabaseAdmin
-    .from('mt_ai_budgets')
-    .select('*')
-    .eq('company_id', companyId)
-    .eq('scope_type', 'overall')
-    .eq('is_active', true)
-    .maybeSingle();
+  const { data: budget, error: budgetErr } = await _fetchActiveBudget(companyId, '*');
   if (budgetErr || !budget) return; // no active budget configured — nothing to check against
 
   const spend = await _computeMonthToDateSpend(companyId);
@@ -326,6 +342,102 @@ async function _checkBudgetAlertsOpportunistic(companyId) {
     if (error && error.code !== '23505') {
       console.warn('[AI BUDGET ALERT] alert insert failed:', error.message);
     }
+  }
+}
+
+// ── Manual governance enforcement (v9.28.02) ─────────────────────────────────
+// Deliberately not the same hook as _checkBudgetAlertsOpportunistic() above:
+// that check is a passive, throttled, fire-and-forget notification about a
+// call that already happened. This one decides whether a call happens at
+// all, so it must be awaited, must run on every request, and must run
+// before dispatch, not after. An admin's Restrict/Stop selection
+// (scripts/cost-tower.js's actSaveBudget()) IS the live governance state
+// the moment it's saved — this applies it.
+// Auto-reverts to 'notify' once action_on_breach_set_at falls before the
+// start of the current UTC month, computed via the same _utcMonthBoundary()
+// helper _checkBudgetAlertsOpportunistic() already uses above, not a second
+// definition of "current month" that could drift from it. A NULL timestamp
+// paired with a non-'notify' value is treated as already-expired, not as
+// "never expires" — a restriction with no recorded time is not trusted to
+// enforce indefinitely.
+// See the restrict_tier branch in the /api/anthropic handler for why this
+// exists: a conservative safe floor, not a verified per-model ceiling.
+const GOVERNANCE_RESTRICT_MAX_TOKENS_CAP = 4096;
+
+async function _checkGovernanceState(companyId) {
+  if (!supabaseAdmin || !companyId) return { action: 'notify' };
+
+  let budget;
+  try {
+    const { data, error } = await _fetchActiveBudget(companyId, 'budget_id, action_on_breach, action_on_breach_set_at');
+    if (error) throw error;
+    budget = data;
+  } catch (e) {
+    // Fail open: this feature must never be the reason AI generation goes
+    // down company-wide over an unrelated hiccup in a table nobody's AI
+    // call actually needs to succeed.
+    console.warn('[AI GOVERNANCE] budget lookup failed, proceeding as notify:', e.message);
+    return { action: 'notify' };
+  }
+  if (!budget) return { action: 'notify' }; // nothing configured — nothing to enforce
+  if (budget.action_on_breach === 'notify') return { action: 'notify' };
+
+  const monthStartMs = _utcMonthBoundary(0).getTime();
+  const setAtMs = budget.action_on_breach_set_at ? new Date(budget.action_on_breach_set_at).getTime() : null;
+  const isExpired = setAtMs === null || setAtMs < monthStartMs;
+  if (!isExpired) return { action: budget.action_on_breach };
+
+  // Expired — this request is treated as 'notify', and the row is
+  // opportunistically corrected in the background so the admin's own
+  // Budget Configuration card stops showing a restriction that's no longer
+  // enforced. Never awaited: this write must never delay or fail the AI
+  // call itself, same discipline as every other fire-and-forget write in
+  // this file.
+  // Compare-and-swap on the exact action_on_breach_set_at value just read
+  // (not just budget_id + non-'notify'): without this, a fresh admin save
+  // that lands between this read and this write's arrival — same non-
+  // 'notify' value, new timestamp — would still match on budget_id alone
+  // and get silently reverted back to 'notify' by this stale write.
+  let _revertQuery = supabaseAdmin
+    .from('mt_ai_budgets')
+    .update({ action_on_breach: 'notify' })
+    .eq('budget_id', budget.budget_id)
+    .neq('action_on_breach', 'notify');
+  _revertQuery = budget.action_on_breach_set_at
+    ? _revertQuery.eq('action_on_breach_set_at', budget.action_on_breach_set_at)
+    : _revertQuery.is('action_on_breach_set_at', null);
+  _revertQuery
+    .then(function(r) { if (r.error) console.warn('[AI GOVERNANCE] revert-to-notify write failed:', r.error.message); })
+    .catch(function(e) { console.warn('[AI GOVERNANCE] revert-to-notify write exception:', e.message); });
+  return { action: 'notify' };
+}
+
+// Economical-tier model for a provider, active right now. Sourced from
+// mt_model_pricing.tier (already populated per-provider by v1's own
+// migration) rather than duplicating TIER_MODEL_BY_PROVIDER from
+// scripts/api.js into the proxy, which would create a second place that
+// can drift from the first. Mirrors _computeMonthToDateSpend()'s own
+// effective_from/effective_to window match above (JS-side filtering over
+// the fetched rows), applied to "now" instead of a historical event
+// timestamp, rather than introducing a second date-filtering approach.
+async function _resolveEconomicalModel(provider) {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from('mt_model_pricing')
+      .select('model_name, effective_from, effective_to')
+      .eq('provider', provider)
+      .eq('tier', 'economical');
+    if (error || !rows || !rows.length) return null;
+    const nowMs = Date.now();
+    const match = rows.find(function(p) {
+      const fromMs = new Date(p.effective_from).getTime();
+      const toMs = p.effective_to ? new Date(p.effective_to).getTime() : null;
+      return _isPriceRowActiveAt(nowMs, fromMs, toMs);
+    });
+    return match ? match.model_name : null;
+  } catch (e) {
+    console.warn('[AI GOVERNANCE] economical-tier lookup failed:', e.message);
+    return null;
   }
 }
 
@@ -932,6 +1044,63 @@ app.post('/api/anthropic', async (req, res) => {
           message: 'Malformed request body — model and messages are required.'
         }
       });
+    }
+
+    // ── Manual governance enforcement (v9.28.02) ──
+    // Runs before isKnownModel()/buildUpstreamRequest() below, so a Stop
+    // response never reaches either, and a Restrict substitution is in
+    // place before both see body.model. Overrides whatever body.model the
+    // client sent for any reason — an optimized default, a user's own
+    // explicit pin, or the batch_threshold_override path in
+    // feature-canvas.js — there is no per-call-site exemption here, the
+    // block/substitution happens before any of those distinctions are read.
+    const _governance = await _checkGovernanceState(req.companyId);
+    if (_governance.action === 'stop') {
+      return res.status(200).json({
+        error: {
+          type: 'usage_stopped',
+          message: 'AI generation is stopped for the rest of this billing period. An admin restricted usage after spend crossed budget.'
+        }
+      });
+    }
+    if (_governance.action === 'restrict_tier') {
+      const _econModel = await _resolveEconomicalModel(provider);
+      // isKnownModel() re-check: mt_model_pricing.tier (SQL-editable) and
+      // MODEL_CATALOG_BY_PROVIDER (hardcoded here) have no link keeping
+      // them in sync — if a tier-tagged model has since dropped out of the
+      // catalog, treat that exactly like "no economical row found" (fail
+      // open) rather than letting a stale tier tag fail the call closed at
+      // the isKnownModel() check just below.
+      if (_econModel && isKnownModel(provider, _econModel)) {
+        // Silent substitution, not a rejection — matches whether or not
+        // the client's original body.model was already the economical
+        // model. selection_rule is overwritten too, so Selection Economics
+        // (Cost Control Tower) attributes this call to the admin
+        // restriction instead of whatever routing the client computed.
+        body.model = _econModel;
+        body.selection_rule = 'governance_restricted';
+        // Conservative safe floor, not a per-model verified ceiling — this
+        // codebase has no per-model max-output-tokens table
+        // (MODEL_CATALOG_BY_PROVIDER is name-only). Caps a caller's
+        // original max_tokens (which may have been tuned for a larger
+        // model, e.g. pi-planning.js/market-intelligence.js) so a
+        // restricted call degrades gracefully instead of risking an
+        // upstream invalid_request_error from exceeding the economical
+        // model's real ceiling.
+        if (typeof body.max_tokens === 'number' && body.max_tokens > GOVERNANCE_RESTRICT_MAX_TOKENS_CAP) {
+          body.max_tokens = GOVERNANCE_RESTRICT_MAX_TOKENS_CAP;
+        }
+      } else {
+        // No economical-tier row for this provider today, or its tagged
+        // model isn't in this file's known-model catalog — fail open:
+        // proceed with the client's original body.model unchanged, never
+        // block the call or forward a null/invalid model string upstream.
+        if (_econModel) {
+          console.warn('[AI GOVERNANCE] economical-tier model not in known catalog, proceeding with original model:', provider, _econModel);
+        } else {
+          console.warn('[AI GOVERNANCE] no economical-tier pricing row for provider, proceeding with original model:', provider);
+        }
+      }
     }
 
     // ── Runtime model validation (Section 6.3's fail-fast requirement) ──

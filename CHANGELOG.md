@@ -1,5 +1,13 @@
 # Changelog — Product Studio
 
+## v9.28.02 - 2026-08-25: AI Cost Control Tower: manual governance enforcement (Restrict / Stop)
+
+Note: bundling 3 items in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02, v9.28.01).
+
+- Added - Budget Configuration's "Restrict to Economical Tier" and "Stop AI Usage" options (previously disabled, v1.1 placeholders) are now live: selecting and saving either applies immediately and company-wide to every subsequent AI call, checked server-side in `proxy/server.js` before dispatch, and reverts automatically to Notify Only at the start of the next billing period. No automatic threshold-triggered enforcement, this is manual only.
+- Fixed - `selection_rule` now correctly records `governance_restricted` for calls forced onto the economical model by an admin restriction, instead of retaining whatever selection path the client originally computed, preventing Selection Economics from misattributing why those calls used that model.
+- Changed - Corrected two stale comments (`scripts/api.js`, `PROJECT_MAP.md`) claiming `netlify/functions/anthropic-proxy.js` is the live hosted path; confirmed via live code that both `callAPI()`'s primary path and Home's AI Recommendations route through the Render proxy today, not the Netlify function.
+
 ## v9.28.01 - 2026-08-25: Build B Part 1 (cache-usage tracking) + code-review fixes
 
 Note: bundling the feature and its own code-review fix round in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02).

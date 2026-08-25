@@ -28,7 +28,8 @@ var SELECTION_RULE_LABELS = {
   optimized_fallback_default: 'Optimized (Fallback)',
   user_selected_model: 'User-Selected',
   batch_threshold_override: 'Batch Threshold Override',
-  explicit_override_unclassified: 'Explicit Override'
+  explicit_override_unclassified: 'Explicit Override',
+  governance_restricted: 'Governance Restricted (Admin)'
 };
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1279,6 +1280,7 @@ function actRenderBudgetAlerts() {
   var amount = actBudget ? Number(actBudget.amount) : 0;
   var warnPct = actBudget ? Number(actBudget.warn_threshold_pct) : 80;
   var escPct = actBudget ? Number(actBudget.escalate_threshold_pct) : 90;
+  var actionOnBreach = (actBudget && actBudget.action_on_breach) || 'notify';
   var usedPct = amount ? Math.min(100, spendSoFar / amount * 100) : 0;
   var barColor = !actBudget ? 'var(--divider)' : (usedPct >= escPct ? 'var(--red)' : (usedPct >= warnPct ? 'var(--amber)' : 'var(--purple)'));
   var daysInMonth = Math.round((actMain.end - actMain.start) / 86400000);
@@ -1287,7 +1289,7 @@ function actRenderBudgetAlerts() {
   var alertRows = actAlerts.map(function (a) {
     var isEsc = a.threshold_type === 'escalate';
     return '<div class="act-alert-row"><div class="act-alert-row-top"><span class="act-alert-level ' + (isEsc ? 'escalate' : 'warn') + '">' + a.threshold_type + '</span><span class="act-alert-title">Spend crossed ' + Number(a.threshold_pct) + '% of the monthly budget.</span><span class="act-alert-date">' + new Date(a.created_at).toLocaleDateString() + '</span></div>' +
-      '<div class="act-alert-what">' + (isEsc ? 'Admins were notified. No automatic action fires yet, since enforcement actions are v1.1.' : 'Admins were notified. No automatic action fires at the Warn level.') + '</div>' +
+      '<div class="act-alert-what">' + (isEsc ? 'Admins were notified. This alert does not trigger anything on its own — apply an action in Budget Configuration if you want one.' : 'Admins were notified. No automatic action fires at the Warn level.') + '</div>' +
       (a.status === 'open' ? '<button class="act-btn act-btn-secondary act-btn-sm" onclick="actAcknowledgeAlert(\'' + a.alert_id + '\')">Acknowledge</button>' : '<div class="act-alert-ack-done">Acknowledged ' + (a.acknowledged_at ? new Date(a.acknowledged_at).toLocaleDateString() : '') + '</div>') +
       '</div>';
   }).join('') || '<div class="act-alert-row"><div class="act-alert-what">No alerts yet for the active budget.</div></div>';
@@ -1304,7 +1306,7 @@ function actRenderBudgetAlerts() {
     '<div class="act-field"><div class="act-field-label">Monthly Budget</div><input id="act-cfg-amount" type="number" min="0" step="1" value="' + (actBudget ? amount : '') + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Warn Threshold %</div><input id="act-cfg-warn" type="number" min="1" max="99" value="' + warnPct + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Escalate Threshold %</div><input id="act-cfg-escalate" type="number" min="1" max="100" value="' + escPct + '"></div>' +
-    '<div class="act-field"><div class="act-field-label">Action At Escalate</div><select id="act-cfg-action"><option value="notify">Notify Only</option><option value="restrict_tier" disabled>Restrict to Economical Tier (v1.1)</option><option value="stop" disabled>Stop AI Usage (v1.1)</option></select><div class="act-field-hint">Live enforcement actions arrive in v1.1.</div></div>' +
+    '<div class="act-field"><div class="act-field-label">Action On Save</div><select id="act-cfg-action"><option value="notify"' + (actionOnBreach === 'notify' ? ' selected' : '') + '>Notify Only</option><option value="restrict_tier"' + (actionOnBreach === 'restrict_tier' ? ' selected' : '') + '>Restrict to Economical Tier</option><option value="stop"' + (actionOnBreach === 'stop' ? ' selected' : '') + '>Stop AI Usage</option></select><div class="act-field-hint">Applies to every AI call the moment you save, regardless of current spend. Resets to Notify Only automatically at the start of next month.</div></div>' +
     '</div><div class="act-config-footer"><button class="act-btn act-btn-primary act-btn-sm" onclick="actSaveBudget()">Save Configuration</button></div>' +
     '</div></div>';
 }
@@ -1314,13 +1316,14 @@ async function actSaveBudget() {
   var amount = Number(document.getElementById('act-cfg-amount').value || 0);
   var warn = Number(document.getElementById('act-cfg-warn').value || 80);
   var esc = Number(document.getElementById('act-cfg-escalate').value || 90);
+  var actionOnBreach = document.getElementById('act-cfg-action').value;
   if (!amount || amount <= 0) { actToast('Enter a monthly budget amount greater than 0.', 'error'); return; }
   if (esc <= warn) { actToast('Escalate threshold must be greater than Warn threshold.', 'error'); return; }
   try {
     var result = await client.rpc('mt_ai_budget_upsert', {
       p_company_id: actCompanyId, p_amount: amount, p_currency: 'USD',
       p_warn_threshold_pct: warn, p_escalate_threshold_pct: esc,
-      p_enforcement_mode: 'monitor', p_action_on_breach: 'notify'
+      p_enforcement_mode: 'monitor', p_action_on_breach: actionOnBreach
     });
     if (result.error) throw result.error;
     actBudget = result.data;
