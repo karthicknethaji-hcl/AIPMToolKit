@@ -454,7 +454,7 @@
 | Tower Overview / Cost Breakdown / Planning & Optimization screens | `scripts/cost-tower.js` (`actRenderOverview`, `actRenderCostBreakdown`, `actRenderPlan`) |
 | Tower budget configuration + alert acknowledge | `scripts/cost-tower.js` (`actSaveBudget`, `actAcknowledgeAlert`) — RPCs in `sql/ai-cost-tower.sql` (`mt_ai_budget_upsert`, `mt_ai_alert_acknowledge`) |
 | Tower PDF export (per screen) | `scripts/cost-tower.js` (`actDownloadReport`) — same html2canvas+jsPDF CDN pattern as `outcome-pulse.js`'s `opDownloadReport()`, not reinvented |
-| Tower data model (new tables, read RPC, budget/alert RPCs) | `sql/ai-cost-tower.sql` — NOT run against Supabase by this build |
+| Tower data model (new tables, read RPC, budget/alert RPCs) | `sql/ai-cost-tower.sql`, `sql/ai-cost-tower-build-b-addendum.sql` (adds `cache_read_price_per_mtok` to `mt_ai_cost_events_list`'s return signature), `sql/ai-cost-tower-cache-cost-fix.sql` (fixes `calculated_cost` double-counting cache reads for OpenAI/Gemini) — none run against Supabase by Claude Code |
 
 
 

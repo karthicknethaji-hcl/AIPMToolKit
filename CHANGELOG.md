@@ -1,5 +1,14 @@
 # Changelog — Product Studio
 
+## v9.28.01 - 2026-08-25: Build B Part 1 (cache-usage tracking) + code-review fixes
+
+Note: bundling the feature and its own code-review fix round in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02).
+
+- Fixed - `_streamUpstreamOnce()` (`proxy/server.js`) merged each SSE event's usage object by wholesale overwrite instead of per-field, silently dropping Anthropic's `message_start` cache-creation data once `message_delta` arrived (the v9.28 entry's deferred "newly-found streaming-path bug"). Confirmed `output_tokens` itself was never affected — only cache fields, which were separately hardcoded to null on the streaming path regardless, so no cost figures were wrong in production from this.
+- Added - Cache-read-token tracking for OpenAI (`input_tokens_details.cached_tokens`) and Gemini (`total_cached_tokens`), plus correct Anthropic streaming-path cache columns (mirroring the already-correct non-streaming logic) — feeding a real "Cache-Read Share of Input" / "Estimated Cache Savings" panel on Cost Breakdown's Cache Usage card, replacing its "Collecting after enablement" placeholder. Anthropic request-side `cache_control` (Part 2) remains deferred, unchanged.
+- Fixed - `/code-review` of the above found `mt_ai_cost_events_list`'s `calculated_cost` formula billed `input_tokens` and `cache_read_tokens` as independent additive buckets — correct for Anthropic (whose `input_tokens` genuinely excludes cache reads) but a real double-count for OpenAI/Gemini (whose cached-token counts are already included inside `input_tokens`), overstating Total Spend/Avg Cost/Call/budget-alert figures for any OpenAI/Gemini call using caching. Fixed in `sql/ai-cost-tower-cache-cost-fix.sql` (not run by Claude, applied to Supabase manually) and the matching client-side "Cache-Read Share of Input" formula in `scripts/cost-tower.js`.
+- Changed - `proxy/server.js` gained two small shared helpers (`_emptyStreamUsage()`, `_extractAnthropicCacheCreation()`) removing duplication the same code-review pass found between the streaming and non-streaming success paths.
+
 ## v9.28 - 2026-08-25: AI Cost Control Tower (v1: Overview, Cost Breakdown, Planning & Optimization)
 
 - Added - A new admin-only page, AI Cost Control Tower (`ai-cost-tower.html`, opened via a new avatar-menu item, first use of `window.open()` in this codebase), reporting on the app's own AI spend from `mt_ai_usage_events` and `mt_model_pricing` via a new admin-gated read RPC (`mt_ai_cost_events_list`) — every figure is computed client-side (`scripts/cost-tower.js`) from that one query, no LLM-generated narrative anywhere on these screens.

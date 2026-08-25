@@ -831,7 +831,7 @@ function actRenderCostBreakdown() {
     '</div></div>' +
 
     '<div id="act-operational-signals" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">C. Operational Signals</div><div class="act-group-title">Failures, large calls, and cache readiness</div></div>' +
-    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(rows) + actRenderCacheUsage() + '</div>' + actRenderLongestLargest(rows) + '</div></div>' +
+    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(rows) + actRenderCacheUsage(rows) + '</div>' + actRenderLongestLargest(rows) + '</div></div>' +
 
     '<div id="act-trust-audit" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">D. Trust &amp; Audit</div><div class="act-group-title">Prove the cost numbers are reliable</div></div>' +
     '<div class="act-group-body">' + actRenderDataQuality(rows) + actRenderRequestExplorer(rows) + '</div></div>' +
@@ -877,10 +877,40 @@ function actRenderFailureCost(rows) {
     '</div><div class="act-scoped-card-note">Covers failed or timed-out provider calls only, not poor-quality successful outputs or user rework. Phase detail is limited today — every failed call currently logs the same phase, so Top Phase will not vary until that field carries more granularity.</div></div>';
 }
 
-function actRenderCacheUsage() {
+function actRenderCacheUsage(rows) {
+  var totalEligibleInput = 0, totalCacheRead = 0, savings = 0;
+  rows.forEach(function (r) {
+    var cr = Number(r.cache_read_tokens || 0);
+    var inputTok = Number(r.input_tokens || 0);
+    // Anthropic's input_tokens EXCLUDES cache reads (a separate, additive
+    // billing bucket) — total eligible input is input_tokens + cache reads.
+    // OpenAI's input_tokens_details.cached_tokens and Gemini's
+    // total_cached_tokens are already INCLUDED inside input_tokens/
+    // total_input_tokens (a breakdown, not an addition) — adding cache
+    // reads again there would double-count. Found by /code-review: this
+    // same provider distinction applies to calculated_cost's own formula
+    // (sql/ai-cost-tower-cache-cost-fix.sql).
+    totalEligibleInput += (r.provider === 'anthropic') ? (inputTok + cr) : inputTok;
+    totalCacheRead += cr;
+    // input_price_per_mtok / cache_read_price_per_mtok come from the same
+    // LEFT JOIN as calculated_cost, so they're null together on an unpriced
+    // row — actIsPriced() is the same guard actSumCost() already needs.
+    if (cr > 0 && actIsPriced(r) && r.input_price_per_mtok != null && r.cache_read_price_per_mtok != null) {
+      savings += (cr / 1000000) * (r.input_price_per_mtok - r.cache_read_price_per_mtok);
+    }
+  });
+  var sharePct = totalEligibleInput > 0 ? (totalCacheRead / totalEligibleInput * 100) : null;
+  var noteMsg = 'OpenAI and Gemini cache usage is tracked automatically. Anthropic prompt caching is not yet enabled — Anthropic calls will show zero cache reads until that ships separately.';
+  if (totalCacheRead === 0) {
+    return '<div class="act-scoped-card"><div class="act-section-title">Cache Usage</div>' +
+      '<div class="act-empty-state"><div class="act-empty-state-title">No cache reads this period</div>' +
+      '<div class="act-empty-state-sub">' + actEsc(noteMsg) + '</div></div></div>';
+  }
   return '<div class="act-scoped-card"><div class="act-section-title">Cache Usage</div>' +
-    '<div class="act-empty-state"><div class="act-empty-state-title">Collecting after enablement</div>' +
-    '<div class="act-empty-state-sub">Prompt caching is not currently enabled for Anthropic calls, and cache usage reported by OpenAI/Gemini is not yet captured. This section populates once the caching-enablement build ships.</div></div></div>';
+    '<div class="act-kpi-strip" style="grid-template-columns:repeat(2,1fr);">' +
+    '<div class="act-kpi"><div class="act-kpi-label">Cache-Read Share of Input</div><div class="act-kpi-value">' + actFmtPct(sharePct) + '</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Estimated Cache Savings</div><div class="act-kpi-value">' + actFmtUSD(savings) + '</div></div>' +
+    '</div><div class="act-scoped-card-note">' + actEsc(noteMsg) + '</div></div>';
 }
 
 function actRenderLongestLargest(rows) {

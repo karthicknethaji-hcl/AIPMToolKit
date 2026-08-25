@@ -677,6 +677,26 @@ function _callUpstream(upstreamReq, timeoutMs, onTimeoutLog) {
 // `data: {"done":true}` (or `data: {"error":true,"message":"..."}` if the
 // upstream connection drops mid-stream — no retry is possible at that point,
 // same limitation any streaming client has).
+// Shared "no usage data" shape for _streamUpstreamOnce's two return sites
+// (initial accumulator, mid-stream-error fallback) — kept as one factory so
+// a future field addition/removal only needs one edit, not two in lockstep.
+function _emptyStreamUsage() {
+  return { inputTokens: null, outputTokens: null, totalTokens: null, cacheReadTokens: null, providerUsageRaw: null, resolvedModel: null };
+}
+
+// Anthropic's cache-creation buckets (5m/1h ephemeral writes) have no
+// equivalent on OpenAI/Gemini's raw usage shape (confirmed in
+// proxy/providerAdapters.js's adapter comments), so they're read directly
+// off the raw usage object here rather than normalized into the adapter's
+// shared `usage` shape the way cacheReadTokens is. Shared between the
+// streaming and non-streaming success paths below, which otherwise had to
+// duplicate this same guard+field-access pattern.
+function _extractAnthropicCacheCreation(provider, rawUsage, field) {
+  if (provider !== 'anthropic' || !rawUsage || !rawUsage.cache_creation) return null;
+  var v = rawUsage.cache_creation[field];
+  return v != null ? v : null;
+}
+
 function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog) {
   const https = require('https');
   const { StringDecoder } = require('string_decoder');
@@ -716,7 +736,7 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       let sseBuffer = '';
       let responseBytes = 0;
-      const usage = { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null, resolvedModel: null };
+      const usage = _emptyStreamUsage();
       // StringDecoder (Node core), not Buffer#toString('utf8') per chunk —
       // a multi-byte UTF-8 character split across two TCP chunks would
       // otherwise decode independently in each chunk and come out as a
@@ -742,7 +762,14 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
             if (parsedEvt.usage.inputTokens != null) usage.inputTokens = parsedEvt.usage.inputTokens;
             if (parsedEvt.usage.outputTokens != null) usage.outputTokens = parsedEvt.usage.outputTokens;
             if (parsedEvt.usage.totalTokens != null) usage.totalTokens = parsedEvt.usage.totalTokens;
-            if (parsedEvt.usage.providerUsageRaw != null) usage.providerUsageRaw = parsedEvt.usage.providerUsageRaw;
+            if (parsedEvt.usage.cacheReadTokens != null) usage.cacheReadTokens = parsedEvt.usage.cacheReadTokens;
+            // Shallow merge, not overwrite: Anthropic's message_start event carries
+            // cache_creation/cache_read_input_tokens, message_delta carries only
+            // output_tokens — a wholesale overwrite here silently dropped
+            // message_start's cache fields once message_delta arrived (spec
+            // Section 11 item 11). Confirmed this never affected output_tokens
+            // itself, which is guarded per-field above, independent of this object.
+            if (parsedEvt.usage.providerUsageRaw != null) usage.providerUsageRaw = Object.assign({}, usage.providerUsageRaw, parsedEvt.usage.providerUsageRaw);
           }
           if (parsedEvt.resolvedModel != null) usage.resolvedModel = parsedEvt.resolvedModel;
         });
@@ -771,7 +798,7 @@ function _streamUpstreamOnce(upstreamReq, timeoutMs, adapter, res, onTimeoutLog)
           res.write('data: ' + JSON.stringify({ error: true, message: upstreamTimedOut ? 'Upstream timed out mid-stream.' : ('Stream interrupted: ' + (err.message || 'unknown error')) }) + '\n\n');
           res.end();
         } catch (e) {}
-        resolve({ streamed: true, usage: { inputTokens: null, outputTokens: null, totalTokens: null, providerUsageRaw: null, resolvedModel: null }, requestBytes: bodyBytes, responseBytes: 0, midStreamError: true });
+        resolve({ streamed: true, usage: _emptyStreamUsage(), requestBytes: bodyBytes, responseBytes: 0, midStreamError: true });
       } else {
         // No response ever received (headers never sent) — a genuine
         // transport-level failure, same as _callUpstream()'s own
@@ -820,7 +847,12 @@ async function _handleStreamingRequest(req, res, ctx) {
         caller: _caller, prompt_version: _promptVersion, requested_model: body.model, response_model: outcome.usage.resolvedModel,
         settings_mode: _settingsMode, settings_model: _settingsModel, selection_rule: _selectionRule,
         input_tokens: outcome.usage.inputTokens, output_tokens: outcome.usage.outputTokens,
-        cache_creation_5m_tokens: null, cache_creation_1h_tokens: null, cache_read_tokens: null,
+        // Anthropic-specific cache-write buckets, same as the non-streaming path
+        // below — only meaningful once the merge-bug fix above lets
+        // providerUsageRaw actually retain message_start's cache_creation object.
+        cache_creation_5m_tokens: _extractAnthropicCacheCreation(provider, outcome.usage.providerUsageRaw, 'ephemeral_5m_input_tokens'),
+        cache_creation_1h_tokens: _extractAnthropicCacheCreation(provider, outcome.usage.providerUsageRaw, 'ephemeral_1h_input_tokens'),
+        cache_read_tokens: outcome.usage.cacheReadTokens,
         provider_usage_raw: outcome.usage.providerUsageRaw,
         status: outcome.midStreamError ? 'error' : 'success',
         provider_http_status: 200,
@@ -1085,12 +1117,16 @@ app.post('/api/anthropic', async (req, res) => {
       selection_rule: _selectionRule,
       input_tokens: _isErrorPayload ? null : _normalized.usage.inputTokens,
       output_tokens: _isErrorPayload ? null : _normalized.usage.outputTokens,
-      // Anthropic-specific cache fields — remain null for non-Anthropic
+      // Anthropic-specific cache-write buckets — remain null for non-Anthropic
       // providers, whose usage detail (if any) belongs in provider_usage_raw
       // instead of being force-fit into these Anthropic-shaped columns.
-      cache_creation_5m_tokens: (!_isErrorPayload && provider === 'anthropic' && data.usage && data.usage.cache_creation) ? data.usage.cache_creation.ephemeral_5m_input_tokens : null,
-      cache_creation_1h_tokens: (!_isErrorPayload && provider === 'anthropic' && data.usage && data.usage.cache_creation) ? data.usage.cache_creation.ephemeral_1h_input_tokens : null,
-      cache_read_tokens: (!_isErrorPayload && provider === 'anthropic' && data.usage) ? data.usage.cache_read_input_tokens : null,
+      cache_creation_5m_tokens: !_isErrorPayload ? _extractAnthropicCacheCreation(provider, data.usage, 'ephemeral_5m_input_tokens') : null,
+      cache_creation_1h_tokens: !_isErrorPayload ? _extractAnthropicCacheCreation(provider, data.usage, 'ephemeral_1h_input_tokens') : null,
+      // Cache-read is a provider-neutral concept, unlike the two buckets above —
+      // sourced through the adapter's normalized usage shape (Build B Part 1),
+      // same as input_tokens/output_tokens two lines up, rather than reading
+      // data.usage directly per provider.
+      cache_read_tokens: (!_isErrorPayload && _normalized.usage) ? _normalized.usage.cacheReadTokens : null,
       provider_usage_raw: _isErrorPayload ? null : _normalized.providerUsageRaw,
       status: _isErrorPayload ? 'error' : 'success',
       provider_http_status: httpStatus,

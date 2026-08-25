@@ -99,6 +99,8 @@ capabilitylisttemplate.xlsx        ← camelCase, matches actual source filename
 ra-requirement-agent.sql      ← v9.16; RQ sequence counter + atomic RPC (ra_next_seq); NOT run by Claude — Nethaji applies to Supabase manually. Previously missing from this manifest — added now alongside the v14 file below, not itself a v14 change.
 ra-doc-chunks.sql             ← v14 (RA-Persistent-Doc-RAG-Spec-v14); Requirement Agent persistent-document RPCs + orphan-cleanup safety net (ra_ingest_document_chunks, ra_remove_document, ra_list_documents, ra_search_doc_chunks, ra_purge_orphaned_documents, _ra_is_authorized). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Distinct from ra-requirement-agent.sql above — never merge the two.
 ai-cost-tower.sql             ← v9.28; AI Cost Control Tower — mt_ai_budgets, mt_ai_alerts, mt_model_pricing tier columns, mt_ai_cost_events_list read RPC, budget/alert RPCs. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod.
+ai-cost-tower-build-b-addendum.sql ← v9.28.01; adds cache_read_price_per_mtok to mt_ai_cost_events_list (DROP+CREATE, RETURNS TABLE signature change). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod.
+ai-cost-tower-cache-cost-fix.sql   ← v9.28.01; fixes mt_ai_cost_events_list's calculated_cost double-counting cache-read tokens for OpenAI/Gemini (CREATE OR REPLACE, body-only change). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod.
 
 ## netlify/functions/
 anthropic-proxy.js            ← lives only here; never duplicated into scripts/
