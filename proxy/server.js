@@ -172,6 +172,120 @@ async function _insertAiUsageEvent(fields) {
   } catch (e) {
     console.error('[AI USAGE] insert exception:', e.message);
   }
+  // Opportunistic budget-alert check (AI Cost Control Tower, v9.28/v9.28.01)
+  // — fire-and-forget, never awaited by the caller, so it adds no latency to
+  // the AI response. Never throws outward, same discipline as the insert
+  // above: a telemetry/alerting failure must never surface as a generation
+  // failure to the end user.
+  _checkBudgetAlertsOpportunistic(fields.company_id).catch(function(e) {
+    console.error('[AI BUDGET ALERT] check exception:', e.message);
+  });
+}
+
+// ── Budget-alert opportunistic check (v9.28.01) ──────────────────────────────
+// No cron infrastructure exists in this app (AI Cost Control Tower spec,
+// Section 6.6) — piggybacked onto the highest-frequency write this app
+// already makes (a usage-event insert) rather than standing up new
+// scheduling. Throttled per company so a burst of calls doesn't re-run the
+// full spend computation on every single one; a few-minute staleness on
+// alert timing is an accepted tradeoff, not a correctness requirement.
+const _budgetAlertLastCheckedAt = new Map(); // company_id -> ms timestamp
+const BUDGET_ALERT_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+
+// Recomputes calculated_cost the same way mt_ai_cost_events_list() does
+// (sql/ai-cost-tower.sql), in JS rather than SQL — supabaseAdmin runs under
+// the service role with no authenticated-user JWT context, so the RPC's own
+// _cost_tower_is_admin() gate (which depends on current_app_user()) cannot
+// be satisfied from here; querying the two tables directly and joining in
+// JS sidesteps that without weakening the RPC's admin gate for real callers.
+async function _computeMonthToDateSpend(companyId) {
+  const now = new Date();
+  const monthStartIso = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  const { data: events, error: evErr } = await supabaseAdmin
+    .from('mt_ai_usage_events')
+    .select('provider, requested_model, response_model, input_tokens, output_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, cache_read_tokens, request_started_at')
+    .eq('company_id', companyId)
+    .gte('request_started_at', monthStartIso);
+  if (evErr || !events) {
+    if (evErr) console.warn('[AI BUDGET ALERT] usage-events query failed:', evErr.message);
+    return null;
+  }
+
+  const { data: pricing, error: pErr } = await supabaseAdmin
+    .from('mt_model_pricing')
+    .select('provider, model_name, input_price_per_mtok, output_price_per_mtok, cache_write_5m_price_per_mtok, cache_write_1h_price_per_mtok, cache_read_price_per_mtok, effective_from, effective_to');
+  if (pErr || !pricing) {
+    if (pErr) console.warn('[AI BUDGET ALERT] pricing query failed:', pErr.message);
+    return null;
+  }
+
+  let total = 0;
+  for (const e of events) {
+    const modelKey = e.response_model || e.requested_model;
+    const at = new Date(e.request_started_at);
+    const match = pricing.find(function(p) {
+      return p.provider === e.provider && p.model_name === modelKey &&
+        at >= new Date(p.effective_from) &&
+        (!p.effective_to || at < new Date(p.effective_to));
+    });
+    if (!match) continue; // unpriced call — excluded, same as the RPC's LEFT JOIN + NULL calculated_cost
+    total += (e.input_tokens || 0) / 1000000 * match.input_price_per_mtok
+      + (e.output_tokens || 0) / 1000000 * match.output_price_per_mtok
+      + (e.cache_creation_5m_tokens || 0) / 1000000 * match.cache_write_5m_price_per_mtok
+      + (e.cache_creation_1h_tokens || 0) / 1000000 * match.cache_write_1h_price_per_mtok
+      + (e.cache_read_tokens || 0) / 1000000 * match.cache_read_price_per_mtok;
+  }
+  return total;
+}
+
+async function _checkBudgetAlertsOpportunistic(companyId) {
+  if (!supabaseAdmin || !companyId) return;
+  const lastChecked = _budgetAlertLastCheckedAt.get(companyId) || 0;
+  if (Date.now() - lastChecked < BUDGET_ALERT_CHECK_THROTTLE_MS) return;
+  _budgetAlertLastCheckedAt.set(companyId, Date.now());
+
+  const { data: budget, error: budgetErr } = await supabaseAdmin
+    .from('mt_ai_budgets')
+    .select('*')
+    .eq('company_id', companyId)
+    .eq('scope_type', 'overall')
+    .eq('is_active', true)
+    .maybeSingle();
+  if (budgetErr || !budget) return; // no active budget configured — nothing to check against
+
+  const spend = await _computeMonthToDateSpend(companyId);
+  if (spend === null) return;
+
+  const now = new Date();
+  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().slice(0, 10);
+  const pct = (spend / Number(budget.amount)) * 100;
+
+  // Both thresholds are checked independently (not else-if) — if spend jumps
+  // past both between two opportunistic checks, both get their own alert
+  // row, matching how a real-time check would have fired them separately.
+  // The UNIQUE(budget_id, threshold_type, period_start) constraint is what
+  // actually enforces "once per threshold per period," not this code —
+  // a duplicate insert attempt fails with 23505 (unique_violation), caught
+  // and ignored below as the expected, silent outcome.
+  const thresholdsCrossed = [];
+  if (pct >= Number(budget.warn_threshold_pct)) thresholdsCrossed.push({ threshold_type: 'warn', threshold_pct: budget.warn_threshold_pct });
+  if (pct >= Number(budget.escalate_threshold_pct)) thresholdsCrossed.push({ threshold_type: 'escalate', threshold_pct: budget.escalate_threshold_pct });
+
+  for (const t of thresholdsCrossed) {
+    const { error } = await supabaseAdmin.from('mt_ai_alerts').insert({
+      budget_id: budget.budget_id,
+      threshold_type: t.threshold_type,
+      threshold_pct: t.threshold_pct,
+      current_spend: spend,
+      period_start: periodStart,
+      period_end: periodEnd
+    });
+    if (error && error.code !== '23505') {
+      console.warn('[AI BUDGET ALERT] alert insert failed:', error.message);
+    }
+  }
 }
 
 // ── JWKS client ───────────────────────────────────────────────────────────────

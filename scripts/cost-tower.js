@@ -323,7 +323,7 @@ function actPricingMatchRate(rows) { return rows.length ? (actPricedRows(rows).l
 function actFailedRows(rows) { return rows.filter(function (r) { return r.status === 'error' || r.status === 'timeout'; }); }
 function actAttributionGap(rows) {
   var total = actSumCost(rows);
-  var unassigned = actSumCost(rows.filter(function (r) { return !r.product_id; }));
+  var unassigned = actSumCost(rows.filter(function (r) { return !r.product_id && !actIsCrossProductCaller(r.caller); }));
   return { pct: total ? (unassigned / total * 100) : 0, dollars: unassigned };
 }
 function actDeltaPct(curr, prev) {
@@ -346,6 +346,15 @@ function actRunRate(spendSoFar, start, now, end) {
 // Appendix C, corrected during build-review — a caller's prefix indicates
 // which canvas triggers it, not always which canvas owns it. Exceptions
 // checked before the general prefix rules.
+// Callers that run across every product by design (ai-recommendations
+// aggregates across all products/sessions; doc-summary serves the shared
+// document library) never get a single product_id — that's expected, not
+// a governance gap, so these are labeled and counted separately from
+// genuinely-unassigned rows (any other caller unexpectedly missing one).
+function actIsCrossProductCaller(caller) {
+  return caller === 'ai-recommendations' || caller === 'doc-summary';
+}
+
 function actFeatureOf(caller) {
   if (!caller || caller === 'unknown') return 'Unknown / Other';
   if (caller === 'fc-gen-stories') return 'Story Canvas';
@@ -533,11 +542,11 @@ function actRenderOverview() {
   var topModel = actTopBy(modelGroups, 'cost');
   var topModelDelta = topModel ? actDeltaPct(topModel.cost, (prevModelGroups[topModel.key] || { cost: 0 }).cost) : null;
 
-  var productGroups = actGroupSum(rows, function (r) { return r.product_id || '__unassigned__'; });
-  var prevProductGroups = actGroupSum(prevRows, function (r) { return r.product_id || '__unassigned__'; });
+  var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
+  var prevProductGroups = actGroupSum(prevRows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
   var topGrowthProduct = null, topGrowthPct = -Infinity;
   Object.keys(productGroups).forEach(function (k) {
-    if (k === '__unassigned__') return;
+    if (k === '__unassigned__' || k === '__cross_product__') return;
     var curr = productGroups[k].cost, prev = (prevProductGroups[k] || { cost: 0 }).cost;
     var growth = prev > 0 ? ((curr - prev) / prev * 100) : (curr > 0 ? Infinity : -Infinity);
     if (growth > topGrowthPct) { topGrowthPct = growth; topGrowthProduct = productGroups[k]; }
@@ -571,7 +580,7 @@ function actRenderOverview() {
       '<tr><td>Total calls</td><td>' + actFmtNum(totalCalls) + '</td><td>' + actFmtNum(prevCalls) + '</td><td>' + actDeltaHtml(callsDelta) + '</td></tr>' +
       '<tr><td>Total tokens</td><td>' + actFmtTokens(inTok + outTok) + '</td><td>' + actFmtTokens(actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens')) + '</td><td>' + actDeltaHtml(actDeltaPct(inTok + outTok, actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens'))) + '</td></tr>' +
       '<tr><td>Balanced/frontier share of calls</td><td>' + actFmtPct(balancedFrontierShare, 0) + '</td><td>' + actFmtPct(prevBalancedFrontierShare, 0) + '</td><td>' + (tierShiftPp >= 0 ? '<span class="act-delta-up">+' + tierShiftPp.toFixed(0) + 'pt</span>' : '<span class="act-delta-down">' + tierShiftPp.toFixed(0) + 'pt</span>') + '</td></tr>' +
-      (topFeature ? '<tr><td>' + actEsc(topFeature.key) + ' spend</td><td>' + actFmtUSD0(topFeature.cost) + '</td><td>' + actFmtUSD0((prevFeatureGroups[topFeature.key] || { cost: 0 }).cost) + '</td><td>' + actDeltaHtml(topFeatureDelta) + '</td></tr>' : '') +
+      (topFeature ? '<tr><td>' + actEsc(topFeature.key) + ' spend</td><td>' + actFmtUSD(topFeature.cost) + '</td><td>' + actFmtUSD((prevFeatureGroups[topFeature.key] || { cost: 0 }).cost) + '</td><td>' + actDeltaHtml(topFeatureDelta) + '</td></tr>' : '') +
       '</tbody></table>' +
       '<div class="act-evidence-note">Numbers are deterministic calculations from mt_ai_usage_events joined to effective-dated mt_model_pricing. Narrative wording is generated from these figures, not the other way around.</div>' +
       '</div>';
@@ -616,7 +625,7 @@ function actRenderOverview() {
 // SCREEN 2: Cost Breakdown (spec Section 5)
 // ══════════════════════════════════════════════════════════════════════
 
-var actBreakdown = { type: 'this_month', rows: [], prevRows: [], start: null, end: null, group: 'feature' };
+var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, group: 'feature' };
 
 async function actSetBreakdownPeriod(type, customStart, customEnd) {
   actBreakdown.type = type;
@@ -633,13 +642,46 @@ async function actSetBreakdownPeriod(type, customStart, customEnd) {
   actBreakdown.start = range.start; actBreakdown.end = range.end;
   actBreakdown.rows = await actFetchRows(range.start, range.end);
   actBreakdown.prevRows = await actFetchRows(prior.start, prior.end);
+  // Kept as a console diagnostic (not a DOM element anymore, now that the
+  // row count is folded directly into the toolbar's own confidence chip) —
+  // still useful for anyone checking DevTools if a period change ever looks
+  // like it isn't reaching the fetch.
+  console.log('[Cost Tower] period=' + type, 'range=', range.start.toISOString(), '→', range.end.toISOString(), 'rows=', actBreakdown.rows.length);
   actRenderCostBreakdown();
 }
 
 function actSelectPeriodChip(type, label) {
-  document.getElementById('act-period-value').textContent = label;
+  actBreakdown.label = label;
   document.getElementById('act-period-menu').classList.remove('open');
   actSetBreakdownPeriod(type).catch(function (e) { console.error(e); });
+}
+
+function actOpenCustomRangeModal() {
+  document.getElementById('act-period-menu').classList.remove('open');
+  document.getElementById('act-modal-title').textContent = 'Custom Date Range';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-config-grid">' +
+    '<div class="act-field"><div class="act-field-label">From</div><input id="act-custom-from" type="date"></div>' +
+    '<div class="act-field"><div class="act-field-label">To</div><input id="act-custom-to" type="date"></div>' +
+    '</div>' +
+    '<div style="margin-top:14px;color:var(--red);font-size:11px;" id="act-custom-range-error"></div>' +
+    '<div style="margin-top:14px;display:flex;justify-content:flex-end;"><button class="act-btn act-btn-primary act-btn-sm" onclick="actApplyCustomRange()">Apply</button></div>';
+  document.getElementById('act-modal-overlay').classList.add('open');
+  document.getElementById('act-modal-box').classList.add('open');
+}
+
+async function actApplyCustomRange() {
+  var fromVal = document.getElementById('act-custom-from').value;
+  var toVal = document.getElementById('act-custom-to').value;
+  var errEl = document.getElementById('act-custom-range-error');
+  if (!fromVal || !toVal) { errEl.textContent = 'Choose both a start and end date.'; return; }
+  var start = new Date(fromVal + 'T00:00:00');
+  var end = new Date(new Date(toVal + 'T00:00:00').getTime() + 86400000); // exclusive upper bound = day after "To"
+  if (start >= end) { errEl.textContent = 'Start date must be before end date.'; return; }
+  errEl.textContent = '';
+  actCloseModal();
+  actBreakdown.label = fromVal + ' – ' + toVal;
+  await actSetBreakdownPeriod('custom', start, end);
 }
 
 function actSelectGroup(group) {
@@ -655,7 +697,7 @@ var BREAKDOWN_INSIGHTS = {}; // populated per render from actual winning row
 
 function actGroupKeyFor(group, r) {
   if (group === 'feature') return actFeatureOf(r.caller);
-  if (group === 'product') return r.product_id || '__unassigned__';
+  if (group === 'product') return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__');
   if (group === 'model') return actModelOf(r);
   if (group === 'user') return r.user_id || '__unknown_user__';
   if (group === 'prompt') return actFeatureOf(r.caller) + ' · ' + (r.prompt_version || 'Unversioned');
@@ -674,7 +716,7 @@ function actRenderMainBreakdown() {
   if (top) {
     var share = totalCost ? (top.cost / totalCost * 100) : 0;
     if (group === 'feature') insight = actEsc(top.key) + ' accounts for ' + share.toFixed(0) + '% of spend this period.';
-    else if (group === 'product') insight = actEsc(top.key === '__unassigned__' ? 'Unassigned spend' : actProductNameOf(top.key)) + ' leads at ' + actFmtUSD0(top.cost) + ' (' + share.toFixed(0) + '% of spend) this period.';
+    else if (group === 'product') insight = actEsc(top.key === '__unassigned__' ? 'Unassigned spend' : top.key === '__cross_product__' ? 'Cross-Product (Shared) spend' : actProductNameOf(top.key)) + ' leads at ' + actFmtUSD(top.cost) + ' (' + share.toFixed(0) + '% of spend) this period.';
     else if (group === 'model') insight = actEsc(top.key) + ' drives ' + share.toFixed(0) + '% of spend this period.';
     else if (group === 'user') insight = actEsc(actUserNameOf(top.key === '__unknown_user__' ? null : top.key)) + ' accounts for ' + share.toFixed(0) + '% of spend this period. This is an audit signal, not a leaderboard.';
     else if (group === 'prompt') insight = actEsc(top.key) + ' is the highest-cost prompt version cut this period.';
@@ -687,15 +729,17 @@ function actRenderMainBreakdown() {
     var delta = actDeltaPct(g.cost, prevCost);
     var share = totalCost ? (g.cost / totalCost * 100) : 0;
     var barPct = maxCost ? Math.max(4, g.cost / maxCost * 100) : 0;
-    var displayName = k === '__unassigned__' ? '<span class="act-cell-name">Unassigned</span><div class="act-cell-muted">No product_id</div>' : actEsc(group === 'product' ? actProductNameOf(k) : k);
+    var displayName = k === '__unassigned__' ? '<span class="act-cell-name">Unassigned</span><div class="act-cell-muted">No product_id</div>'
+      : k === '__cross_product__' ? '<span class="act-cell-name">Cross-Product (Shared)</span><div class="act-cell-muted">Runs across every product</div>'
+      : actEsc(group === 'product' ? actProductNameOf(k) : k);
     if (group === 'model') {
       var tierRow = g.rows.find(function (r) { return r.tier; });
       var tierBadge = tierRow ? '<span class="act-tag-status info">' + TIER_LABEL[tierRow.tier] + '</span>' : '<span class="act-cell-muted">Unpriced</span>';
-      return '<tr><td class="act-cell-name">' + displayName + '</td><td>' + tierBadge + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD0(g.cost) + '</td><td>' + actDeltaHtml(delta) + '</td></tr>';
+      return '<tr><td class="act-cell-name">' + displayName + '</td><td>' + tierBadge + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td><td>' + actDeltaHtml(delta) + '</td></tr>';
     }
     if (group === 'user') {
       var role = g.rows[0] ? (g.rows[0].user_role_at_call || '—') : '—';
-      return '<tr><td class="act-cell-name">' + (k === '__unknown_user__' ? 'Unknown' : actEsc(actUserNameOf(k))) + '</td><td>' + actEsc(role) + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD0(g.cost) + '</td></tr>';
+      return '<tr><td class="act-cell-name">' + (k === '__unknown_user__' ? 'Unknown' : actEsc(actUserNameOf(k))) + '</td><td>' + actEsc(role) + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td></tr>';
     }
     if (group === 'prompt') {
       var failRate = g.calls ? (g.failed / g.calls * 100) : 0;
@@ -703,7 +747,7 @@ function actRenderMainBreakdown() {
       var avgCost = g.calls ? g.cost / g.calls : 0;
       return '<tr><td class="act-cell-name">' + actEsc(k) + '</td><td>' + actFmtNum(g.calls) + '</td><td>' + actFmtNum(Math.round(avgTok)) + '</td><td>' + actFmtUSD(avgCost) + '</td><td><span class="act-tag-status ' + (failRate > 5 ? 'warn' : 'ok') + '">' + failRate.toFixed(1) + '%</span></td></tr>';
     }
-    return '<tr><td class="act-cell-name">' + displayName + '</td><td>' + actFmtNum(g.calls) + '</td><td>' + actFmtTokens(g.inputTok + g.outputTok) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD0(g.cost) + '</td><td>' + actDeltaHtml(delta) + '</td></tr>';
+    return '<tr><td class="act-cell-name">' + displayName + '</td><td>' + actFmtNum(g.calls) + '</td><td>' + actFmtTokens(g.inputTok + g.outputTok) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td><td>' + actDeltaHtml(delta) + '</td></tr>';
   }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:20px;">No calls logged in this period.</td></tr>';
 
   var headerRow = group === 'model' ? '<tr><th>Model</th><th>Tier</th><th>Calls</th><th>Cost Share</th><th>Cost</th><th>Trend</th></tr>' :
@@ -715,16 +759,18 @@ function actRenderMainBreakdown() {
   document.getElementById('act-main-breakdown-table').innerHTML = '<thead>' + headerRow + '</thead><tbody>' + rowsHtml + '</tbody>';
 }
 
-function actUpdateDataConfidencePill() {
-  var el = document.getElementById('act-data-confidence');
-  if (!el) return;
-  var pricingMatch = actPricingMatchRate(actBreakdown.rows);
-  var confClass = pricingMatch !== null && pricingMatch < PRICING_MATCH_LAUNCH_GATE_PCT ? 'warn' : '';
-  el.innerHTML = '<span class="act-confidence-pill ' + confClass + '"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span>';
-}
-
 function actRenderCostBreakdown() {
   var rows = actBreakdown.rows, prevRows = actBreakdown.prevRows;
+  var pricingMatch = actPricingMatchRate(rows);
+  var confClass = pricingMatch !== null && pricingMatch < PRICING_MATCH_LAUNCH_GATE_PCT ? 'warn' : '';
+  var periodMenuOptions = [
+    { type: 'this_month', label: 'This Month' },
+    { type: 'last_month', label: 'Last Month' },
+    { type: 'last_3_months', label: 'Last 3 Months' }
+  ];
+  var periodMenuHtml = periodMenuOptions.map(function (o) {
+    return '<button onclick="actSelectPeriodChip(\'' + o.type + '\',\'' + o.label + '\')">' + o.label + '</button>';
+  }).join('') + '<button onclick="actOpenCustomRangeModal()">Custom Range…</button>';
 
   var html =
     '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">Cost Breakdown</div><div class="act-screen-subtitle">Investigate spend by feature, product, model, user, prompt version, selection path, failure, and data quality.</div></div>' +
@@ -732,12 +778,16 @@ function actRenderCostBreakdown() {
     '<div id="act-export-cost-target">' +
     '<div id="act-export-cost-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
     '<div class="act-filter-toolbar">' +
-    '<div class="act-filter-group"><span class="act-filter-group-label">Main breakdown</span>' +
-    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-group-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-label">Group by:</span><span class="act-dropdown-chip-value" id="act-group-value">Feature</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="act-filter-group"><span class="act-filter-group-label">Reporting period</span>' +
+    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-period-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-period-value">' + actEsc(actBreakdown.label) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="act-dropdown-chip-menu" id="act-period-menu">' + periodMenuHtml + '</div></div></div>' +
+    '<div class="act-filter-divider"></div>' +
+    '<div class="act-filter-group"><span class="act-filter-group-label">Group by</span>' +
+    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-group-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-group-value">' + actEsc({ feature: 'Feature', product: 'Product', model: 'Model', user: 'User', prompt: 'Prompt Version' }[actBreakdown.group]) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
     '<div class="act-dropdown-chip-menu" id="act-group-menu">' +
     '<button onclick="actSelectGroup(\'feature\')">Feature</button><button onclick="actSelectGroup(\'product\')">Product</button><button onclick="actSelectGroup(\'model\')">Model</button><button onclick="actSelectGroup(\'user\')">User</button><button onclick="actSelectGroup(\'prompt\')">Prompt Version</button>' +
     '</div></div></div>' +
-    '<div class="act-filter-divider"></div><span class="act-filter-toolbar-hint">Period is global to this screen. Group By affects the Main Breakdown table only.</span>' +
+    '<span class="act-filter-toolbar-hint">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span>' +
     '</div>' +
     '<div class="act-anchor-row">' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-main-breakdown\')">Main Breakdown</span>' +
@@ -765,7 +815,6 @@ function actRenderCostBreakdown() {
 
   document.getElementById('act-scr-cost').innerHTML = html;
   actRenderMainBreakdown();
-  actUpdateDataConfidencePill();
   actApplyExplorerFilter();
 }
 
@@ -777,7 +826,7 @@ function actRenderSelectionEconomics(rows) {
     var avg = g.calls ? g.cost / g.calls : 0;
     var failRate = g.calls ? (g.failed / g.calls * 100) : 0;
     var label = SELECTION_RULE_LABELS[k] || k;
-    return '<tr><td class="act-cell-name">' + actEsc(label) + '<div class="act-cell-muted">' + actEsc(k) + '</div></td><td>' + actFmtNum(g.calls) + '</td><td>' + actFmtUSD(avg) + '</td><td class="act-cell-name">' + actFmtUSD0(g.cost) + '</td><td>' + failRate.toFixed(1) + '%</td></tr>';
+    return '<tr><td class="act-cell-name">' + actEsc(label) + '<div class="act-cell-muted">' + actEsc(k) + '</div></td><td>' + actFmtNum(g.calls) + '</td><td>' + actFmtUSD(avg) + '</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td><td>' + failRate.toFixed(1) + '%</td></tr>';
   }).join('') : '<tr><td colspan="5" style="text-align:center;color:var(--t4);padding:16px;">No data for this period.</td></tr>';
   return '<div class="act-scoped-card"><div class="act-section-title">Selection Economics</div>' +
     '<span class="act-section-caveat">Observed comparison, not a controlled experiment</span>' +
@@ -809,14 +858,14 @@ function actRenderCacheUsage() {
 }
 
 function actRenderLongestLargest(rows) {
-  var longest = rows.slice().sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); }).slice(0, 3);
-  var largest = rows.slice().sort(function (a, b) { return ((b.request_bytes || 0) + (b.response_bytes || 0)) - ((a.request_bytes || 0) + (a.response_bytes || 0)); }).slice(0, 3);
+  var longest = rows.slice().sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); }).slice(0, 10);
+  var largest = rows.slice().sort(function (a, b) { return ((b.request_bytes || 0) + (b.response_bytes || 0)) - ((a.request_bytes || 0) + (a.response_bytes || 0)); }).slice(0, 10);
   var seen = {}, combined = [];
   longest.concat(largest).forEach(function (r) {
     var key = r.request_started_at + '|' + r.caller + '|' + r.duration_ms;
     if (!seen[key]) { seen[key] = true; combined.push(r); }
   });
-  combined = combined.slice(0, 5).sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); });
+  combined = combined.slice(0, 20).sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); });
   var featureCounts = {};
   combined.forEach(function (r) { var f = actFeatureOf(r.caller); featureCounts[f] = (featureCounts[f] || 0) + 1; });
   var topFeature = Object.keys(featureCounts).sort(function (a, b) { return featureCounts[b] - featureCounts[a]; })[0];
@@ -825,7 +874,7 @@ function actRenderLongestLargest(rows) {
   }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:16px;">No calls in this period.</td></tr>';
   return '<div class="act-scoped-card"><div class="act-section-title">Longest and Largest Requests</div>' +
     '<div class="act-section-insight">' + (topFeature ? actEsc(topFeature) + ' accounts for the most rows in the combined longest/largest set this period.' : 'No data for this period.') + '</div>' +
-    '<table class="act-data-table"><thead><tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+    '<div style="max-height:340px;overflow-y:auto;"><table class="act-data-table"><thead><tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div></div>';
 }
 
 function actRenderDataQuality(rows) {
@@ -879,8 +928,21 @@ function actRenderDataQuality(rows) {
 var EXPLORER_ROW_CAP = 300;
 var actExplorerSourceRows = [];
 
+// Hybrid model display (build-review decision): show the model that
+// actually produced the response (what was billed) as the primary value —
+// only when it differs from what was requested does a small badge reveal
+// the original request, surfacing the rare fallback/substitution case this
+// column exists for without cluttering the common case where they match.
+function actExplorerModelCell(r) {
+  var shown = r.response_model || r.requested_model || '—';
+  if (r.requested_model && r.response_model && r.requested_model !== r.response_model) {
+    return actEsc(shown) + ' <span class="act-tag-status warn" title="Requested: ' + actEsc(r.requested_model) + '">changed</span>';
+  }
+  return actEsc(shown);
+}
+
 function actExplorerRowHtml(r) {
-  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actEsc(r.requested_model || '—') + ' &rarr; ' + actEsc(r.response_model || '—') + '</td><td>' + actEsc(r.prompt_version || '—') + '</td><td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
+  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actExplorerModelCell(r) + '</td><td>' + actEsc(r.prompt_version || '—') + '</td><td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
 }
 
 // Inline per-column filters, applied client-side over the full period's
@@ -889,20 +951,24 @@ function actExplorerRowHtml(r) {
 // than scrolling a 200-row cap.
 function actApplyExplorerFilter() {
   var f = {
-    feature: (document.getElementById('act-exp-f-feature') || {}).value || '',
-    provider: (document.getElementById('act-exp-f-provider') || {}).value || '',
-    model: (document.getElementById('act-exp-f-model') || {}).value || '',
-    prompt: (document.getElementById('act-exp-f-prompt') || {}).value || '',
-    status: (document.getElementById('act-exp-f-status') || {}).value || ''
+    feature: ((document.getElementById('act-exp-f-feature') || {}).value || '').trim().toLowerCase(),
+    provider: ((document.getElementById('act-exp-f-provider') || {}).value || '').trim().toLowerCase(),
+    status: ((document.getElementById('act-exp-f-status') || {}).value || '').trim().toLowerCase(),
+    timeFrom: (document.getElementById('act-exp-f-time-from') || {}).value || '',
+    timeTo: (document.getElementById('act-exp-f-time-to') || {}).value || ''
   };
-  Object.keys(f).forEach(function (k) { f[k] = f[k].trim().toLowerCase(); });
+  // Date-only filter (not a timestamp) — "From" means the start of that
+  // calendar day, "To" means the end of it, so a whole day is included.
+  var fromMs = f.timeFrom ? new Date(f.timeFrom + 'T00:00:00').getTime() : null;
+  var toMs = f.timeTo ? new Date(f.timeTo + 'T23:59:59.999').getTime() : null;
 
   var filtered = actExplorerSourceRows.filter(function (r) {
     if (f.feature && actFeatureOf(r.caller).toLowerCase().indexOf(f.feature) === -1) return false;
     if (f.provider && (r.provider || '').toLowerCase().indexOf(f.provider) === -1) return false;
-    if (f.model && (r.requested_model || '').toLowerCase().indexOf(f.model) === -1 && (r.response_model || '').toLowerCase().indexOf(f.model) === -1) return false;
-    if (f.prompt && (r.prompt_version || '').toLowerCase().indexOf(f.prompt) === -1) return false;
     if (f.status && r.status !== f.status) return false;
+    var t = new Date(r.request_started_at).getTime();
+    if (fromMs !== null && t < fromMs) return false;
+    if (toMs !== null && t > toMs) return false;
     return true;
   }).sort(function (a, b) { return new Date(b.request_started_at) - new Date(a.request_started_at); });
 
@@ -919,14 +985,12 @@ function actRenderRequestExplorer(rows) {
     '<div class="act-section-insight">Raw event-level audit table. Uses the reporting period only — intentionally ignores Main Breakdown’s Group By, since an audit view needs everything in the period, not a dimension-filtered slice. Filter any column below to narrow down a specific record.</div>' +
     '<div class="act-cell-muted" id="act-explorer-count" style="margin-bottom:6px;"></div>' +
     '<div style="max-height:420px;overflow-y:auto;"><table class="act-data-table"><thead>' +
-    '<tr><th>Time</th><th>Feature</th><th>Provider</th><th>Requested &rarr; Response</th><th>Prompt</th><th>Tokens</th><th>Cost</th><th>Status</th></tr>' +
+    '<tr><th>Time</th><th>Feature</th><th>Provider</th><th>Model</th><th>Prompt</th><th>Tokens</th><th>Cost</th><th>Status</th></tr>' +
     '<tr>' +
-    '<th></th>' +
+    '<th><div style="display:flex;flex-direction:column;gap:2px;"><input id="act-exp-f-time-from" type="date" title="From date" oninput="actApplyExplorerFilter()" style="width:100%;font-size:9px;padding:3px 4px;border:1px solid var(--divider);border-radius:4px;"><input id="act-exp-f-time-to" type="date" title="To date" oninput="actApplyExplorerFilter()" style="width:100%;font-size:9px;padding:3px 4px;border:1px solid var(--divider);border-radius:4px;"></div></th>' +
     '<th><input id="act-exp-f-feature" type="text" placeholder="Filter…" oninput="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 6px;border:1px solid var(--divider);border-radius:4px;"></th>' +
     '<th><input id="act-exp-f-provider" type="text" placeholder="Filter…" oninput="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 6px;border:1px solid var(--divider);border-radius:4px;"></th>' +
-    '<th><input id="act-exp-f-model" type="text" placeholder="Filter…" oninput="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 6px;border:1px solid var(--divider);border-radius:4px;"></th>' +
-    '<th><input id="act-exp-f-prompt" type="text" placeholder="Filter…" oninput="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 6px;border:1px solid var(--divider);border-radius:4px;"></th>' +
-    '<th></th><th></th>' +
+    '<th></th><th></th><th></th><th></th>' +
     '<th><select id="act-exp-f-status" onchange="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 2px;border:1px solid var(--divider);border-radius:4px;"><option value="">All</option><option value="success">Success</option><option value="error">Error</option><option value="timeout">Timeout</option></select></th>' +
     '</tr>' +
     '</thead><tbody id="act-explorer-body"></tbody></table></div></div>';
@@ -997,8 +1061,8 @@ function actPercentile(values, p) {
 // behavior, not a bug in this app) — this must NOT be reintroduced as an
 // inline <script> inside the returned HTML string.
 function actComputeWhatIfData(rows) {
-  var productGroups = actGroupSum(rows, function (r) { return r.product_id || '__unassigned__'; });
-  var productCosts = Object.keys(productGroups).filter(function (k) { return k !== '__unassigned__'; }).map(function (k) { return productGroups[k].cost; });
+  var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
+  var productCosts = Object.keys(productGroups).filter(function (k) { return k !== '__unassigned__' && k !== '__cross_product__'; }).map(function (k) { return productGroups[k].cost; });
   var userGroups = actGroupSum(rows, function (r) { return r.user_id || '__unknown__'; });
   var userCosts = Object.keys(userGroups).map(function (k) { return userGroups[k].cost; });
   var enoughProducts = productCosts.length >= 2, enoughUsers = userCosts.length >= 2;

@@ -72,25 +72,6 @@
   <div class="act-content-scroll">
     <div class="act-content" id="act-content">
 
-      <!-- Page-level period + trust bar (matches the reviewed wireframe's
-           layout — sits above all three screens, not just Cost Breakdown).
-           Functionally it still only drives Cost Breakdown's own data —
-           Overview and Planning & Optimization stay fixed to the current
-           month-to-date, per spec Sections 4.1/6.1's literal definitions. -->
-      <div class="act-period-bar">
-        <div class="act-period-left"><span class="act-period-label">Reporting period</span>
-          <div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu('act-period-menu')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-period-value">This Month</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>
-            <div class="act-dropdown-chip-menu" id="act-period-menu">
-              <button onclick="actSelectPeriodChip('this_month','This Month')">This Month</button>
-              <button onclick="actSelectPeriodChip('last_month','Last Month')">Last Month</button>
-              <button onclick="actSelectPeriodChip('last_3_months','Last 3 Months')">Last 3 Months</button>
-            </div>
-          </div>
-          <span class="act-scope-note">Applies to Cost Breakdown. Overview and Planning &amp; Optimization always show the current month.</span>
-        </div>
-        <div class="act-data-confidence" id="act-data-confidence"></div>
-      </div>
-
       <section id="act-scr-overview" class="act-screen on"></section>
       <section id="act-scr-cost" class="act-screen"></section>
       <section id="act-scr-plan" class="act-screen"></section>
