@@ -272,12 +272,20 @@ async function actLoadBudgetAndAlerts() {
   var client = authInit();
   try {
     var r1 = await client.rpc('mt_ai_budget_get_active', { p_company_id: actCompanyId });
-    actBudget = (r1.data && r1.data.budget_id) ? r1.data : null;
-  } catch (e) { actBudget = null; }
+    if (r1.error) {
+      console.error('[Cost Tower] mt_ai_budget_get_active failed:', r1.error.message);
+      actToast('Could not load budget configuration.', 'error');
+    }
+    actBudget = (!r1.error && r1.data && r1.data.budget_id) ? r1.data : null;
+  } catch (e) { console.error('[Cost Tower] mt_ai_budget_get_active exception:', e); actToast('Could not load budget configuration.', 'error'); actBudget = null; }
   try {
     var r2 = await client.rpc('mt_ai_alerts_list', { p_company_id: actCompanyId });
-    actAlerts = r2.data || [];
-  } catch (e) { actAlerts = []; }
+    if (r2.error) {
+      console.error('[Cost Tower] mt_ai_alerts_list failed:', r2.error.message);
+      actToast('Could not load budget alerts.', 'error');
+    }
+    actAlerts = (!r2.error && r2.data) ? r2.data : [];
+  } catch (e) { console.error('[Cost Tower] mt_ai_alerts_list exception:', e); actToast('Could not load budget alerts.', 'error'); actAlerts = []; }
 }
 
 // `mt_ai_cost_events_list` returns raw product_id/user_id — resolving them
@@ -327,7 +335,10 @@ function actAttributionGap(rows) {
   return { pct: total ? (unassigned / total * 100) : 0, dollars: unassigned };
 }
 function actDeltaPct(curr, prev) {
-  if (prev === null || prev === undefined || prev === 0) return (curr && curr !== 0) ? null : null;
+  // No comparable prior-period value — null means "no prior data," never
+  // "0% change." Callers must not coerce this to 0 (that would misrepresent
+  // an unknown baseline as a flat/no-change reading).
+  if (prev === null || prev === undefined || prev === 0) return null;
   return (curr - prev) / prev * 100;
 }
 function actHealthTier(projected, budgetAmount) {
@@ -351,8 +362,15 @@ function actRunRate(spendSoFar, start, now, end) {
 // document library) never get a single product_id — that's expected, not
 // a governance gap, so these are labeled and counted separately from
 // genuinely-unassigned rows (any other caller unexpectedly missing one).
+// Single source of truth for this file — actFeatureOf() below reads this
+// same list rather than repeating the two caller strings independently, so
+// the two can't silently drift apart. (scripts/api.js's CALLER_TIERS also
+// lists these callers, for the unrelated purpose of model-tier routing —
+// not reused here since this page is deliberately standalone and doesn't
+// load api.js.)
+var CROSS_PRODUCT_CALLERS = ['ai-recommendations', 'doc-summary'];
 function actIsCrossProductCaller(caller) {
-  return caller === 'ai-recommendations' || caller === 'doc-summary';
+  return CROSS_PRODUCT_CALLERS.indexOf(caller) !== -1;
 }
 
 function actFeatureOf(caller) {
@@ -364,7 +382,7 @@ function actFeatureOf(caller) {
   if (caller === 'guided-launch') return 'Guided Launch';
   if (caller === 'requirement-agent') return 'Requirement Agent';
   if (caller === 'outcome-pulse-suggest') return 'Outcome Pulse';
-  if (caller === 'doc-summary' || caller === 'ai-recommendations') return 'Shared / Cross-canvas';
+  if (actIsCrossProductCaller(caller)) return 'Shared / Cross-canvas';
   if (/^dm-/.test(caller)) return 'Discovery Map';
   if (/^mi-/.test(caller)) return 'Market Intelligence';
   if (/^cc-/.test(caller)) return 'Capability Canvas';
@@ -562,7 +580,9 @@ function actRenderOverview() {
 
   var needsAttentionHtml = '';
   if (tier !== 'On Track' && tier !== 'Unknown') {
-    var headline = 'Spend is running ' + Math.abs(Math.round(overallDeltaPct || 0)) + '% above last month’s pace' +
+    var headline = (overallDeltaPct === null
+        ? 'Spend has no comparable prior-period data yet'
+        : 'Spend is running ' + Math.abs(Math.round(overallDeltaPct)) + '% above last month’s pace') +
       (topFeature ? ', mainly because ' + actEsc(topFeature.key) + ' increased' : '') +
       (tierShiftPp > 5 ? ' and higher-tier model usage increased ' + tierShiftPp.toFixed(0) + ' percentage points' : '') + '.';
     var variance = run.projected - budgetAmount;
@@ -629,16 +649,23 @@ var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows
 
 async function actSetBreakdownPeriod(type, customStart, customEnd) {
   actBreakdown.type = type;
-  var range;
-  if (type === 'this_month') range = actMonthRange(0);
-  else if (type === 'last_month') range = actMonthRange(-1);
+  var range, prior;
+  // For the two calendar-month options, compare against the actual calendar
+  // prior month (same definition Overview's own KPI deltas use via
+  // actMonthRange(-1)) rather than a rolling window of equal length — the
+  // two would otherwise silently disagree whenever adjacent months have
+  // different day counts. A rolling window is kept for Last 3 Months/Custom,
+  // where there's no single well-defined "calendar-aligned prior period."
+  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
+  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
   else if (type === 'last_3_months') {
     var now = new Date();
     range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
+    prior = actPriorPeriod(range.start, range.end);
   } else {
     range = { start: customStart, end: customEnd };
+    prior = actPriorPeriod(range.start, range.end);
   }
-  var prior = actPriorPeriod(range.start, range.end);
   actBreakdown.start = range.start; actBreakdown.end = range.end;
   actBreakdown.rows = await actFetchRows(range.start, range.end);
   actBreakdown.prevRows = await actFetchRows(prior.start, prior.end);
@@ -666,8 +693,7 @@ function actOpenCustomRangeModal() {
     '</div>' +
     '<div style="margin-top:14px;color:var(--red);font-size:11px;" id="act-custom-range-error"></div>' +
     '<div style="margin-top:14px;display:flex;justify-content:flex-end;"><button class="act-btn act-btn-primary act-btn-sm" onclick="actApplyCustomRange()">Apply</button></div>';
-  document.getElementById('act-modal-overlay').classList.add('open');
-  document.getElementById('act-modal-box').classList.add('open');
+  actShowModal();
 }
 
 async function actApplyCustomRange() {
@@ -1137,12 +1163,46 @@ function actOpenOppModal(idx) {
     '<div class="act-section-insight" style="margin-bottom:10px;">Up to 5 example calls from the actual qualifying segment this period.</div>' +
     '<table class="act-data-table"><thead><tr><th>Time</th><th>Request Size</th><th>Duration</th><th>Current Tier</th><th>Actual Cost</th></tr></thead><tbody>' + rowsHtml + '</tbody></table>' +
     '<div class="act-scoped-card-note">The estimate is based on the full qualifying segment (' + opp.segmentCount + ' calls this period), not these rows alone.</div>';
+  actShowModal();
+}
+
+// Shared modal show/hide — adds the focus trap and capture-phase Escape
+// handler DESIGN_SYSTEM.md's Modal Construction Standard requires (§8),
+// which the two callers above previously skipped by toggling the overlay
+// classes directly. Self-contained rather than loading utils.js's
+// trapFocus() (this page is deliberately standalone), but follows the same
+// contract: trap Tab/Shift+Tab inside the dialog, close on Escape, and
+// clean up both listeners when the modal closes.
+var _actModalFocusCleanup = null;
+function _actModalEscHandler(ev) {
+  if (ev.key === 'Escape') actCloseModal();
+}
+function _actTrapFocus(container) {
+  var focusable = container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if (!focusable.length) return null;
+  var first = focusable[0], last = focusable[focusable.length - 1];
+  first.focus();
+  function handleTab(ev) {
+    if (ev.key !== 'Tab') return;
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  }
+  container.addEventListener('keydown', handleTab);
+  return function () { container.removeEventListener('keydown', handleTab); };
+}
+function actShowModal() {
   document.getElementById('act-modal-overlay').classList.add('open');
-  document.getElementById('act-modal-box').classList.add('open');
+  var box = document.getElementById('act-modal-box');
+  box.classList.add('open');
+  document.addEventListener('keydown', _actModalEscHandler, true);
+  if (_actModalFocusCleanup) _actModalFocusCleanup();
+  _actModalFocusCleanup = _actTrapFocus(box);
 }
 function actCloseModal() {
   document.getElementById('act-modal-overlay').classList.remove('open');
   document.getElementById('act-modal-box').classList.remove('open');
+  document.removeEventListener('keydown', _actModalEscHandler, true);
+  if (_actModalFocusCleanup) { _actModalFocusCleanup(); _actModalFocusCleanup = null; }
 }
 
 function actRenderOpportunityMatrix(rows) {

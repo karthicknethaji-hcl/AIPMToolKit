@@ -252,6 +252,8 @@
 
 `scripts/demo-data.js` — DEMO MODE ONLY. `loadDemoData()`, `clearDemoMode()`. Do NOT open for any other task.
 
+`ai-cost-tower.html` / `scripts/cost-tower.js` (v9.28) — AI Cost Control Tower, a standalone admin-only page, deliberately outside this app's main boot graph (own auth/company/role bootstrap, no `utils.js`/`api.js`/`state.js` dependency). `ai-cost-tower.html` is the page shell (header, tab row, screen containers); `scripts/cost-tower.js` owns everything else: the `mt_ai_cost_events_list` RPC fetch/memoization layer, period math (`actMonthRange`, `actSetBreakdownPeriod`), all client-side aggregation (`actGroupSum`, `actComputeType1/2/3`), and the three screens (`actRenderOverview`, `actRenderCostBreakdown`, `actRenderPlan`). Budget/alert config and the PDF export (`actDownloadReport`, reusing `outcome-pulse.js`'s html2canvas+jsPDF pattern) also live here. Data model in `sql/ai-cost-tower.sql` (NOT run by Claude Code). See the "Common request routing" table below for the full per-function breakdown.
+
 `scripts/main.js` — DOMContentLoaded init. **v9.28:** `hdrOpenCostTower()` — `window.open('ai-cost-tower.html','_blank')`, first use of `window.open()` in this codebase; `_pgtRenderCompanyMenuItems()` also toggles `#hdr-cost-tower-btn`'s visibility via `_spIsAdmin()` (settings-page.js), same admin-only gate as every other admin-only surface.
 
 `scripts/diagnostic-view.js` — `dvCreate()`, `dvDeepCloneTree()`, `dvMergeEvidenceOnRegen()`, `dvRenderView()`, `dvRenderLeftPanel()`, `dvRenderTreeArea()`, `dvOpenEvidenceDrawer()`, `dvCloseEvidenceDrawer()`, `dvSaveEvidence()`, `dvClearEvidence()`, `dvCalcEvidenceStrength()`, `dvCalcReadiness()`, `dvFlattenMetrics()`, `dvFindMetricById()`, `dvAnalyze()`, `dvShowNoEvidenceWarning()`
@@ -304,6 +306,7 @@
 `styles/13-market-intelligence.css` — mi-tab layout, left panel, section cards, metric cards, trend badges, SWOT grid, capability rows, expansion panel, feature checkboxes, 4 interaction states, loader, empty state, toast, KPI toggle, alert modal
 `styles/14-pi-planning.css` — pi-tab layout, left panel (squads, sprint config, prev-PI upload), board (sprints + backlog), story cards, drag-and-drop states, right story panel, stale banner, dependency UI, capacity warning
 `styles/15-settings.css` — settings page shell (`#settings-page` full-page container, `.cfg-btn.active` state)
+`styles/26-cost-tower.css` (v9.28) — AI Cost Control Tower. Loaded only by `ai-cost-tower.html`, not `index.html` — "load order" doesn't apply the same way as the rest of this list, listed here for completeness since every other feature's stylesheet is.
 
 ---
 
