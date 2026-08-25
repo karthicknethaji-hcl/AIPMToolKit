@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AI Cost Control Tower | Product Studio</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" rel="stylesheet"/>
+<link rel="icon" type="image/x-icon" href="./favicon.ico"/>
+<link rel="stylesheet" href="./styles/00-tokens.css">
+<link rel="stylesheet" href="./styles/03-header-settings.css">
+<link rel="stylesheet" href="./styles/26-cost-tower.css">
+<style>
+  html,body{height:100%;margin:0;padding:0;overflow:hidden;}
+  body{display:flex;flex-direction:column;}
+  .act-app-shell{flex:1;min-height:0;display:flex;flex-direction:column;}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-l">
+    <span class="logo-txt" id="act-logo-txt" onclick="window.location.href='index.html'" style="cursor:pointer;" title="Go to Home"></span>
+    <div class="hdr-sep" id="act-hdr-sep" style="display:none;"></div>
+    <span class="hdr-title">Product Studio</span>
+    <span class="hdr-version" id="act-hdr-version"></span>
+  </div>
+  <div class="hdr-session-wrap">
+    <span class="hdr-product has-name" id="act-screen-name">AI Cost Control Tower</span>
+  </div>
+  <div class="hdr-r">
+    <span class="hdr-badge">AI-Powered</span>
+    <div class="hdr-avatar-overlay" id="act-avatar-overlay" onclick="actAvatarClose()"></div>
+    <div class="hdr-avatar-wrap">
+      <div class="hdr-avatar" id="act-avatar" onclick="actAvatarToggle()" title="Account" aria-label="Account menu">?</div>
+      <div class="hdr-avatar-drop" id="act-avatar-drop">
+        <div class="hdr-avatar-user">
+          <div class="hdr-avatar-name" id="act-avatar-name">—</div>
+          <div class="hdr-avatar-email" id="act-avatar-email">—</div>
+        </div>
+        <div class="hdr-avatar-divider"></div>
+        <button class="hdr-avatar-signout" onclick="authSignOut()">
+          <i class="ti ti-logout" aria-hidden="true"></i> Sign Out
+        </button>
+      </div>
+    </div>
+    <div class="cfg-wrap">
+      <button class="cfg-btn" id="act-cfg-btn" title="Full settings are available from the main Product Studio tab" style="cursor:default;opacity:.55;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Gate: shown while auth/company/role resolves, or if access is denied. Covers everything below until resolved. -->
+<div id="act-gate" class="act-gate-wrap" style="display:none;">
+  <div class="act-gate-card">
+    <div class="act-gate-title" id="act-gate-title">Loading…</div>
+    <div class="act-gate-sub" id="act-gate-sub"></div>
+  </div>
+</div>
+
+<div class="act-app-shell act-body" id="act-app-shell" style="display:none;">
+  <div class="act-out-hdr">
+    <div class="act-tab-row" role="tablist" aria-label="AI Cost Control Tower screens">
+      <button class="act-tab-btn active" role="tab" id="act-tab-overview" onclick="actShowScreen('overview')">Overview</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-cost" onclick="actShowScreen('cost')">Cost Breakdown</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-plan" onclick="actShowScreen('plan')">Planning &amp; Optimization</button>
+    </div>
+  </div>
+
+  <div class="act-content-scroll">
+    <div class="act-content" id="act-content">
+
+      <!-- Page-level period + trust bar (matches the reviewed wireframe's
+           layout — sits above all three screens, not just Cost Breakdown).
+           Functionally it still only drives Cost Breakdown's own data —
+           Overview and Planning & Optimization stay fixed to the current
+           month-to-date, per spec Sections 4.1/6.1's literal definitions. -->
+      <div class="act-period-bar">
+        <div class="act-period-left"><span class="act-period-label">Reporting period</span>
+          <div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu('act-period-menu')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-period-value">This Month</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>
+            <div class="act-dropdown-chip-menu" id="act-period-menu">
+              <button onclick="actSelectPeriodChip('this_month','This Month')">This Month</button>
+              <button onclick="actSelectPeriodChip('last_month','Last Month')">Last Month</button>
+              <button onclick="actSelectPeriodChip('last_3_months','Last 3 Months')">Last 3 Months</button>
+            </div>
+          </div>
+          <span class="act-scope-note">Applies to Cost Breakdown. Overview and Planning &amp; Optimization always show the current month.</span>
+        </div>
+        <div class="act-data-confidence" id="act-data-confidence"></div>
+      </div>
+
+      <section id="act-scr-overview" class="act-screen on"></section>
+      <section id="act-scr-cost" class="act-screen"></section>
+      <section id="act-scr-plan" class="act-screen"></section>
+
+    </div>
+  </div>
+</div>
+
+<div class="act-modal-overlay" id="act-modal-overlay" onclick="actCloseModal()"></div>
+<div class="act-modal-box" id="act-modal-box" role="dialog" aria-label="Details">
+  <div class="act-modal-header">
+    <div class="act-modal-title" id="act-modal-title">Details</div>
+    <button class="act-modal-close" onclick="actCloseModal()" aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="act-modal-body" id="act-modal-body"></div>
+</div>
+
+<!-- Supabase JS SDK (CDN — no build step) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./scripts/config.js"></script>
+<script src="./scripts/env.js"></script>
+<script src="./scripts/auth.js"></script>
+<script src="./scripts/cost-tower.js"></script>
+
+</body>
+</html>

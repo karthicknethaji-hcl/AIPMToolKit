@@ -11,6 +11,7 @@ DESIGN_SYSTEM.md
 FILE_MANIFEST.txt
 PROJECT_MAP.md
 README.md                    ← copied into proxy/README.md at build time, not served from root
+ai-cost-tower.html            ← v9.28; AI Cost Control Tower, standalone admin-only page, follows login.html's trimmed-header precedent, opened via window.open() from index.html's avatar menu
 favicon-base64.txt            ← source only; decoded into favicon.ico at build time; never included in zip
 favicon.ico                   ← derived from favicon-base64.txt; not stored in project knowledge, created at build time
 index.html
@@ -23,6 +24,7 @@ api.js
 auth.js
 capability-canvas.js
 config.js
+cost-tower.js                 ← v9.28; AI Cost Control Tower data layer + all 3 screens, standalone (loaded only by ai-cost-tower.html, not part of the main canvas-app boot graph)
 demo-data.js
 diagnostic-view.js
 env.js                        ← NOT included in zips; user creates once locally, drops into scripts/ before deploy
@@ -84,6 +86,7 @@ voice-input.js                ← v9.24.02; shared browser-native voice dictatio
 23-requirement-agent.css
 24-readiness-canvas.css       ← v9.21; Adoption Readiness screen flow + lineage drawer + Outcome Pulse By Stage/By Release toggle
 25-voice-input.css            ← v9.24.02; mic button + status label styling shared by every voice-dictation surface
+26-cost-tower.css             ← v9.28; AI Cost Control Tower, loaded only by ai-cost-tower.html
 
 ## assets/
 prototype-style-default.md    ← fetched at runtime via 'assets/prototype-style-default.md'; must not be renamed or moved into templates/
@@ -95,6 +98,7 @@ capabilitylisttemplate.xlsx        ← camelCase, matches actual source filename
 ## sql/
 ra-requirement-agent.sql      ← v9.16; RQ sequence counter + atomic RPC (ra_next_seq); NOT run by Claude — Nethaji applies to Supabase manually. Previously missing from this manifest — added now alongside the v14 file below, not itself a v14 change.
 ra-doc-chunks.sql             ← v14 (RA-Persistent-Doc-RAG-Spec-v14); Requirement Agent persistent-document RPCs + orphan-cleanup safety net (ra_ingest_document_chunks, ra_remove_document, ra_list_documents, ra_search_doc_chunks, ra_purge_orphaned_documents, _ra_is_authorized). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Distinct from ra-requirement-agent.sql above — never merge the two.
+ai-cost-tower.sql             ← v9.28; AI Cost Control Tower — mt_ai_budgets, mt_ai_alerts, mt_model_pricing tier columns, mt_ai_cost_events_list read RPC, budget/alert RPCs. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod.
 
 ## netlify/functions/
 anthropic-proxy.js            ← lives only here; never duplicated into scripts/

@@ -1,5 +1,12 @@
 # Changelog — Product Studio
 
+## v9.28 - 2026-08-25: AI Cost Control Tower (v1: Overview, Cost Breakdown, Planning & Optimization)
+
+- Added - A new admin-only page, AI Cost Control Tower (`ai-cost-tower.html`, opened via a new avatar-menu item, first use of `window.open()` in this codebase), reporting on the app's own AI spend from `mt_ai_usage_events` and `mt_model_pricing` via a new admin-gated read RPC (`mt_ai_cost_events_list`) — every figure is computed client-side (`scripts/cost-tower.js`) from that one query, no LLM-generated narrative anywhere on these screens.
+- Added - Two new tables (`mt_ai_budgets`, `mt_ai_alerts`) and a `tier`/`tier_sort_order` addition to `mt_model_pricing`, plus budget/alert RPCs, handed over as `sql/ai-cost-tower.sql` (not run by Claude Code, applied manually to `pgt-dev` then prod per this project's standing Supabase discipline). Budget-threshold alerts are generated opportunistically inside `proxy/server.js`'s existing usage-logging path, the same pattern already used by `_raPurgeOrphanedDocsOpportunistic()`, rather than new cron infrastructure.
+- Changed - Corrected several build-time assumptions found while verifying the spec against live code before building: `selection_rule`'s real values (`optimized_caller_default`/`optimized_fallback_default`/`user_selected_model`/`batch_threshold_override`/`explicit_override_unclassified`, not the four originally guessed), `failure_phase`'s actual single live value (`outbound_call`), and three caller→feature mis-mappings (`fc-gen-stories` is Story Canvas, `sc-add-feat-hyp-gen` is Feature Canvas, `md-dd-batch` is Capability Canvas).
+- Deferred - Prompt-caching enablement (Anthropic `cache_control` markers, OpenAI/Gemini response-side cache-token capture, and a newly-found streaming-path bug that nulls cache fields even for Anthropic) is scoped as its own separate build after this one, not bundled in — it edits live request-construction code and needs external provider-doc verification first.
+
 ## v9.27.03 - 2026-08-24: Document context disclosure + relevance-based selection (Item 1)
 
 Note: bundling 2 fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02).
