@@ -262,6 +262,23 @@ async function _pgtResolveCompany(){
 function _pgtRenderCompanyMenuItems(){
   var switchBtn=document.getElementById('hdr-switch-company-btn');
   if(switchBtn) switchBtn.style.display=(_pgtMembershipCount>=2)?'':'none';
+  // AI Cost Control Tower (v9.28) — admin-only, same currentUserRole gate
+  // as every other admin-only surface (_spIsAdmin(), settings-page.js).
+  var costTowerBtn=document.getElementById('hdr-cost-tower-btn');
+  if(costTowerBtn) costTowerBtn.style.display=(typeof _spIsAdmin==='function'&&_spIsAdmin())?'':'none';
+}
+
+// ── Open AI Cost Control Tower (v9.28) ──
+// First use of window.open() anywhere in this codebase (confirmed during
+// build-review) — a deliberate new-tab, not a same-tab navigation, so
+// in-flight state in this tab (an open generation, unsaved left-panel
+// input) is never lost by opening the report. The new page re-derives its
+// own auth/company/role context on load (same Supabase session via
+// localStorage, same _PGT_ACTIVE_COMPANY_KEY) rather than receiving
+// anything via the window.open() call itself.
+function hdrOpenCostTower(){
+  hdrAvatarClose();
+  window.open('ai-cost-tower.html', '_blank');
 }
 
 // ── Switch Company (avatar dropdown, only visible at 2+ companies) ──

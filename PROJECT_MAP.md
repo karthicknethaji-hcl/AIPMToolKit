@@ -252,7 +252,9 @@
 
 `scripts/demo-data.js` — DEMO MODE ONLY. `loadDemoData()`, `clearDemoMode()`. Do NOT open for any other task.
 
-`scripts/main.js` — DOMContentLoaded init
+`ai-cost-tower.html` / `scripts/cost-tower.js` (v9.28) — AI Cost Control Tower, a standalone admin-only page, deliberately outside this app's main boot graph (own auth/company/role bootstrap, no `utils.js`/`api.js`/`state.js` dependency). `ai-cost-tower.html` is the page shell (header, tab row, screen containers); `scripts/cost-tower.js` owns everything else: the `mt_ai_cost_events_list` RPC fetch/memoization layer, period math (`actMonthRange`, `actSetBreakdownPeriod`), all client-side aggregation (`actGroupSum`, `actComputeType1/2/3`), and the three screens (`actRenderOverview`, `actRenderCostBreakdown`, `actRenderPlan`). Budget/alert config and the PDF export (`actDownloadReport`, reusing `outcome-pulse.js`'s html2canvas+jsPDF pattern) also live here. Data model in `sql/ai-cost-tower.sql` (NOT run by Claude Code). See the "Common request routing" table below for the full per-function breakdown.
+
+`scripts/main.js` — DOMContentLoaded init. **v9.28:** `hdrOpenCostTower()` — `window.open('ai-cost-tower.html','_blank')`, first use of `window.open()` in this codebase; `_pgtRenderCompanyMenuItems()` also toggles `#hdr-cost-tower-btn`'s visibility via `_spIsAdmin()` (settings-page.js), same admin-only gate as every other admin-only surface.
 
 `scripts/diagnostic-view.js` — `dvCreate()`, `dvDeepCloneTree()`, `dvMergeEvidenceOnRegen()`, `dvRenderView()`, `dvRenderLeftPanel()`, `dvRenderTreeArea()`, `dvOpenEvidenceDrawer()`, `dvCloseEvidenceDrawer()`, `dvSaveEvidence()`, `dvClearEvidence()`, `dvCalcEvidenceStrength()`, `dvCalcReadiness()`, `dvFlattenMetrics()`, `dvFindMetricById()`, `dvAnalyze()`, `dvShowNoEvidenceWarning()`
 
@@ -304,6 +306,7 @@
 `styles/13-market-intelligence.css` — mi-tab layout, left panel, section cards, metric cards, trend badges, SWOT grid, capability rows, expansion panel, feature checkboxes, 4 interaction states, loader, empty state, toast, KPI toggle, alert modal
 `styles/14-pi-planning.css` — pi-tab layout, left panel (squads, sprint config, prev-PI upload), board (sprints + backlog), story cards, drag-and-drop states, right story panel, stale banner, dependency UI, capacity warning
 `styles/15-settings.css` — settings page shell (`#settings-page` full-page container, `.cfg-btn.active` state)
+`styles/26-cost-tower.css` (v9.28) — AI Cost Control Tower. Loaded only by `ai-cost-tower.html`, not `index.html` — "load order" doesn't apply the same way as the rest of this list, listed here for completeness since every other feature's stylesheet is.
 
 ---
 
@@ -443,6 +446,15 @@
 | Voice dictation — shared module (any surface), toggle/stop primitives, cleanup contract | `scripts/voice-input.js` (voiceButtonHtml, voiceToggle, voiceStopActive) — always on (v9.25.03), gated only by browser feature detection, no Settings toggle |
 | Voice dictation — Requirement Agent's attachment (re-render/session-clear cleanup) | `scripts/requirement-agent.js` (raRenderCenter, raClearInMemoryState) |
 | Voice dictation — app-wide cleanup (any tab switch, settings flag, tab/window backgrounding) | `scripts/api.js` (switchTab, `if(prev!==t)`), `scripts/left-panel.js` (applyFeats kill switch), `scripts/voice-input.js` (visibilitychange listener) |
+| **AI Cost Control Tower (v9.28, admin-only, standalone page)** | |
+| Opening the tower (avatar menu item, admin-gated) | `index.html` (`#hdr-cost-tower-btn`), `scripts/main.js` (`hdrOpenCostTower()`, `_pgtRenderCompanyMenuItems()`) |
+| Tower page shell, header, tab row, screens | `ai-cost-tower.html`, `styles/26-cost-tower.css` |
+| Tower bootstrap (auth/company/admin-role gate, independent of main.js's `currentUserRole` since this is a separate page load) | `scripts/cost-tower.js` (`actBoot`, `actShowGate`) |
+| Tower data layer (period math, `mt_ai_cost_events_list` fetch + memoization, all client-side aggregation) | `scripts/cost-tower.js` (`actFetchRows`, `actMonthRange`, `actGroupSum`, `actComputeOpportunities`) |
+| Tower Overview / Cost Breakdown / Planning & Optimization screens | `scripts/cost-tower.js` (`actRenderOverview`, `actRenderCostBreakdown`, `actRenderPlan`) |
+| Tower budget configuration + alert acknowledge | `scripts/cost-tower.js` (`actSaveBudget`, `actAcknowledgeAlert`) — RPCs in `sql/ai-cost-tower.sql` (`mt_ai_budget_upsert`, `mt_ai_alert_acknowledge`) |
+| Tower PDF export (per screen) | `scripts/cost-tower.js` (`actDownloadReport`) — same html2canvas+jsPDF CDN pattern as `outcome-pulse.js`'s `opDownloadReport()`, not reinvented |
+| Tower data model (new tables, read RPC, budget/alert RPCs) | `sql/ai-cost-tower.sql`, `sql/ai-cost-tower-build-b-addendum.sql` (adds `cache_read_price_per_mtok` to `mt_ai_cost_events_list`'s return signature), `sql/ai-cost-tower-cache-cost-fix.sql` (fixes `calculated_cost` double-counting cache reads for OpenAI/Gemini) — none run against Supabase by Claude Code |
 
 
 

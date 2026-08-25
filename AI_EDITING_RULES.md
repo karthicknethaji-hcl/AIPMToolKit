@@ -463,6 +463,7 @@ Product-Studio-vX.XX(.XX)/
 ├── login.html
 ├── netlify.toml
 ├── favicon.ico                       (binary .ico, decoded from favicon-base64.txt — never include the .txt itself)
+├── ai-cost-tower.html                (v9.28, AI Cost Control Tower — standalone admin-only page, opened via window.open())
 ├── AI_EDITING_RULES.md
 ├── CHANGELOG.md
 ├── DESIGN_SYSTEM.md
@@ -472,6 +473,7 @@ Product-Studio-vX.XX(.XX)/
 │
 ├── scripts/                          (ALL frontend .js files, and ONLY frontend .js files)
 │   ├── config.js
+│   ├── cost-tower.js                 (v9.28, AI Cost Control Tower — standalone, loaded only by ai-cost-tower.html)
 │   ├── state.js
 │   ├── utils.js
 │   ├── auth.js
@@ -509,7 +511,7 @@ Product-Studio-vX.XX(.XX)/
 │   ├── requirement-agent.js
 │   └── voice-input.js
 │
-├── styles/                           (ALL .css files, 25 total, and ONLY .css files)
+├── styles/                           (ALL .css files, 26 total, and ONLY .css files)
 │   ├── 00-tokens.css
 │   ├── 01-base.css
 │   ├── 02-layout.css
@@ -534,7 +536,8 @@ Product-Studio-vX.XX(.XX)/
 │   ├── 22-guided-launch.css
 │   ├── 23-requirement-agent.css
 │   ├── 24-readiness-canvas.css
-│   └── 25-voice-input.css
+│   ├── 25-voice-input.css
+│   └── 26-cost-tower.css
 │
 ├── assets/
 │   ├── prototype-style-default.md    (fetched at runtime via 'assets/prototype-style-default.md' — must sit here, NOT inside templates/, NOT renamed)
@@ -610,7 +613,7 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] NO `anthropic-proxy.js` present (that file belongs only in `netlify/functions/`)
 
 **`styles/`:**
-- [ ] 25 `.css` files present, matching `FILE_MANIFEST.txt`
+- [ ] 26 `.css` files present, matching `FILE_MANIFEST.txt`
 
 **`assets/`:**
 - [ ] `assets/prototype-style-default.md` present (NOT inside `templates/`)
