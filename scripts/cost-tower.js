@@ -73,21 +73,32 @@ function actDeltaHtml(pct, higherIsBad) {
   var arrow = isUp ? 'Up' : isDown ? 'Down' : 'Flat';
   return '<span class="' + cls + '">' + arrow + ' ' + Math.abs(pct).toFixed(0) + '%</span>';
 }
+// Aligned to the shared .app-toast pattern (styles/01-base.css) — top-
+// anchored, pastel + border per type, icon, dismiss ×, width-capped,
+// slide+fade — while staying this page's own local implementation
+// (CSS in styles/26-cost-tower.css), matching the same standalone-page
+// convention already used for actEsc()/_avatarInitialsLocal().
 var _actToastTimer = null;
+var _ACT_TOAST_ICONS = {
+  error: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>',
+  success: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12l5 5L20 6"/></svg>',
+  info: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>'
+};
 function actToast(msg, type) {
+  type = (type === 'error' || type === 'success') ? type : 'info';
   var el = document.getElementById('act-toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'act-toast';
-    el.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:200;font-family:var(--font);font-size:12px;font-weight:600;padding:10px 16px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.18);transition:opacity .2s;';
     document.body.appendChild(el);
   }
-  el.style.background = type === 'error' ? 'var(--red)' : (type === 'success' ? 'var(--green)' : 'var(--navy)');
-  el.style.color = '#fff';
-  el.textContent = msg;
-  el.style.opacity = '1';
+  el.className = 'act-toast act-toast-' + type;
+  el.innerHTML = _ACT_TOAST_ICONS[type] +
+    '<span class="act-toast-msg">' + actEsc(msg) + '</span>' +
+    '<button class="act-toast-close" onclick="this.parentElement.classList.remove(\'on\')" aria-label="Dismiss">&#x2715;</button>';
+  el.classList.add('on');
   clearTimeout(_actToastTimer);
-  _actToastTimer = setTimeout(function () { el.style.opacity = '0'; }, 3200);
+  _actToastTimer = setTimeout(function () { el.classList.remove('on'); }, 4000);
 }
 function _avatarInitialsLocal(displayName) {
   var parts = (displayName || '').trim().split(/\s+/).filter(Boolean);
@@ -134,7 +145,7 @@ async function actBoot() {
   } catch (e) { membership = null; }
 
   if (!membership || !membership.is_active || membership.role !== 'admin') {
-    actShowGate('Admin Access Required', 'The AI Cost Control Tower reports on company-wide AI spend and is available to company admins only.');
+    actShowGate('Admin Access Required', 'The AI Control Tower reports on company-wide AI spend and is available to company admins only.');
     return;
   }
 
@@ -190,7 +201,7 @@ function actAvatarClose() {
 // Tab switching
 // ══════════════════════════════════════════════════════════════════════
 
-var ACT_SCREEN_NAMES = { overview: 'Overview', cost: 'Cost Breakdown', plan: 'Planning & Optimization' };
+var ACT_SCREEN_NAMES = { overview: 'Overview', cost: 'Cost Breakdown', plan: 'AI Governance' };
 function actShowScreen(name) {
   document.querySelectorAll('.act-screen').forEach(function (s) { s.classList.remove('on'); });
   var scr = document.getElementById('act-scr-' + name);
@@ -199,7 +210,7 @@ function actShowScreen(name) {
   var btn = document.getElementById('act-tab-' + name);
   if (btn) btn.classList.add('active');
   var nameEl = document.getElementById('act-screen-name');
-  if (nameEl) nameEl.textContent = 'AI Cost Control Tower · ' + (ACT_SCREEN_NAMES[name] || '');
+  if (nameEl) nameEl.textContent = 'AI Control Tower';
   var scroller = document.querySelector('.act-content-scroll');
   if (scroller) scroller.scrollTop = 0;
 }
@@ -1054,7 +1065,7 @@ function actRenderRequestExplorer(rows) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// SCREEN 3: Planning & Optimization (spec Section 6)
+// SCREEN 3: AI Governance (spec Section 6)
 // ══════════════════════════════════════════════════════════════════════
 
 function actRenderPlan() {
@@ -1066,11 +1077,12 @@ function actRenderPlan() {
   var whatIfData = actComputeWhatIfData(rows);
 
   var html =
-    '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">Planning &amp; Optimization</div><div class="act-screen-subtitle">Project run rate, prioritize optimization opportunities, and prepare budget/alert governance.</div></div>' +
+    '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">AI Governance</div><div class="act-screen-subtitle">Track run rate against budget, act on optimization opportunities, and restrict or stop AI usage directly when needed.</div></div>' +
     '<button class="export-cta-btn" id="act-export-plan-btn" onclick="actDownloadReport(\'plan\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button></div>' +
     '<div id="act-export-plan-target">' +
     '<div id="act-export-plan-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
-    '<div class="act-section-title" style="margin-top:0;">Projected Run Rate</div>' +
+    actRenderBudgetBar() +
+    '<div class="act-section-title" style="margin-top:20px;">Cost Governance</div>' +
     '<div class="act-section-insight">Not a statistical forecast yet. This is a straight run-rate projection from the current period’s pace.</div>' +
     '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px;">' +
     '<div class="act-kpi"><div class="act-kpi-label">Spend So Far</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div></div>' +
@@ -1078,15 +1090,14 @@ function actRenderPlan() {
     '<div class="act-kpi"><div class="act-kpi-label">Projected Month-End</div><div class="act-kpi-value">' + actFmtUSD0(run.projected) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Budget Variance</div><div class="act-kpi-value ' + (variance !== null && variance > 0 ? 'amber' : 'green') + '">' + (variance !== null ? (variance >= 0 ? '+' : '') + actFmtUSD0(variance) : '—') + '</div></div>' +
     '</div>' +
-    '<div class="act-planning-grid">' + actRenderRoleEconomics(rows) + actRenderWhatIf(whatIfData) + '</div>' +
+    actRenderCostControls(whatIfData) +
+    '<div class="act-planning-grid" style="margin-top:20px;">' + actRenderRoleEconomics(rows) + actRenderAlertsCard() + '</div>' +
     actRenderOpportunities(rows) +
     actRenderOpportunityMatrix(rows) +
-    actRenderBudgetAlerts() +
     '</div>';
 
   document.getElementById('act-scr-plan').innerHTML = html;
   window._actWhatIf = whatIfData;
-  actUpdateWhatIf();
 }
 
 function actRenderRoleEconomics(rows) {
@@ -1136,12 +1147,14 @@ function actRenderWhatIf(whatIfData) {
   var warn = !whatIfData.enough ? '<div class="act-scoped-card-note" style="color:var(--amber);">Too few existing products or users this period to derive a meaningful percentile range — shown once more data accumulates.</div>' : '';
   return '<div class="act-scoped-card"><div class="act-section-title">What-If Scenario</div>' +
     '<div class="act-config-grid">' +
-    '<div class="act-field"><div class="act-field-label">Additional Products</div><input id="act-whatif-products" type="number" min="0" value="1" oninput="actUpdateWhatIf()"></div>' +
-    '<div class="act-field"><div class="act-field-label">Additional Users</div><input id="act-whatif-users" type="number" min="0" value="5" oninput="actUpdateWhatIf()"></div>' +
-    '<div class="act-field"><div class="act-field-label">Usage Intensity</div><select id="act-whatif-intensity" onchange="actUpdateWhatIf()"><option value="1">Current Mix</option><option value="0.7">Low</option><option value="1.35">High</option></select></div>' +
+    '<div class="act-field"><div class="act-field-label">Additional Products</div><input id="act-whatif-products" type="number" min="0" value="1"></div>' +
+    '<div class="act-field"><div class="act-field-label">Additional Users</div><input id="act-whatif-users" type="number" min="0" value="5"></div>' +
+    '<div class="act-field"><div class="act-field-label">Usage Intensity</div><select id="act-whatif-intensity"><option value="1">Current Mix</option><option value="0.7">Low</option><option value="1.35">High</option></select></div>' +
     '<div class="act-field"><div class="act-field-label">Projected Add-On <span class="act-computed-tag">(computed)</span></div><input id="act-whatif-output" type="text" value="—" readonly aria-readonly="true"></div>' +
     '</div>' + warn +
-    '<div class="act-scoped-card-note">Percentiles are recomputed from this period’s actual per-product and per-user spend each time this screen loads, not hardcoded.</div></div>';
+    '<div class="act-scoped-card-note">Percentiles are recomputed from this period’s actual per-product and per-user spend each time this screen loads, not hardcoded.</div>' +
+    '<div class="act-config-footer"><button class="act-btn act-btn-primary act-btn-sm" onclick="actUpdateWhatIf()">Simulate</button></div>' +
+    '</div>';
 }
 
 function actUpdateWhatIf() {
@@ -1275,40 +1288,88 @@ function actRenderOpportunityMatrix(rows) {
     (flaggedNames.length ? '<div class="act-callout card"><div><b>Flagged:</b> ' + flaggedNames.map(actEsc).join(', ') + ' exceed 1.5× the average cost per call across all plotted features this period.</div></div>' : '');
 }
 
-function actRenderBudgetAlerts() {
+// Standalone, full-width — pulled out of the old two-column grid so it
+// sits above Cost Governance instead of sharing a row with the alert
+// list/config (reviewed wireframe, AI Governance restructure).
+function actRenderBudgetBar() {
   var spendSoFar = actSumCost(actMain.rows);
   var amount = actBudget ? Number(actBudget.amount) : 0;
   var warnPct = actBudget ? Number(actBudget.warn_threshold_pct) : 80;
   var escPct = actBudget ? Number(actBudget.escalate_threshold_pct) : 90;
-  var actionOnBreach = (actBudget && actBudget.action_on_breach) || 'notify';
   var usedPct = amount ? Math.min(100, spendSoFar / amount * 100) : 0;
   var barColor = !actBudget ? 'var(--divider)' : (usedPct >= escPct ? 'var(--red)' : (usedPct >= warnPct ? 'var(--amber)' : 'var(--purple)'));
   var daysInMonth = Math.round((actMain.end - actMain.start) / 86400000);
   var daysRemaining = Math.max(0, daysInMonth - Math.floor((actMain.now - actMain.start) / 86400000));
-
-  var alertRows = actAlerts.map(function (a) {
-    var isEsc = a.threshold_type === 'escalate';
-    return '<div class="act-alert-row"><div class="act-alert-row-top"><span class="act-alert-level ' + (isEsc ? 'escalate' : 'warn') + '">' + a.threshold_type + '</span><span class="act-alert-title">Spend crossed ' + Number(a.threshold_pct) + '% of the monthly budget.</span><span class="act-alert-date">' + new Date(a.created_at).toLocaleDateString() + '</span></div>' +
-      '<div class="act-alert-what">' + (isEsc ? 'Admins were notified. This alert does not trigger anything on its own — apply an action in Budget Configuration if you want one.' : 'Admins were notified. No automatic action fires at the Warn level.') + '</div>' +
-      (a.status === 'open' ? '<button class="act-btn act-btn-secondary act-btn-sm" onclick="actAcknowledgeAlert(\'' + a.alert_id + '\')">Acknowledge</button>' : '<div class="act-alert-ack-done">Acknowledged ' + (a.acknowledged_at ? new Date(a.acknowledged_at).toLocaleDateString() : '') + '</div>') +
-      '</div>';
-  }).join('') || '<div class="act-alert-row"><div class="act-alert-what">No alerts yet for the active budget.</div></div>';
-
-  return '<div class="act-section-title">Budget &amp; Alert Readiness</div>' +
-    '<div class="act-planning-grid"><div>' +
-    '<div class="act-budget-card"><div class="act-budget-top"><div class="act-budget-name">Overall Monthly Budget</div><div class="act-budget-figures">' + actFmtUSD0(spendSoFar) + ' of ' + (actBudget ? actFmtUSD0(amount) : 'not set') + '</div></div>' +
+  return '<div class="act-budget-card"><div class="act-budget-top"><div class="act-budget-name">Overall Monthly Budget</div><div class="act-budget-figures">' + actFmtUSD0(spendSoFar) + ' of ' + (actBudget ? actFmtUSD0(amount) : 'not set') + '</div></div>' +
     '<div class="act-budget-bar-track"><div class="act-budget-bar-fill" style="width:' + usedPct + '%;background:' + barColor + ';"></div></div>' +
-    '<div class="act-budget-foot"><span>' + usedPct.toFixed(0) + '% used</span><span>' + daysRemaining + ' days remaining</span></div></div>' +
-    '<div class="act-alert-list">' + alertRows + '</div>' +
-    '</div>' +
-    '<div class="act-config-card"><div class="act-section-title">Budget Configuration</div>' +
+    '<div class="act-budget-foot"><span>' + usedPct.toFixed(0) + '% used</span><span>' + daysRemaining + ' days remaining</span></div></div>';
+}
+
+function actRenderBudgetConfigCard() {
+  var amount = actBudget ? Number(actBudget.amount) : 0;
+  var warnPct = actBudget ? Number(actBudget.warn_threshold_pct) : 80;
+  var escPct = actBudget ? Number(actBudget.escalate_threshold_pct) : 90;
+  var actionOnBreach = (actBudget && actBudget.action_on_breach) || 'notify';
+  return '<div class="act-config-card"><div class="act-section-title">Budget Configuration</div>' +
     '<div class="act-config-grid">' +
     '<div class="act-field"><div class="act-field-label">Monthly Budget</div><input id="act-cfg-amount" type="number" min="0" step="1" value="' + (actBudget ? amount : '') + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Warn Threshold %</div><input id="act-cfg-warn" type="number" min="1" max="99" value="' + warnPct + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Escalate Threshold %</div><input id="act-cfg-escalate" type="number" min="1" max="100" value="' + escPct + '"></div>' +
-    '<div class="act-field"><div class="act-field-label">Action On Save</div><select id="act-cfg-action"><option value="notify"' + (actionOnBreach === 'notify' ? ' selected' : '') + '>Notify Only</option><option value="restrict_tier"' + (actionOnBreach === 'restrict_tier' ? ' selected' : '') + '>Restrict to Economical Tier</option><option value="stop"' + (actionOnBreach === 'stop' ? ' selected' : '') + '>Stop AI Usage</option></select><div class="act-field-hint">Applies to every AI call the moment you save, regardless of current spend. Resets to Notify Only automatically at the start of next month.</div></div>' +
-    '</div><div class="act-config-footer"><button class="act-btn act-btn-primary act-btn-sm" onclick="actSaveBudget()">Save Configuration</button></div>' +
-    '</div></div>';
+    '<div class="act-field"><div class="act-field-label">Action On Save</div><select id="act-cfg-action"><option value="notify"' + (actionOnBreach === 'notify' ? ' selected' : '') + '>Notify Only</option><option value="restrict_tier"' + (actionOnBreach === 'restrict_tier' ? ' selected' : '') + '>Restrict to Economical Tier</option><option value="stop"' + (actionOnBreach === 'stop' ? ' selected' : '') + '>Stop AI Usage</option></select></div>' +
+    '</div>' +
+    '<div class="act-scoped-card-note">Applies to every AI call the moment you save, regardless of current spend. Resets to Notify Only automatically at the start of next month.</div>' +
+    '<div class="act-config-footer"><button class="act-btn act-btn-primary act-btn-sm" onclick="actSaveBudget()">Save Configuration</button></div>' +
+    '</div>';
+}
+
+// Collapsible "Cost Controls" wrapper around Budget Configuration +
+// What-If Scenario (reviewed wireframe). Collapsed by default on every
+// fresh load — actCostControlsOpen is a plain module-level flag, not
+// persisted, so it always starts collapsed and only stays open across
+// re-renders within the same page session (e.g. after Save
+// Configuration) because actRenderPlan() re-reads this same flag.
+var actCostControlsOpen = false;
+function actToggleCostControls() {
+  actCostControlsOpen = !actCostControlsOpen;
+  actRenderPlan();
+}
+function actRenderCostControls(whatIfData) {
+  var body = actCostControlsOpen
+    ? '<div class="cc-body"><div class="act-planning-grid">' + actRenderBudgetConfigCard() + actRenderWhatIf(whatIfData) + '</div></div>'
+    : '';
+  return '<div class="cc-bar" onclick="actToggleCostControls()">' +
+    '<div class="cc-bar-left"><div class="cc-bar-title">Cost Controls</div><div class="cc-bar-sub">Budget Configuration &amp; What-If Scenario</div></div>' +
+    '<svg class="cc-chevron' + (actCostControlsOpen ? ' open' : '') + '" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
+    '</div>' + body;
+}
+
+// Bordered/titled card matching Role-Based Unit Economics' own
+// act-scoped-card treatment (reviewed wireframe) — replaces the old
+// untitled, unbounded act-alert-list. Scroll-capped via CSS
+// (.act-alert-list's max-height) rather than left to grow forever, and
+// mt_ai_alerts_list() itself now also scopes to the current + prior
+// month (sql/ai-cost-tower-alert-dismiss.sql) so this never has to
+// render more than a couple months' worth even before anything is
+// dismissed. Dismiss (the × in the corner, or the Dismiss button) is a
+// separate, persisted action from Acknowledge — it permanently removes
+// the alert from every future load, not just this render.
+function actRenderAlertsCard() {
+  var rowsHtml = actAlerts.map(function (a) {
+    var isEsc = a.threshold_type === 'escalate';
+    var statusHtml = a.status === 'open'
+      ? '<button class="act-btn act-btn-secondary act-btn-sm" onclick="actAcknowledgeAlert(\'' + a.alert_id + '\')">Acknowledge</button>'
+      : '<span class="act-alert-ack-done">Acknowledged ' + (a.acknowledged_at ? new Date(a.acknowledged_at).toLocaleString() : '') + '</span>';
+    return '<div class="act-alert-row">' +
+      '<button class="act-alert-x" onclick="actDismissAlert(\'' + a.alert_id + '\')" aria-label="Dismiss" title="Dismiss"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg></button>' +
+      '<div class="act-alert-row-top"><span class="act-alert-level ' + (isEsc ? 'escalate' : 'warn') + '">' + a.threshold_type + '</span><span class="act-alert-title">Spend crossed ' + Number(a.threshold_pct) + '% of the monthly budget.</span><span class="act-alert-date">' + new Date(a.created_at).toLocaleDateString() + '</span></div>' +
+      '<div class="act-alert-what">' + (isEsc ? 'Admins were notified. This alert does not trigger anything on its own — apply an action in Budget Configuration if you want one.' : 'Admins were notified. No automatic action fires at the Warn level.') + '</div>' +
+      '<div class="act-alert-actions">' + statusHtml + '<button class="act-btn act-btn-tertiary act-btn-sm" onclick="actDismissAlert(\'' + a.alert_id + '\')">Dismiss</button></div>' +
+      '</div>';
+  }).join('');
+  var body = actAlerts.length
+    ? '<div class="act-alert-list">' + rowsHtml + '</div>'
+    : '<div class="act-empty-state"><div class="act-empty-state-title">No alerts yet for the active budget.</div></div>';
+  return '<div class="act-scoped-card"><div class="act-section-title">Alerts</div>' + body + '</div>';
 }
 
 async function actSaveBudget() {
@@ -1347,6 +1408,24 @@ async function actAcknowledgeAlert(alertId) {
   } catch (err) {
     console.error('[Cost Tower] alert acknowledge failed:', err);
     actToast('Could not acknowledge alert.', 'error');
+  }
+}
+
+// Permanent removal, distinct from Acknowledge — mt_ai_alert_dismiss()
+// (sql/ai-cost-tower-alert-dismiss.sql) works on an open OR already-
+// acknowledged alert, and mt_ai_alerts_list() excludes dismissed rows
+// from every future load, not just this render.
+async function actDismissAlert(alertId) {
+  var client = authInit();
+  try {
+    var result = await client.rpc('mt_ai_alert_dismiss', { p_alert_id: alertId });
+    if (result.error) throw result.error;
+    await actLoadBudgetAndAlerts();
+    actRenderPlan();
+    actToast('Alert dismissed.', 'success');
+  } catch (err) {
+    console.error('[Cost Tower] alert dismiss failed:', err);
+    actToast('Could not dismiss alert.', 'error');
   }
 }
 
@@ -1389,7 +1468,7 @@ async function actDownloadReport(screen) {
   var exportHeader = document.getElementById('act-export-' + screen + '-header');
   if (!target) return;
   if (exportHeader) {
-    exportHeader.textContent = (actCompanyName ? actCompanyName + ' - ' : '') + 'AI Cost Control Tower - ' + ACT_SCREEN_NAMES[screen];
+    exportHeader.textContent = (actCompanyName ? actCompanyName + ' - ' : '') + 'AI Control Tower - ' + ACT_SCREEN_NAMES[screen];
     exportHeader.style.display = 'block';
   }
   var origHtml = btn ? btn.innerHTML : null;
@@ -1403,12 +1482,16 @@ async function actDownloadReport(screen) {
     var pageWidth = pdf.internal.pageSize.getWidth(), pageHeight = pdf.internal.pageSize.getHeight();
     var margin = 36, usableWidth = pageWidth - margin * 2, usableHeight = pageHeight - margin * 2;
     var imgWidth = usableWidth, imgHeight = (canvas.height * imgWidth) / canvas.width;
-    var imgData = canvas.toDataURL('image/png');
+    // JPEG at high quality instead of lossless PNG — a raster screenshot of
+    // UI (mostly flat colour/text, no photographic detail) gains nothing
+    // from PNG's lossless encoding but pays for it in file size; JPEG at
+    // 0.92 cuts export size dramatically with no visible quality loss.
+    var imgData = canvas.toDataURL('image/jpeg', 0.92);
     var heightRemaining = imgHeight, pageIndex = 0;
     while (heightRemaining > 0) {
       if (pageIndex > 0) pdf.addPage();
       var yOffset = margin - (pageIndex * usableHeight);
-      pdf.addImage(imgData, 'PNG', margin, yOffset, imgWidth, imgHeight);
+      pdf.addImage(imgData, 'JPEG', margin, yOffset, imgWidth, imgHeight);
       heightRemaining -= usableHeight;
       pageIndex++;
     }
