@@ -14,10 +14,6 @@
 -- the list itself to the current and prior month so it can't grow
 -- unbounded even before anyone dismisses anything.
 --
--- Verify the auto-generated constraint name below before running, per
--- this project's standing caution against assuming schema shape:
--- SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
--- WHERE conrelid = 'mt_ai_alerts'::regclass AND contype = 'c';
 -- ═══════════════════════════════════════════════════════════════════
 
 ALTER TABLE mt_ai_alerts
@@ -25,13 +21,32 @@ ALTER TABLE mt_ai_alerts
   ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMPTZ;
 
 -- Widen the status enum to add 'dismissed', alongside the existing
--- 'open'/'acknowledged'/'resolved'. mt_ai_alerts_status_check is
--- Postgres's auto-generated name for the original inline CHECK
--- (single column, unnamed) — confirmed against the live schema before
--- writing this, not assumed; re-added with an explicit name so future
--- changes don't depend on the auto-naming convention again.
-ALTER TABLE mt_ai_alerts
-  DROP CONSTRAINT IF EXISTS mt_ai_alerts_status_check;
+-- 'open'/'acknowledged'/'resolved'. Finds and drops whichever constraint
+-- currently enforces the single-column CHECK on `status` by its REAL name
+-- (matched via conkey against status's own attnum), rather than assuming
+-- Postgres auto-named it `mt_ai_alerts_status_check` — a wrong guess would
+-- have made `DROP CONSTRAINT IF EXISTS` silently no-op, leaving the
+-- original 3-value constraint active alongside a new one and mt_ai_alert_
+-- dismiss() failing every call with no migration error to say why.
+DO $$
+DECLARE
+  v_conname TEXT;
+  v_status_attnum SMALLINT;
+BEGIN
+  SELECT attnum INTO v_status_attnum
+  FROM pg_attribute
+  WHERE attrelid = 'mt_ai_alerts'::regclass AND attname = 'status';
+
+  SELECT conname INTO v_conname
+  FROM pg_constraint
+  WHERE conrelid = 'mt_ai_alerts'::regclass
+    AND contype = 'c'
+    AND conkey = ARRAY[v_status_attnum];
+
+  IF v_conname IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE mt_ai_alerts DROP CONSTRAINT %I', v_conname);
+  END IF;
+END $$;
 ALTER TABLE mt_ai_alerts
   ADD CONSTRAINT mt_ai_alerts_status_check
   CHECK (status IN ('open','acknowledged','resolved','dismissed'));
@@ -66,6 +81,13 @@ ALTER TABLE mt_ai_alerts
 -- already-dismissed (an open alert can be dismissed directly, without
 -- being acknowledged first), unlike acknowledge which only ever
 -- applies to 'open'.
+-- Deliberately does NOT clear acknowledged_by/acknowledged_at when
+-- dismissing an already-acknowledged alert — status moves to 'dismissed'
+-- either way, so status alone can no longer answer "was this ever
+-- acknowledged" once dismissed. Any future feature that needs that
+-- history (an alert-audit view, a "% acknowledged" metric) must check
+-- acknowledged_at IS NOT NULL, not status = 'acknowledged' — the
+-- acknowledgment fact is preserved in those columns, just not in status.
 CREATE OR REPLACE FUNCTION mt_ai_alert_dismiss(p_alert_id UUID)
 RETURNS mt_ai_alerts
 LANGUAGE plpgsql

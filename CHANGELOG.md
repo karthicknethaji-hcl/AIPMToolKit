@@ -1,5 +1,17 @@
 # Changelog — Product Studio
 
+## v9.28.03 - 2026-08-26: AI Governance code-review fixes (Cost Controls, Alerts, toast, PDF naming)
+
+Note: bundling multiple code-review findings in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01).
+
+- Fixed - The Budget Configuration/What-If height-match fix from v9.28.02 had also zeroed spacing on Cost Breakdown's unrelated Operational Signals section; rescoped to only the Cost Controls pairing that actually needed it.
+- Fixed - Collapsing/expanding "Cost Controls" no longer re-renders the whole AI Governance screen (which was silently discarding any unsaved Budget Configuration/What-If edits and re-running the screen's aggregation work) — it's now a plain DOM show/hide.
+- Fixed - Acknowledge/Dismiss no longer re-fetch the budget and full alert list on every click; they patch the in-memory alert from the RPC's own returned row, removing two redundant round-trips per click. `actAcknowledgeAlert()`/`actDismissAlert()` now share one helper instead of duplicating the same call/error/toast logic.
+- Fixed - The new toast's per-type colors now use this page's own existing `--blue`/`--red`/`--green` tokens instead of hardcoded hex, correcting an AI_EDITING_RULES.md violation; comments no longer overclaim pixel parity with the shared `.app-toast` (layout/motion match, palette intentionally doesn't).
+- Fixed - PDF export filenames still read `AI_Cost_...`, missed by the AI Control Tower rename; now `AI_Control_Tower_...`.
+- Fixed - A stale comment claimed `actUpdateWhatIf()` still auto-runs after render; corrected to describe the current manual "Simulate" behavior.
+- Changed - `sql/ai-cost-tower-alert-dismiss.sql`'s status-constraint migration no longer assumes Postgres's auto-generated constraint name — it looks up and drops the real constraint by column instead, so a wrong name assumption can no longer silently leave the old 3-value constraint active. Documented that `acknowledged_at IS NOT NULL`, not `status='acknowledged'`, is the durable check for "was this alert ever acknowledged" once dismiss is in the picture.
+
 ## v9.28.02 - 2026-08-25: AI Cost Control Tower: manual governance enforcement (Restrict / Stop)
 
 Note: bundling 8 items in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02, v9.28.01) — kept as one version by explicit decision rather than incrementing further for each follow-on round of fixes/redesign within the same feature.

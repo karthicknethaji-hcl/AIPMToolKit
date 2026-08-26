@@ -73,11 +73,13 @@ function actDeltaHtml(pct, higherIsBad) {
   var arrow = isUp ? 'Up' : isDown ? 'Down' : 'Flat';
   return '<span class="' + cls + '">' + arrow + ' ' + Math.abs(pct).toFixed(0) + '%</span>';
 }
-// Aligned to the shared .app-toast pattern (styles/01-base.css) — top-
-// anchored, pastel + border per type, icon, dismiss ×, width-capped,
-// slide+fade — while staying this page's own local implementation
-// (CSS in styles/26-cost-tower.css), matching the same standalone-page
-// convention already used for actEsc()/_avatarInitialsLocal().
+// Layout/motion aligned to the shared .app-toast pattern (styles/01-base.css)
+// — top-anchored, pastel + border per type, icon, dismiss ×, width-capped,
+// slide+fade — while staying this page's own local implementation (CSS in
+// styles/26-cost-tower.css, using this page's own --blue/--red/--green
+// tokens rather than .app-toast's hardcoded hex, so the palette isn't
+// pixel-identical), matching the same standalone-page convention already
+// used for actEsc()/_avatarInitialsLocal().
 var _actToastTimer = null;
 var _ACT_TOAST_ICONS = {
   error: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>',
@@ -1123,11 +1125,12 @@ function actPercentile(values, p) {
 }
 
 // Computes the What-If percentile inputs separately from rendering — the
-// resulting data is applied to window._actWhatIf and actUpdateWhatIf() is
-// called directly by actRenderPlan() after the innerHTML swap, since a
-// <script> tag embedded via innerHTML never executes (a DOM/HTML spec
-// behavior, not a bug in this app) — this must NOT be reintroduced as an
-// inline <script> inside the returned HTML string.
+// resulting data is applied to window._actWhatIf, and actUpdateWhatIf() is
+// invoked only when the admin clicks the "Simulate" button (actRenderPlan()
+// no longer auto-calls it after the innerHTML swap — Projected Add-On starts
+// blank until Simulate runs). A <script> tag embedded via innerHTML never
+// executes anyway (a DOM/HTML spec behavior, not a bug in this app) — this
+// must NOT be reintroduced as an inline <script> inside the returned HTML string.
 function actComputeWhatIfData(rows) {
   var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
   var productCosts = Object.keys(productGroups).filter(function (k) { return k !== '__unassigned__' && k !== '__cross_product__'; }).map(function (k) { return productGroups[k].cost; });
@@ -1326,21 +1329,27 @@ function actRenderBudgetConfigCard() {
 // What-If Scenario (reviewed wireframe). Collapsed by default on every
 // fresh load — actCostControlsOpen is a plain module-level flag, not
 // persisted, so it always starts collapsed and only stays open across
-// re-renders within the same page session (e.g. after Save
-// Configuration) because actRenderPlan() re-reads this same flag.
+// a full re-render (e.g. after Save Configuration) because actRenderPlan()
+// re-reads this same flag. The toggle itself is a pure DOM show/hide, not
+// a re-render: cc-body is always present in the markup (its visibility is
+// inline-style, not conditional HTML), so clicking the bar can never wipe
+// an admin's unsaved edits in the Budget Configuration/What-If fields, and
+// never re-triggers the screen's other aggregation work (What-If
+// percentiles, Opportunities, Opportunity Matrix) just to expand/collapse.
 var actCostControlsOpen = false;
 function actToggleCostControls() {
   actCostControlsOpen = !actCostControlsOpen;
-  actRenderPlan();
+  var body = document.getElementById('act-cc-body');
+  var chevron = document.getElementById('act-cc-chevron');
+  if (body) body.style.display = actCostControlsOpen ? '' : 'none';
+  if (chevron) chevron.classList.toggle('open', actCostControlsOpen);
 }
 function actRenderCostControls(whatIfData) {
-  var body = actCostControlsOpen
-    ? '<div class="cc-body"><div class="act-planning-grid">' + actRenderBudgetConfigCard() + actRenderWhatIf(whatIfData) + '</div></div>'
-    : '';
   return '<div class="cc-bar" onclick="actToggleCostControls()">' +
     '<div class="cc-bar-left"><div class="cc-bar-title">Cost Controls</div><div class="cc-bar-sub">Budget Configuration &amp; What-If Scenario</div></div>' +
-    '<svg class="cc-chevron' + (actCostControlsOpen ? ' open' : '') + '" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
-    '</div>' + body;
+    '<svg id="act-cc-chevron" class="cc-chevron' + (actCostControlsOpen ? ' open' : '') + '" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>' +
+    '</div>' +
+    '<div class="cc-body" id="act-cc-body"' + (actCostControlsOpen ? '' : ' style="display:none;"') + '><div class="act-planning-grid">' + actRenderBudgetConfigCard() + actRenderWhatIf(whatIfData) + '</div></div>';
 }
 
 // Bordered/titled card matching Role-Based Unit Economics' own
@@ -1397,36 +1406,47 @@ async function actSaveBudget() {
   }
 }
 
-async function actAcknowledgeAlert(alertId) {
+// Patches actAlerts in place from an RPC's own RETURNING * row, instead of
+// re-fetching the budget + full alert list — acknowledging/dismissing one
+// alert never changes the budget row, and the RPC response already has
+// everything needed. A row that comes back 'dismissed' is removed outright
+// (mt_ai_alerts_list() would exclude it on the next real fetch anyway);
+// any other status is patched into the existing row in place.
+function _actPatchAlert(updated) {
+  if (!updated) return;
+  if (updated.status === 'dismissed') {
+    actAlerts = actAlerts.filter(function (a) { return a.alert_id !== updated.alert_id; });
+  } else {
+    actAlerts = actAlerts.map(function (a) { return a.alert_id === updated.alert_id ? updated : a; });
+  }
+}
+
+// Shared by actAcknowledgeAlert()/actDismissAlert() — same rpc-call/patch/
+// render/toast shape for both, differing only in which RPC and which copy.
+async function _actAlertAction(rpcName, alertId, successMsg, failMsg) {
   var client = authInit();
   try {
-    var result = await client.rpc('mt_ai_alert_acknowledge', { p_alert_id: alertId });
+    var result = await client.rpc(rpcName, { p_alert_id: alertId });
     if (result.error) throw result.error;
-    await actLoadBudgetAndAlerts();
+    _actPatchAlert(result.data);
     actRenderPlan();
-    actToast('Alert acknowledged.', 'success');
+    actToast(successMsg, 'success');
   } catch (err) {
-    console.error('[Cost Tower] alert acknowledge failed:', err);
-    actToast('Could not acknowledge alert.', 'error');
+    console.error('[Cost Tower] ' + rpcName + ' failed:', err);
+    actToast(failMsg, 'error');
   }
+}
+
+function actAcknowledgeAlert(alertId) {
+  return _actAlertAction('mt_ai_alert_acknowledge', alertId, 'Alert acknowledged.', 'Could not acknowledge alert.');
 }
 
 // Permanent removal, distinct from Acknowledge — mt_ai_alert_dismiss()
 // (sql/ai-cost-tower-alert-dismiss.sql) works on an open OR already-
 // acknowledged alert, and mt_ai_alerts_list() excludes dismissed rows
 // from every future load, not just this render.
-async function actDismissAlert(alertId) {
-  var client = authInit();
-  try {
-    var result = await client.rpc('mt_ai_alert_dismiss', { p_alert_id: alertId });
-    if (result.error) throw result.error;
-    await actLoadBudgetAndAlerts();
-    actRenderPlan();
-    actToast('Alert dismissed.', 'success');
-  } catch (err) {
-    console.error('[Cost Tower] alert dismiss failed:', err);
-    actToast('Could not dismiss alert.', 'error');
-  }
+function actDismissAlert(alertId) {
+  return _actAlertAction('mt_ai_alert_dismiss', alertId, 'Alert dismissed.', 'Could not dismiss alert.');
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1495,7 +1515,7 @@ async function actDownloadReport(screen) {
       heightRemaining -= usableHeight;
       pageIndex++;
     }
-    pdf.save((actCompanyName ? actCompanyName.replace(/\s+/g, '_') + '_' : '') + 'AI_Cost_' + ACT_SCREEN_NAMES[screen].replace(/[^A-Za-z0-9]+/g, '_') + '.pdf');
+    pdf.save((actCompanyName ? actCompanyName.replace(/\s+/g, '_') + '_' : '') + 'AI_Control_Tower_' + ACT_SCREEN_NAMES[screen].replace(/[^A-Za-z0-9]+/g, '_') + '.pdf');
   } catch (err) {
     console.error('[Cost Tower] PDF export failed:', err);
     actToast('PDF export failed. Please try again.', 'error');

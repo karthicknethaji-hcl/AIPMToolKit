@@ -84,15 +84,21 @@ button:focus-visible.act-fv,
 .export-cta-btn:hover{background:var(--purple);color:var(--white);}
 .export-cta-btn:disabled{opacity:.4;cursor:not-allowed;}
 
-/* ===== toast (aligned to the shared .app-toast pattern, styles/01-base.css
-   — top-anchored, pastel + border per type, icon, dismiss, width-capped,
-   slide+fade; kept as this page's own local class rather than importing
-   utils.js, same standalone-page convention as actEsc()/actToast() itself) ===== */
+/* ===== toast (layout/motion aligned to the shared .app-toast pattern,
+   styles/01-base.css — top-anchored, pastel + border per type, icon,
+   dismiss, width-capped, slide+fade; kept as this page's own local class
+   rather than importing utils.js, same standalone-page convention as
+   actEsc()/actToast() itself). Colors intentionally use THIS page's own
+   existing tokens (--blue/--red/--green + their pale variants), not
+   .app-toast's hardcoded hex — matches this file's own --blue/--red/--green
+   token convention (.act-status-pill/.act-tag-status use the same
+   saturated-token-as-text-on-pale-background pattern), so palette is not
+   pixel-identical to .app-toast, only the layout/motion is. ===== */
 .act-toast{position:fixed;top:24px;left:50%;transform:translateX(-50%) translateY(-16px);display:flex;align-items:center;gap:8px;padding:9px 14px;border-radius:8px;font-size:11px;font-weight:500;font-family:var(--font);max-width:420px;width:max-content;border:1px solid;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.12);}
 .act-toast.on{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;}
-.act-toast-info{background:var(--blue-pale);color:#0C447C;border-color:var(--blue-mid);}
-.act-toast-error{background:var(--red-pale);color:#791F1F;border-color:#F7C1C1;}
-.act-toast-success{background:var(--green-pale);color:#085041;border-color:#9FE1CB;}
+.act-toast-info{background:var(--blue-pale);color:var(--blue);border-color:var(--blue);}
+.act-toast-error{background:var(--red-pale);color:var(--red);border-color:var(--red);}
+.act-toast-success{background:var(--green-pale);color:var(--green);border-color:var(--green);}
 .act-toast svg{flex-shrink:0;}
 .act-toast-msg{flex:1;}
 .act-toast-close{background:none;border:none;cursor:pointer;opacity:.5;padding:0 0 0 4px;font-size:12px;color:inherit;line-height:1;}
@@ -223,7 +229,17 @@ button:focus-visible.act-fv,
 
 /* ===== planning ===== */
 .act-planning-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px;align-items:stretch;}
-.act-planning-grid .act-scoped-card,.act-planning-grid .act-config-card{display:flex;flex-direction:column;margin-bottom:0;}
+.act-planning-grid .act-scoped-card{display:flex;flex-direction:column;}
+.act-planning-grid .act-config-card{display:flex;flex-direction:column;margin-bottom:0;}
+/* Scoped to Cost Controls only: pairs a margin-less .act-config-card with a
+   .act-scoped-card (which carries its own margin-bottom:16px for its many
+   other standalone/stacked uses on this page, e.g. Role-Based Unit
+   Economics, Alerts, Cost Breakdown's Operational Signals) — zeroing that
+   margin everywhere inside .act-planning-grid made every OTHER
+   .act-scoped-card/.act-scoped-card pairing on the page lose its spacing
+   too. Scoping to .cc-body keeps the height-match fix local to the one
+   pairing that actually needs it. */
+.cc-body .act-planning-grid .act-scoped-card{margin-bottom:0;}
 .act-opportunity-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;}
 .act-opp-card{border:1px solid var(--divider);border-radius:12px;background:var(--white);padding:15px;position:relative;overflow:hidden;}
 .act-opp-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--purple);}
