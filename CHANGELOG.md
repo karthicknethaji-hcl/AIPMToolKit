@@ -1,5 +1,9 @@
 # Changelog — Product Studio
 
+## v9.28.04 - 2026-08-26: SQL fix - alert-dismiss migration failed on re-run
+
+- Fixed - `sql/ai-cost-tower-alert-dismiss.sql`'s `mt_ai_alerts_dismiss_consistency` constraint had no `DROP CONSTRAINT IF EXISTS` before its `ADD` (unlike its sibling `mt_ai_alerts_ack_consistency`, which already had one), so re-running the file after its first successful run failed with `constraint "mt_ai_alerts_dismiss_consistency" ... already exists` — added the missing guard.
+
 ## v9.28.03 - 2026-08-26: AI Governance code-review fixes (Cost Controls, Alerts, toast, PDF naming)
 
 Note: bundling multiple code-review findings in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01).

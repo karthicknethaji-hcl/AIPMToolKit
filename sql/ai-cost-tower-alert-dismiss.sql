@@ -67,7 +67,13 @@ ALTER TABLE mt_ai_alerts
   );
 
 -- Matching symmetric check for the new dismissed_by/dismissed_at pair,
--- same pattern as the ack-consistency check above.
+-- same pattern as the ack-consistency check above. DROP IF EXISTS first,
+-- same as ack-consistency's own re-add just above — this one was missing
+-- it, which is exactly what made a second run of this file fail with
+-- "constraint already exists" instead of being the safe re-run every
+-- other statement in this file already is.
+ALTER TABLE mt_ai_alerts
+  DROP CONSTRAINT IF EXISTS mt_ai_alerts_dismiss_consistency;
 ALTER TABLE mt_ai_alerts
   ADD CONSTRAINT mt_ai_alerts_dismiss_consistency
   CHECK (
