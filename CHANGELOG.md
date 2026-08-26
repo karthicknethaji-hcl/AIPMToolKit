@@ -1,5 +1,34 @@
 # Changelog — Product Studio
 
+## v9.28.04 - 2026-08-26: SQL fix - alert-dismiss migration failed on re-run
+
+- Fixed - `sql/ai-cost-tower-alert-dismiss.sql`'s `mt_ai_alerts_dismiss_consistency` constraint had no `DROP CONSTRAINT IF EXISTS` before its `ADD` (unlike its sibling `mt_ai_alerts_ack_consistency`, which already had one), so re-running the file after its first successful run failed with `constraint "mt_ai_alerts_dismiss_consistency" ... already exists` — added the missing guard.
+
+## v9.28.03 - 2026-08-26: AI Governance code-review fixes (Cost Controls, Alerts, toast, PDF naming)
+
+Note: bundling multiple code-review findings in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01).
+
+- Fixed - The Budget Configuration/What-If height-match fix from v9.28.02 had also zeroed spacing on Cost Breakdown's unrelated Operational Signals section; rescoped to only the Cost Controls pairing that actually needed it.
+- Fixed - Collapsing/expanding "Cost Controls" no longer re-renders the whole AI Governance screen (which was silently discarding any unsaved Budget Configuration/What-If edits and re-running the screen's aggregation work) — it's now a plain DOM show/hide.
+- Fixed - Acknowledge/Dismiss no longer re-fetch the budget and full alert list on every click; they patch the in-memory alert from the RPC's own returned row, removing two redundant round-trips per click. `actAcknowledgeAlert()`/`actDismissAlert()` now share one helper instead of duplicating the same call/error/toast logic.
+- Fixed - The new toast's per-type colors now use this page's own existing `--blue`/`--red`/`--green` tokens instead of hardcoded hex, correcting an AI_EDITING_RULES.md violation; comments no longer overclaim pixel parity with the shared `.app-toast` (layout/motion match, palette intentionally doesn't).
+- Fixed - PDF export filenames still read `AI_Cost_...`, missed by the AI Control Tower rename; now `AI_Control_Tower_...`.
+- Fixed - A stale comment claimed `actUpdateWhatIf()` still auto-runs after render; corrected to describe the current manual "Simulate" behavior.
+- Changed - `sql/ai-cost-tower-alert-dismiss.sql`'s status-constraint migration no longer assumes Postgres's auto-generated constraint name — it looks up and drops the real constraint by column instead, so a wrong name assumption can no longer silently leave the old 3-value constraint active. Documented that `acknowledged_at IS NOT NULL`, not `status='acknowledged'`, is the durable check for "was this alert ever acknowledged" once dismiss is in the picture.
+
+## v9.28.02 - 2026-08-25: AI Cost Control Tower: manual governance enforcement (Restrict / Stop)
+
+Note: bundling 8 items in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02, v9.28.01) — kept as one version by explicit decision rather than incrementing further for each follow-on round of fixes/redesign within the same feature.
+
+- Added - Budget Configuration's "Restrict to Economical Tier" and "Stop AI Usage" options (previously disabled, v1.1 placeholders) are now live: selecting and saving either applies immediately and company-wide to every subsequent AI call, checked server-side in `proxy/server.js` before dispatch, and reverts automatically to Notify Only at the start of the next billing period. No automatic threshold-triggered enforcement, this is manual only.
+- Added - The former "Planning & Optimization" tab is now "AI Governance," reorganized per a reviewed wireframe: Overall Monthly Budget is a standalone card above a "Cost Governance" KPI section; Budget Configuration and What-If Scenario are grouped under a collapsible "Cost Controls" bar (collapsed by default); alerts get their own titled, bordered "Alerts" card instead of an untitled, unbounded list, and can now be permanently dismissed (a Dismiss button and a hover-revealed ×, both calling a new `mt_ai_alert_dismiss()` RPC, distinct from Acknowledge) — the list is also scroll-capped and scoped server-side to the current + prior month instead of returning every alert ever generated (`sql/ai-cost-tower-alert-dismiss.sql`, not run by Claude Code).
+- Changed - Renamed the feature from "AI Cost Control Tower" to "AI Control Tower" across all user-facing surfaces (page title, header, avatar-menu entry, admin gate message, PDF export headers, tab aria-label); internal file/function/table names (`ai-cost-tower.html`, `cost-tower.js`, `act`-prefixed functions, `mt_ai_*` tables) intentionally retained as-is, same convention as the v9.26 Product Studio rename.
+- Changed - What-If Scenario gained a "Simulate" button matching Budget Configuration's footer CTA — the Projected Add-On field starts blank and only computes on demand, instead of live-updating on every keystroke.
+- Changed - Acknowledged alerts now show a full date-and-time stamp, not just the date.
+- Fixed - `selection_rule` now correctly records `governance_restricted` for calls forced onto the economical model by an admin restriction, instead of retaining whatever selection path the client originally computed, preventing Selection Economics from misattributing why those calls used that model — required widening `mt_ai_usage_events`'s `selection_rule_valid` CHECK constraint to allow the new value (found via live testing; every Restrict-to-Economical-Tier call was silently failing its usage-tracking insert until this ran), handed over as `sql/ai-cost-tower-selection-rule-fix.sql`.
+- Fixed - PDF exports (AI Control Tower's 3 screens and Outcome Pulse) embedded a lossless PNG screenshot of the whole screen, producing unnecessarily large files; switched to JPEG at 0.92 quality, cutting export size substantially with no visible loss for UI/text content.
+- Changed - Corrected two stale comments (`scripts/api.js`, `PROJECT_MAP.md`) claiming `netlify/functions/anthropic-proxy.js` is the live hosted path; confirmed via live code that both `callAPI()`'s primary path and Home's AI Recommendations route through the Render proxy today, not the Netlify function.
+
 ## v9.28.01 - 2026-08-25: Build B Part 1 (cache-usage tracking) + code-review fixes
 
 Note: bundling the feature and its own code-review fix round in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for batched fix rounds (see v9.25.05, v9.26.03, v9.27.02).

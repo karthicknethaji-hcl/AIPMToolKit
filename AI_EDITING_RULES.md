@@ -463,7 +463,7 @@ Product-Studio-vX.XX(.XX)/
 ├── login.html
 ├── netlify.toml
 ├── favicon.ico                       (binary .ico, decoded from favicon-base64.txt — never include the .txt itself)
-├── ai-cost-tower.html                (v9.28, AI Cost Control Tower — standalone admin-only page, opened via window.open())
+├── ai-cost-tower.html                (v9.28, AI Control Tower — standalone admin-only page, opened via window.open())
 ├── AI_EDITING_RULES.md
 ├── CHANGELOG.md
 ├── DESIGN_SYSTEM.md
@@ -473,7 +473,7 @@ Product-Studio-vX.XX(.XX)/
 │
 ├── scripts/                          (ALL frontend .js files, and ONLY frontend .js files)
 │   ├── config.js
-│   ├── cost-tower.js                 (v9.28, AI Cost Control Tower — standalone, loaded only by ai-cost-tower.html)
+│   ├── cost-tower.js                 (v9.28, AI Control Tower — standalone, loaded only by ai-cost-tower.html)
 │   ├── state.js
 │   ├── utils.js
 │   ├── auth.js

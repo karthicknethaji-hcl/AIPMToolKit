@@ -983,7 +983,11 @@ async function opDownloadReport(){
     const usableHeight=pageHeight-(margin*2);
     const imgWidth=usableWidth;
     const imgHeight=(canvas.height*imgWidth)/canvas.width;
-    const imgData=canvas.toDataURL('image/png');
+    // JPEG at high quality instead of lossless PNG — a raster screenshot of
+    // UI (mostly flat colour/text, no photographic detail) gains nothing
+    // from PNG's lossless encoding but pays for it in file size; JPEG at
+    // 0.92 cuts export size dramatically with no visible quality loss.
+    const imgData=canvas.toDataURL('image/jpeg',0.92);
     let heightRemaining=imgHeight;
     let pageIndex=0;
     while(heightRemaining>0){
@@ -994,7 +998,7 @@ async function opDownloadReport(){
       // of the same tall image through the page's own margin-bounded
       // viewport — standard jsPDF multi-page image-slicing technique.
       const yOffset=margin-(pageIndex*usableHeight);
-      pdf.addImage(imgData,'PNG',margin,yOffset,imgWidth,imgHeight);
+      pdf.addImage(imgData,'JPEG',margin,yOffset,imgWidth,imgHeight);
       heightRemaining-=usableHeight;
       pageIndex++;
     }
