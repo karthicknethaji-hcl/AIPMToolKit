@@ -189,11 +189,13 @@ async function _insertAiUsageEvent(fields) {
 // fetches the Yield-relevant subset via GET /api/outcome-caller-modes rather
 // than hand-typing a second copy that could drift from this one.
 //
-// 25 entries, each independently verified against live code during Phase 1
-// build verification (not assumed from the design spec):
+// 26 entries, each independently verified against live code during Phase 1
+// build verification (not assumed from the design spec) — 25 from the
+// original sweep, plus 'cc-gen-features-cap' added during code review after
+// being missed the first time (a real, live, button-wired caller):
 //   - session_sum_anchor (10): this caller IS one of the five Journey types'
 //     own generation event. Gets outcome_id of that type's active instance.
-//   - yield_anchor (13): this caller IS a yield_ratio type's own generation
+//   - yield_anchor (14): this caller IS a yield_ratio type's own generation
 //     event. NEVER receives outcome_id, regardless of what Journey outcome
 //     is active in the session.
 //   - attachable_support (1): incidental to whatever session_sum outcome is
@@ -230,6 +232,10 @@ const CALLER_ATTRIBUTION_MODE = {
   'cc-refine-metric':          { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'fixed_1' },
   'cc-gen-features-pi':        { mode: 'yield_anchor', outcomeType: 'capability', unitsFrom: 'fixed_1' },
   'cc-gen-features':           { mode: 'yield_anchor', outcomeType: 'feature', unitsFrom: 'features' },
+  // Verified: capability-canvas.js:3445-3456 parses parsed.features.map(...)
+  // identically to cc-gen-features — a real, live, button-wired per-
+  // capability variant missed in the original 25-entry sweep.
+  'cc-gen-features-cap':       { mode: 'yield_anchor', outcomeType: 'feature', unitsFrom: 'features' },
   'fc-gen-stories':            { mode: 'yield_anchor', outcomeType: 'story', unitsFrom: 'stories' },
   'cc-dd-single':              { mode: 'yield_anchor', outcomeType: 'kpi_dictionary_entry', unitsFrom: 'fixed_1' },
   'cc-dd-batch':               { mode: 'yield_anchor', outcomeType: 'kpi_dictionary_entry', unitsFrom: 'dictionary_entries' },
@@ -1189,6 +1195,16 @@ async function _handleStreamingRequest(req, res, ctx) {
 
 // ── Main proxy endpoint ───────────────────────────────────────────────────────
 app.post('/api/anthropic', async (req, res) => {
+  // Hoisted above the try — a const/let declared inside a try block is a
+  // separate block scope from its sibling catch block and is never visible
+  // there regardless of assignment timing (typeof on it inside catch always
+  // reads 'undefined', never the real value, and never throws either, which
+  // is what let this go unnoticed). Every `typeof X !== 'undefined'` guard
+  // in the catch block below was silently always false before this fix,
+  // making the entire error/timeout-path usage-tracking insert dead code.
+  let _requestStartedAt, _clientCallId, _sessionId, _settingsMode, _settingsModel,
+      _selectionRule, _promptVersion, _productId, _sessionType, _userRoleAtCall,
+      _outcomeId, _caller, bodyBytes;
   try {
     // v9.14: provider is resolved server-side by requireActiveCompanyMember
     // above (req.resolvedProvider) — NEVER taken from body.provider, which
@@ -1302,7 +1318,7 @@ app.post('/api/anthropic', async (req, res) => {
       });
     }
 
-    const _caller = body._caller || 'unknown';
+    _caller = body._caller || 'unknown';
     const upstreamReq = adapter.buildUpstreamRequest({
       model:      body.model,
       max_tokens: body.max_tokens,
@@ -1320,13 +1336,13 @@ app.post('/api/anthropic', async (req, res) => {
     // before the outbound call begins, so duration_ms and the pricing-lookup
     // timestamp both reflect the actual Anthropic call, not proxy overhead
     // from auth/membership checks that already ran before this point.
-    const _requestStartedAt = new Date();
-    const _clientCallId = body.client_call_id || null;
-    const _sessionId    = body.session_id || null;
-    const _settingsMode  = body.settings_mode || null;
-    const _settingsModel = body.settings_model || null;
-    const _selectionRule = body.selection_rule || null;
-    const _promptVersion = body.prompt_version || null;
+    _requestStartedAt = new Date();
+    _clientCallId = body.client_call_id || null;
+    _sessionId    = body.session_id || null;
+    _settingsMode  = body.settings_mode || null;
+    _settingsModel = body.settings_model || null;
+    _selectionRule = body.selection_rule || null;
+    _promptVersion = body.prompt_version || null;
 
     // v9.13.01: product_id is now derived server-side from session_id ->
     // mt_sessions.product_id, NOT trusted from the client's body.product_id
@@ -1340,14 +1356,14 @@ app.post('/api/anthropic', async (req, res) => {
     // client-sent body.product_id is kept ONLY as a fallback for the rare
     // caller with no session at all (e.g. doc-summary on a company-level
     // document) — never overriding a real session's own value.
-    let _productId = body.product_id || null;
+    _productId = body.product_id || null;
     // v9.15: session_type is set only by Guided Launch (session_type:'ChatCanvas'),
     // whose session_id points at mt_intake_sessions, not mt_sessions — the lookup
     // below would just miss and silently do nothing, but skipping it outright is
     // the correct behavior, not a fallback: body.product_id is already the real
     // value in that case (Guided Launch always knows its product directly, no
     // Discovery Map session exists yet to derive it from).
-    const _sessionType = body.session_type || null;
+    _sessionType = body.session_type || null;
     if (_sessionId && !_sessionType) {
       try {
         const { data: _sessRow } = await supabaseAdmin
@@ -1369,7 +1385,7 @@ app.post('/api/anthropic', async (req, res) => {
     // deserves its own scrutiny — out of scope for a telemetry addition.
     // Snapshotting here means later role changes never retroactively alter
     // what this historical row says the caller's role was at the time.
-    let _userRoleAtCall = null;
+    _userRoleAtCall = null;
     try {
       const { data: _roleRow } = await supabaseAdmin
         .from('mt_users_companies')
@@ -1388,7 +1404,7 @@ app.post('/api/anthropic', async (req, res) => {
     // get-or-create call. Never blocks the AI call on failure — degrades to
     // null (unattributed), same discipline as the product_id/role lookups
     // just above.
-    let _outcomeId = null;
+    _outcomeId = null;
     try {
       _outcomeId = await _resolveOutcomeId(_caller, _sessionId, req.companyId, _productId, req.user.id);
     } catch (e) {
@@ -1453,7 +1469,7 @@ app.post('/api/anthropic', async (req, res) => {
     }
 
     const { data, responseBytes, httpStatus, requestBytes } = _result;
-    const bodyBytes = requestBytes;
+    bodyBytes = requestBytes;
     const _durationMs = Date.now() - _requestStartedAt.getTime();
 
     // ── AI usage-tracking insert — success/response-received path (v9.13,
@@ -1637,6 +1653,13 @@ app.post('/api/check-company-name', async (req, res) => {
 // request, already stored on that usage-event row) as the join key.
 // Idempotent by construction — WHERE units_generated IS NULL means a
 // retried or duplicated call is a no-op, not a corruption risk.
+// Request body is THREE fields, not two — company_id is required by the
+// requireActiveCompanyMember middleware in this route's chain (below) same
+// as every other /api/... route behind it, even though it's read there and
+// never mentioned again in this handler's own code. Phase 6 (wiring this
+// into the 13 Yield-caller success handlers) must send it: {client_call_id,
+// units_generated, company_id} — omitting it gets rejected by the
+// middleware with "company_id is required" before reaching this handler.
 app.post('/api/usage-events/units-generated', async (req, res) => {
   try {
     if (!supabaseAdmin) {
@@ -1645,7 +1668,7 @@ app.post('/api/usage-events/units-generated', async (req, res) => {
     const clientCallId = req.body && req.body.client_call_id;
     const unitsGenerated = req.body ? req.body.units_generated : undefined;
     if (!clientCallId || typeof unitsGenerated !== 'number' || unitsGenerated < 0) {
-      return res.status(200).json({ error: { type: 'invalid_request', message: 'client_call_id (string) and units_generated (integer >= 0) are required.' } });
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'client_call_id (string), units_generated (integer >= 0), and company_id (checked by middleware before this point) are required.' } });
     }
     const { data, error } = await supabaseAdmin
       .from('mt_ai_usage_events')

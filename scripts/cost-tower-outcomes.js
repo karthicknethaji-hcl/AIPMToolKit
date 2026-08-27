@@ -421,9 +421,15 @@ function outcomeCardHtml(id, t) {
     // report-back calls — guard before dividing, same pattern as Release
     // Plan's rollupCost above, not a separate new convention.
     var avg = yieldAvg(t);
+    // yieldAvg() correctly returns null for t.units===0 too (a real,
+    // reported zero has no defined cost-per-unit, not just missing data) —
+    // but the LABEL must say why, distinguishing "not yet reported"
+    // (t.units === null) from "reported as zero, ratio undefined"
+    // (t.units === 0), so this row never disagrees with unitsRow below
+    // about whether unit data actually exists for this type.
     var avgRow = avg !== null
       ? '<div class="act-outcome-secondary-row"><span>Avg Cost / Unit</span><span>' + fmt$2(avg) + '</span></div>'
-      : '<div class="act-outcome-secondary-row"><span>Avg Cost / Unit</span><span class="act-cell-muted">Not yet available</span></div>';
+      : '<div class="act-outcome-secondary-row"><span>Avg Cost / Unit</span><span class="act-cell-muted">' + (t.units === null ? 'Not yet available' : 'n/a') + '</span></div>';
     var unitsRow = t.units !== null
       ? '<div class="act-outcome-secondary-row"><span>' + t.units.toLocaleString() + ' generated</span><span></span></div>'
       : '<div class="act-outcome-secondary-row"><span class="act-cell-muted">Unit count not yet available</span><span></span></div>';
@@ -486,13 +492,16 @@ function sampleCallsTable(t) {
 }
 
 // Reuses this page's ONE existing shared modal (act-modal-overlay/act-modal-box/
-// act-modal-title/act-modal-body, actCloseModal()) — the same mechanism
-// Screens 1-3 already use for the custom-date-range picker and the
+// act-modal-title/act-modal-body, actShowModal()/actCloseModal()) — the same
+// mechanism Screens 1-3 already use for the custom-date-range picker and the
 // supporting-calls detail (cost-tower.js:702-722, 1205-1225). The prototype
 // was a standalone file with no pre-existing modal to reuse and built its
 // own outcome-modal-* shell; adopting that here would duplicate the concept
-// on the same page. No new HTML, no new close function — actCloseModal()
-// already handles the overlay click and Escape key for this modal too.
+// on the same page. No new HTML, no new open/close functions — actShowModal()/
+// actCloseModal() already handle the overlay click, Escape key, and focus
+// trap for this modal too (code review, Phase 4/5: an earlier version of
+// this function toggled the overlay/box classes directly instead of calling
+// actShowModal(), silently skipping the Escape handler and focus trap).
 function openOutcomeModal(id) {
   var t = outcomeTypes[id];
   if (!t) return;
@@ -543,10 +552,11 @@ function openOutcomeModal(id) {
   }
   var bodyEl = document.getElementById('act-modal-body');
   if (bodyEl) bodyEl.innerHTML = body;
-  var overlay = document.getElementById('act-modal-overlay');
-  if (overlay) overlay.classList.add('open');
-  var box = document.getElementById('act-modal-box');
-  if (box) box.classList.add('open');
+  // actShowModal() (cost-tower.js), not manual classList toggling — it also
+  // registers the Escape-key handler and focus trap that toggling the
+  // overlay/box classes directly would skip (this exact bypass was already
+  // identified and fixed once for this page's other two modal callers).
+  actShowModal();
 }
 
 // ══════════════════════════════════════════════════════════════════════

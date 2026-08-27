@@ -24,6 +24,7 @@ api.js
 auth.js
 capability-canvas.js
 config.js
+cost-tower-outcomes.js        ← v9.29; AI Control Tower's 4th screen (Outcome-Based Cost), standalone (loaded only by ai-cost-tower.html, after cost-tower.js, reuses its globals — not part of the main canvas-app boot graph)
 cost-tower.js                 ← v9.28; AI Control Tower data layer + all 3 screens, standalone (loaded only by ai-cost-tower.html, not part of the main canvas-app boot graph)
 demo-data.js
 diagnostic-view.js
