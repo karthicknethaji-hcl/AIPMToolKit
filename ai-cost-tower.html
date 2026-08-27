@@ -66,6 +66,7 @@
       <button class="act-tab-btn active" role="tab" id="act-tab-overview" onclick="actShowScreen('overview')">Overview</button>
       <button class="act-tab-btn" role="tab" id="act-tab-cost" onclick="actShowScreen('cost')">Cost Breakdown</button>
       <button class="act-tab-btn" role="tab" id="act-tab-plan" onclick="actShowScreen('plan')">AI Governance</button>
+      <button class="act-tab-btn" role="tab" id="act-tab-outcome" onclick="actShowScreen('outcome')">Outcome-Based Cost</button>
     </div>
   </div>
 
@@ -75,6 +76,59 @@
       <section id="act-scr-overview" class="act-screen on"></section>
       <section id="act-scr-cost" class="act-screen"></section>
       <section id="act-scr-plan" class="act-screen"></section>
+      <section id="act-scr-outcome" class="act-screen">
+        <div class="act-screen-header-row">
+          <div class="act-screen-title-block">
+            <div class="act-eyebrow">Outcome-Based Cost</div>
+            <div class="act-screen-subtitle">What you got for it, not what you spent.</div>
+          </div>
+        </div>
+
+        <div class="act-how-to-read">
+          <span class="act-htr-item"><span class="act-htr-dot deliverable"></span><b>Exact traced cost</b> - Deliverables, one session, one real total</span>
+          <span class="act-htr-item"><span class="act-htr-dot yield"></span><b>Average cost per unit</b> - Generated Artifacts, one call can produce several at once</span>
+          <span class="act-htr-item"><span class="act-htr-dot footprint"></span><b>Direct + Economic Footprint</b> - Release Plan only, its own cost plus what fed into it</span>
+        </div>
+
+        <div class="act-section-title" style="margin-top:0;">At A Glance</div>
+        <div class="act-exec-grid" id="exec-insight-grid"></div>
+
+        <div class="act-insight-card status-amber" style="margin-top:14px;">
+          <div class="act-insight-support" id="outcome-support" style="margin-bottom:0;"></div>
+          <div class="act-evidence-note">Completion means the generation reached its terminal state, not that it was accepted, kept, or used. Numbers are deterministic calculations over mt_ai_usage_events and mt_outcomes, not model-generated.</div>
+        </div>
+
+        <div class="act-section-title">Portfolio</div>
+        <div class="act-kpi-strip-5" id="outcome-kpi-strip"></div>
+
+        <div class="act-section-title-row">
+          <div class="act-section-title">Outcome Portfolio</div>
+          <div class="act-portfolio-controls">
+            <div class="act-dropdown-chip-wrap">
+              <button class="act-dropdown-chip" onclick="actToggleMenu('sort-menu')" aria-haspopup="true">
+                <span class="act-dropdown-chip-label">Sort</span>
+                <span class="act-dropdown-chip-value" id="sort-value">Total Cost</span>
+                <svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="act-dropdown-chip-menu" id="sort-menu">
+                <button onclick="setPortfolioSort('cost','Total Cost')">Total Cost</button>
+                <button onclick="setPortfolioSort('trend','Trend')">Trend</button>
+                <button onclick="setPortfolioSort('waste','Abandoned / Failed Cost')">Abandoned / Failed Cost</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="act-scope-note" style="margin-bottom:10px;display:block;">Every card carries its own method badge — Deliverable cards show a real traced cost, Generated Artifact cards show an average, since one AI call can produce several artifacts at once with no honest way to split that call's cost between them. Click any card for the full breakdown and contributing calls.</div>
+
+        <div class="act-outcome-grid" id="portfolio-cards"></div>
+        <div class="act-scoped-card-note" style="margin:10px 0 16px;">Release Plan's own card leads with Direct Cost; its Economic Footprint (including upstream Discovery Map, Requirement Brief, Capability, Feature, and Story cost) is shown as a secondary figure and excluded from this sort and from Portfolio's totals above, since those dollars are already counted against their own outcome types elsewhere on this screen.</div>
+
+        <div class="act-section-title">Abandoned Deliverable Cost</div>
+        <div class="act-scoped-card soft">
+          <div class="act-section-insight" style="margin-bottom:10px;">Cost of outcomes that were started and abandoned before completion, deliverable types only. Generated Artifact types have no abandonment state, a failed generation call there shows up as a worse avg cost per unit on its own card instead, not here.</div>
+          <table class="act-data-table" id="sunk-cost-table"></table>
+        </div>
+      </section>
 
     </div>
   </div>
@@ -97,6 +151,7 @@
 <script src="./scripts/env.js"></script>
 <script src="./scripts/auth.js"></script>
 <script src="./scripts/cost-tower.js"></script>
+<script src="./scripts/cost-tower-outcomes.js"></script>
 
 </body>
 </html>

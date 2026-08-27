@@ -1175,7 +1175,20 @@ function _raSplitStreamResponse(raw){
 // which risked the streaming and non-streaming paths silently diverging in
 // what they report for usage tracking if only one copy got updated.
 function _raUsageExtraFields(){
-  return {session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null),session_type:'ChatCanvas'};
+  // Outcome-Based Cost (AI Cost Control Tower v2), Phase 3 fix — session_type
+  // was incorrectly hardcoded to 'ChatCanvas' here, a value that means
+  // exactly one thing elsewhere in this app: "session_id points at
+  // mt_intake_sessions, not mt_sessions" (guided-launch.js's own genuine
+  // ChatCanvas flow, api.js:835). Requirement Agent is triggered from
+  // Discovery Map — _activeSessionId is always a real mt_sessions row — so
+  // this mislabeling made proxy/server.js's product_id lookup
+  // (if (_sessionId && !_sessionType)) skip itself on every single
+  // requirement-agent call, silently zeroing out product_id even when the
+  // session had a real one. Confirmed via a live Phase 3 test: mt_sessions
+  // had product_id populated, mt_ai_usage_events.product_id came back null
+  // anyway. Removed entirely — the proxy's own mt_sessions lookup is
+  // authoritative once this stops short-circuiting it.
+  return {session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null)};
 }
 async function _raCallModel(sys,usr,signal){
   var extra=_raUsageExtraFields();

@@ -171,6 +171,13 @@ async function actBoot() {
     actRenderOverview();
     await actSetBreakdownPeriod('this_month');
     actRenderPlan();
+    // Outcome-Based Cost (v2, Screen 4) — eager load at boot, same as every
+    // other screen. actShowScreen() is a pure visibility toggle in this
+    // file (confirmed: no per-screen fetch logic lives there), so this
+    // follows the established pattern rather than a lazy-load-on-tab-click
+    // one. Reuses actMain.rows/actMain.prevRows (already fetched above by
+    // actLoadMainContext()) instead of re-fetching cost-event rows.
+    if (typeof actRenderOutcomeScreen === 'function') await actRenderOutcomeScreen();
   } catch (err) {
     console.error('[Cost Tower] boot render failed:', err);
     actToast('Something went wrong loading cost data. Check the console for details.', 'error');
@@ -203,7 +210,7 @@ function actAvatarClose() {
 // Tab switching
 // ══════════════════════════════════════════════════════════════════════
 
-var ACT_SCREEN_NAMES = { overview: 'Overview', cost: 'Cost Breakdown', plan: 'AI Governance' };
+var ACT_SCREEN_NAMES = { overview: 'Overview', cost: 'Cost Breakdown', plan: 'AI Governance', outcome: 'Outcome-Based Cost' };
 function actShowScreen(name) {
   document.querySelectorAll('.act-screen').forEach(function (s) { s.classList.remove('on'); });
   var scr = document.getElementById('act-scr-' + name);
