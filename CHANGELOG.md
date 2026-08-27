@@ -1,5 +1,18 @@
 # Changelog — Product Studio
 
+## v9.29.01 - 2026-08-27: AI Control Tower: Outcome-Based Cost code-review fixes
+
+Note: bundling multiple code-review findings in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01).
+
+- Fixed - `proxy/server.js`'s `/api/anthropic` handler declared 13 request-scoped fields (`_requestStartedAt`, `_outcomeId`, etc.) with `let`/`const` inside its try block, invisible to the sibling catch block — every `typeof X !== 'undefined'` guard there was always false, silently making the entire error/timeout-path usage-tracking insert dead code (not just the new v9.29 fields). Hoisted the declarations above the try; verified with a direct `node` reproduction before and after.
+- Fixed - Caller `cc-gen-features-cap` (a live, button-wired Capability Canvas caller) was missing from `CALLER_ATTRIBUTION_MODE`, undercounting the `feature` outcome type. Added (26 entries now, recounted programmatically).
+- Fixed - The Outcome-Based Cost screen's Yield-type cards could show contradictory availability for a real, reported `units=0` (Avg Cost/Unit says "Not yet available," unit count says "0 generated") — reachable today via any `fixed_1` caller whose calls all failed in a period, not gated behind a future phase.
+- Fixed - The outcome detail modal opened by toggling the shared modal's classes directly instead of calling `actShowModal()`, silently skipping the Escape-key handler and focus trap every other modal on this page gets.
+- Changed - Documented the new units-generated endpoint's `company_id` requirement (enforced by middleware, previously unmentioned in the route's own comments/validation) — a landmine for the not-yet-built Phase 6 wiring.
+- Fixed - Three new CSS rules hardcoded `#fff` instead of `var(--white)`, undoing this file's own prior token cleanup.
+- Fixed - `scripts/cost-tower-outcomes.js` was never registered in `FILE_MANIFEST.txt` or `PROJECT_MAP.md`.
+- Fixed - The v9.29 SQL migration (`mt_outcome_types`, `mt_outcomes`, the new RPCs) and its `product_id` backfill addendum existed only in a local folder, never committed to `sql/` like every other Cost Tower migration — a fresh clone of this repo had no record of schema it silently depended on. Both files added to `sql/` and `FILE_MANIFEST.txt` (still NOT run by Claude Code — confirmed applied to `pgt-dev`, not yet prod).
+
 ## v9.29 - 2026-08-27: AI Control Tower: Outcome-Based Cost (Screen 4)
 
 - Added - Fourth AI Control Tower screen, attributing AI spend to eleven outcome types (five session-summed Journey deliverables — Discovery Map, Requirement Brief, Market Intelligence Report, Adoption Readiness Plan, Release Plan; six yield-ratio Generated Artifacts — Capability, Feature, Story, KPI Dictionary Entry, AI Recommendation, Experiment) via a real, request-verified path: `proxy/server.js`'s `CALLER_ATTRIBUTION_MODE` (25 entries) resolves `outcome_id` at insert time through new proxy-only RPCs (`mt_outcome_get_or_create_active`, `mt_outcome_attach_support`), and a new `POST /api/usage-events/units-generated` lets each Yield caller report its own parsed unit count back after the fact, since the proxy never parses domain JSON itself.
