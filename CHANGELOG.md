@@ -1,5 +1,12 @@
 # Changelog — Product Studio
 
+## v9.29 - 2026-08-27: AI Control Tower: Outcome-Based Cost (Screen 4)
+
+- Added - Fourth AI Control Tower screen, attributing AI spend to eleven outcome types (five session-summed Journey deliverables — Discovery Map, Requirement Brief, Market Intelligence Report, Adoption Readiness Plan, Release Plan; six yield-ratio Generated Artifacts — Capability, Feature, Story, KPI Dictionary Entry, AI Recommendation, Experiment) via a real, request-verified path: `proxy/server.js`'s `CALLER_ATTRIBUTION_MODE` (25 entries) resolves `outcome_id` at insert time through new proxy-only RPCs (`mt_outcome_get_or_create_active`, `mt_outcome_attach_support`), and a new `POST /api/usage-events/units-generated` lets each Yield caller report its own parsed unit count back after the fact, since the proxy never parses domain JSON itself.
+- Fixed - `requirement-agent.js`'s `_raUsageExtraFields()` hardcoded `session_type:'ChatCanvas'`, a sentinel meant only for Guided Launch's separate `mt_intake_sessions` flow — this silently skipped the proxy's real `product_id` lookup on every Requirement Agent call, found and confirmed via live testing against `pgt-dev`.
+- Known gap, visibly labeled rather than fabricated - Release Plan's upstream lineage rollup (Discovery Map → Requirement Brief → Capability → Feature → Story) and Yield types' Avg Cost/Unit both show "Not yet available" for now — the former needs a new RPC to read `mt_sessions.snapshot` (no such read path exists yet from this standalone admin page), the latter needs the new units-generated endpoint wired into 13 Yield-caller success handlers across 6 files, planned as its own follow-up phase.
+- Changed - `mt_outcome_get_or_create_active`'s reuse branch now backfills a previously-null `product_id` via `COALESCE` on the outcome's next touch, instead of leaving it permanently null once set — closes the downstream consequence of the `_raUsageExtraFields()` bug above for any outcome row created while it was live.
+
 ## v9.28.04 - 2026-08-26: SQL fix - alert-dismiss migration failed on re-run
 
 - Fixed - `sql/ai-cost-tower-alert-dismiss.sql`'s `mt_ai_alerts_dismiss_consistency` constraint had no `DROP CONSTRAINT IF EXISTS` before its `ADD` (unlike its sibling `mt_ai_alerts_ack_consistency`, which already had one), so re-running the file after its first successful run failed with `constraint "mt_ai_alerts_dismiss_consistency" ... already exists` — added the missing guard.
