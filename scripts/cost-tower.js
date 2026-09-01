@@ -626,10 +626,17 @@ async function actSetOverviewPeriod(type, customStart, customEnd) {
   var mySeq = ++_actOverviewPeriodSeq;
   var resolved = actResolvePeriodRange(type, customStart, customEnd);
   var range = resolved.range, prior = resolved.prior;
-  actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
-  actOverviewPeriod.rows = await actFetchRows(range.start, range.end);
-  actOverviewPeriod.prevRows = await actFetchRows(prior.start, prior.end);
+  // Both fetches batched into one round-trip (matches actSetOutcomePeriod's
+  // pattern), and — critically — nothing is written to the shared
+  // actOverviewPeriod object until AFTER the sequence check below. Writing
+  // .rows/.prevRows unconditionally before this check was the actual bug:
+  // a stale call's data could still clobber a newer call's already-committed
+  // state even though the stale call's own render was correctly skipped.
+  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
   if (mySeq !== _actOverviewPeriodSeq) return;
+  actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
+  actOverviewPeriod.rows = results[0];
+  actOverviewPeriod.prevRows = results[1];
   actRenderOverview();
 }
 
@@ -670,13 +677,17 @@ function actRenderOverview() {
   var rows = actOverviewPeriod.rows, prevRows = actOverviewPeriod.prevRows;
   var totalSpend = actSumCost(rows), prevSpend = actSumCost(prevRows);
   var spendDelta = actDeltaPct(totalSpend, prevSpend);
-  // The budget is a monthly figure — comparing an all-time total against it
-  // (Overall) would show a nonsensical "Budget Used: 1,600%"/"Health:
-  // Critical" rather than a wrong-but-plausible number, so it's treated as
-  // not-configured for this render, reusing the existing no-budget fallback
-  // path (Health→"Unknown", Needs Attention card doesn't render) rather
-  // than inventing a separate "Overall" rendering branch.
-  var budgetAmount = (actBudget && actOverviewPeriod.type !== 'overall') ? Number(actBudget.amount) : null;
+  // The budget is a monthly figure — comparing more than one month of real
+  // spend against it (Overall, Last 3 Months, or a multi-month Custom Range)
+  // would show a nonsensical "Budget Used: 1,600%"/"Health: Critical" rather
+  // than a wrong-but-plausible number, so it's treated as not-configured for
+  // this render, reusing the existing no-budget fallback path (Health→
+  // "Unknown", Needs Attention card doesn't render) rather than inventing a
+  // separate rendering branch per multi-month period type. Originally only
+  // excluded 'overall'; 'last_3_months' and any multi-month custom range had
+  // the identical problem and were missed.
+  var isSingleMonthPeriod = actOverviewPeriod.type === 'this_month' || actOverviewPeriod.type === 'last_month';
+  var budgetAmount = (actBudget && isSingleMonthPeriod) ? Number(actBudget.amount) : null;
   var budgetUsedPct = budgetAmount ? (totalSpend / budgetAmount * 100) : null;
   var totalCalls = rows.length, prevCalls = prevRows.length;
   var callsDelta = actDeltaPct(totalCalls, prevCalls);
@@ -732,12 +743,15 @@ function actRenderOverview() {
       '<div class="act-insight-card status-' + tierClass + '">' +
       '<span class="act-status-pill ' + tierClass + '"><span class="act-status-dot"></span>Needs Attention</span>' +
       '<div class="act-insight-headline">' + headline + '</div>' +
-      '<div class="act-insight-support">At the current run rate, this month is projected to close around <b>' + actFmtUSD0(run.projected) + '</b> against a <b>' + actFmtUSD0(budgetAmount) + '</b> budget, ' + (variance >= 0 ? 'an overage of roughly <b>' + actFmtUSD0(variance) + '</b>.' : 'inside budget.') + '</div>' +
+      '<div class="act-insight-support">At the current run rate, this period is projected to close around <b>' + actFmtUSD0(run.projected) + '</b> against a <b>' + actFmtUSD0(budgetAmount) + '</b> budget, ' + (variance >= 0 ? 'an overage of roughly <b>' + actFmtUSD0(variance) + '</b>.' : 'inside budget.') + '</div>' +
       (top1 ?
         '<div class="act-insight-rec"><div class="act-insight-rec-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z"/></svg></div>' +
-        '<div class="act-insight-rec-text"><b>Recommended:</b> ' + actEsc(top1.title) + '. ' + actEsc(top1.evidence) + (top1.type !== 3 ? ' Estimated savings opportunity: <b>' + actFmtUSD0(top1.savings) + '/month</b>.' : ' Measured gap: <b>' + actFmtUSD0(top1.savings) + '</b>.') + '</div></div>'
+        // "/month" is only accurate when the selected period is exactly one
+        // calendar month — top1.savings is a raw sum over whatever rows the
+        // period covers, not normalized to a monthly rate.
+        '<div class="act-insight-rec-text"><b>Recommended:</b> ' + actEsc(top1.title) + '. ' + actEsc(top1.evidence) + (top1.type !== 3 ? ' Estimated savings opportunity: <b>' + actFmtUSD0(top1.savings) + (isSingleMonthPeriod ? '/month' : ' over the selected period') + '</b>.' : ' Measured gap: <b>' + actFmtUSD0(top1.savings) + '</b>.') + '</div></div>'
         : '') +
-      '<table class="act-evidence-table"><thead><tr><th>Evidence</th><th>This Month</th><th>Last Month</th><th>Change</th></tr></thead><tbody>' +
+      '<table class="act-evidence-table"><thead><tr><th>Evidence</th><th>This Period</th><th>Prior Period</th><th>Change</th></tr></thead><tbody>' +
       '<tr><td>Total calls</td><td>' + actFmtNum(totalCalls) + '</td><td>' + actFmtNum(prevCalls) + '</td><td>' + actDeltaHtml(callsDelta) + '</td></tr>' +
       '<tr><td>Total tokens</td><td>' + actFmtTokens(inTok + outTok) + '</td><td>' + actFmtTokens(actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens')) + '</td><td>' + actDeltaHtml(actDeltaPct(inTok + outTok, actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens'))) + '</td></tr>' +
       '<tr><td>Balanced/frontier share of calls</td><td>' + actFmtPct(balancedFrontierShare, 0) + '</td><td>' + actFmtPct(prevBalancedFrontierShare, 0) + '</td><td>' + (tierShiftPp >= 0 ? '<span class="act-delta-up">+' + tierShiftPp.toFixed(0) + 'pt</span>' : '<span class="act-delta-down">' + tierShiftPp.toFixed(0) + 'pt</span>') + '</td></tr>' +
@@ -764,9 +778,9 @@ function actRenderOverview() {
     '<div id="act-export-overview-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
     '<div class="act-section-title" style="margin-top:0;">At A Glance</div>' +
     '<div class="act-kpi-strip">' +
-    '<div class="act-kpi health ' + (tier === 'Critical' ? 'critical' : tier === 'On Track' ? 'ok' : '') + '"><div class="act-kpi-label">Health</div><div class="act-kpi-value ' + tierClass + '">' + tier + '</div><div class="act-kpi-sub">' + (tier === 'On Track' ? 'Tracking within budget' : tier === 'Unknown' ? (actOverviewPeriod.type === 'overall' ? 'Budget comparisons don\'t apply to Overall' : 'No active budget configured') : 'Projected over budget') + '</div></div>' +
+    '<div class="act-kpi health ' + (tier === 'Critical' ? 'critical' : tier === 'On Track' ? 'ok' : '') + '"><div class="act-kpi-label">Health</div><div class="act-kpi-value ' + tierClass + '">' + tier + '</div><div class="act-kpi-sub">' + (tier === 'On Track' ? 'Tracking within budget' : tier === 'Unknown' ? (!isSingleMonthPeriod ? 'Budget comparisons only apply to This Month/Last Month' : 'No active budget configured') : 'Projected over budget') + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Spend</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div><div class="act-kpi-delta">' + actDeltaHtml(spendDelta) + ' vs prior period</div></div>' +
-    '<div class="act-kpi"><div class="act-kpi-label">Budget Used</div><div class="act-kpi-value ' + tierClass + '">' + (budgetUsedPct !== null ? actFmtPct(budgetUsedPct, 0) : '—') + '</div><div class="act-kpi-sub">' + actFmtUSD0(totalSpend) + ' of ' + (budgetAmount ? actFmtUSD0(budgetAmount) : (actOverviewPeriod.type === 'overall' ? 'not applicable to Overall' : 'no budget set')) + '</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Budget Used</div><div class="act-kpi-value ' + tierClass + '">' + (budgetUsedPct !== null ? actFmtPct(budgetUsedPct, 0) : '—') + '</div><div class="act-kpi-sub">' + actFmtUSD0(totalSpend) + ' of ' + (budgetAmount ? actFmtUSD0(budgetAmount) : (!isSingleMonthPeriod ? 'not applicable to this period' : 'no budget set')) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Calls</div><div class="act-kpi-value">' + actFmtNum(totalCalls) + '</div><div class="act-kpi-delta">' + actDeltaHtml(callsDelta) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Tokens</div><div class="act-kpi-value">' + actFmtTokens(inTok + outTok) + '</div><div class="act-kpi-sub">' + actFmtTokens(inTok) + ' input · ' + actFmtTokens(outTok) + ' output</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Avg Cost / Call</div><div class="act-kpi-value">' + actFmtUSD(avgCost) + '</div><div class="act-kpi-delta">' + actDeltaHtml(avgCostDelta) + '</div></div>' +
@@ -798,13 +812,23 @@ function actRenderOverview() {
 
 var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, group: 'feature' };
 
+// Sequence guard against out-of-order resolution — same pattern as
+// _actOverviewPeriodSeq/_actOutcomePeriodSeq. This screen predates those two
+// but never got the guard when they were added; a stale, slower-resolving
+// fetch could otherwise still overwrite a newer selection's already-committed
+// data even though its own render would look correct at the time.
+var _actBreakdownPeriodSeq = 0;
+
 async function actSetBreakdownPeriod(type, customStart, customEnd) {
   actBreakdown.type = type;
+  var mySeq = ++_actBreakdownPeriodSeq;
   var resolved = actResolvePeriodRange(type, customStart, customEnd);
   var range = resolved.range, prior = resolved.prior;
+  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
+  if (mySeq !== _actBreakdownPeriodSeq) return;
   actBreakdown.start = range.start; actBreakdown.end = range.end;
-  actBreakdown.rows = await actFetchRows(range.start, range.end);
-  actBreakdown.prevRows = await actFetchRows(prior.start, prior.end);
+  actBreakdown.rows = results[0];
+  actBreakdown.prevRows = results[1];
   // Kept as a console diagnostic (not a DOM element anymore, now that the
   // row count is folded directly into the toolbar's own confidence chip) —
   // still useful for anyone checking DevTools if a period change ever looks
@@ -944,7 +968,7 @@ function actRenderCostBreakdown() {
     '</div></div>' +
     '<div id="act-export-cost-target">' +
     '<div id="act-export-cost-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
-    '<div class="act-filter-toolbar-hint" style="margin:0 0 14px;">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span>' +
+    '<div class="act-filter-toolbar-hint" style="margin:0 0 14px;">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span></div>' +
     '<div class="act-anchor-row">' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-main-breakdown\')">Main Breakdown</span>' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-economics-signals\')">Economics Signals</span>' +
@@ -1609,7 +1633,18 @@ async function actDownloadReport(screen) {
   var exportHeader = document.getElementById('act-export-' + screen + '-header');
   if (!target) return;
   if (exportHeader) {
-    exportHeader.textContent = (actCompanyName ? actCompanyName + ' - ' : '') + 'AI Control Tower - ' + ACT_SCREEN_NAMES[screen];
+    // The Reporting Period chip lives in .act-header-actions, outside the
+    // captured #act-export-{screen}-target — without this, an exported PDF
+    // is visually indistinguishable between e.g. "This Month" and "Last 3
+    // Months". Fold the selected period into this same header text instead
+    // of restructuring the live screens' DOM/CSS just for capture.
+    var periodLabelByScreen = {
+      overview: (typeof actOverviewPeriod !== 'undefined') ? actOverviewPeriod.label : null,
+      cost: (typeof actBreakdown !== 'undefined') ? actBreakdown.label : null,
+      outcome: (typeof actOutcomePeriod !== 'undefined') ? actOutcomePeriod.label : null
+    };
+    var periodLabel = periodLabelByScreen[screen];
+    exportHeader.textContent = (actCompanyName ? actCompanyName + ' - ' : '') + 'AI Control Tower - ' + ACT_SCREEN_NAMES[screen] + (periodLabel ? ' (' + periodLabel + ')' : '');
     exportHeader.style.display = 'block';
   }
   var origHtml = btn ? btn.innerHTML : null;

@@ -369,7 +369,7 @@ function renderOutcomeSupport() {
   if (!el) return;
   el.innerHTML =
     fmt$(p.totalOutcomeSpend) + ' was spent on outcome-generating work this period, ' + fmt$(p.completedValue) + ' of it landed in a completed deliverable, ' + fmt$(p.inProgressValue) + ' is still in progress, and ' + fmt$(p.totalSunk) + ' was lost to abandoned work (' + p.completionRate + '% completion). ' +
-    fmt$(p.unattributed) + ' (' + p.unattributedPct + '% of this period\'s <b>total</b> AI spend, not just outcome-eligible spend) isn\'t attributed to any of the eleven outcome types yet, mostly small utility and assist calls made outside an active outcome\'s session.';
+    fmt$(p.unattributed) + ' (' + p.unattributedPct + '% of this period\'s <b>total</b> AI spend, not just outcome-eligible spend) isn\'t attributed to any of the twelve outcome types yet, mostly small utility and assist calls made outside an active outcome\'s session.';
 }
 
 function renderOutcomeKpiStrip() {

@@ -1098,15 +1098,17 @@ async function pcGenerate(featId, triggerEl) {
         parsed1 = pcNormalizeWireframeResponse(parsed1Raw);
         call1Ok = true;
       } catch(e1) {
-        // Unconditional, and safe either way: if callAPI() itself threw
-        // (network/timeout), that row is already auto-resolved to 0
-        // server-side and this call is a no-op (report-back's WHERE
-        // units_generated IS NULL guard). Only meaningfully updates the row
-        // when callAPI() succeeded but JSON.parse/normalize failed after —
-        // that row is 'success' status, not eligible for the automatic
-        // error/timeout resolution, and would otherwise sit at
-        // units_generated=null forever, silently excluded from Attempts.
-        _pcReportUnitsGenerated(wireframeCallId, 0);
+        // Safe to report 0 for a genuine network/timeout/parse failure —
+        // that row is either already auto-resolved to 0 server-side (no-op
+        // here, WHERE units_generated IS NULL guard) or would otherwise sit
+        // at units_generated=null forever. NOT safe for AbortError: the
+        // client gave up waiting, but proxy/server.js has no
+        // req.on('close')/req.aborted handling on this path, so the
+        // upstream call may still complete and insert a real 'success' row
+        // after we've already left. Reporting 0 in that case would
+        // permanently mislabel a real success as a failure with no way to
+        // self-correct — leave it unreported (null) instead.
+        if (!(e1 && e1.name === 'AbortError')) _pcReportUnitsGenerated(wireframeCallId, 0);
         e1.pcPhase = 1;
         throw e1;
       }
@@ -1139,9 +1141,11 @@ async function pcGenerate(featId, triggerEl) {
       try { parsed2Raw = JSON.parse(clean2); }
       catch(pe2) { throw new Error('Design brief response could not be parsed.'); }
     } catch(e2) {
-      // Unconditional, same idempotent-no-op reasoning as wireframe's catch
-      // above — already auto-resolved to 0 if callAPI() itself threw.
-      _pcReportUnitsGenerated(briefCallId, 0);
+      // Same AbortError exception as wireframe's catch above — see that
+      // comment. A network/timeout/parse failure is safe to report as 0;
+      // an aborted client fetch is not, since the proxy may still complete
+      // the upstream call and insert a real success row after we've left.
+      if (!(e2 && e2.name === 'AbortError')) _pcReportUnitsGenerated(briefCallId, 0);
       e2.pcPhase = 2;
       throw e2;
     }
