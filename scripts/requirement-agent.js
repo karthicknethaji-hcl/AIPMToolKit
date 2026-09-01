@@ -882,7 +882,7 @@ function raSaveRename(id){
   var input=document.getElementById('ra-rename-input-'+id);
   if(!conv||!input)return;
   var val=input.value.trim();
-  if(val){conv.title=val;conv.titleIsPlaceholder=false;}
+  if(val){conv.title=val;conv.titleIsPlaceholder=false;conv.titleLocked=true;}
   conv.updatedAt=new Date().toISOString();
   raRenderConvList();
   _raPersist();
@@ -1247,7 +1247,8 @@ async function raNewConversation(){
     draftVersion:0,
     generatedFeatureIds:[], // retained for backward compat with pre-redesign finalized conversations — stays empty going forward, Finalize no longer generates features (§7)
     createdCapabilityKeys:[], // NEW — capStore key(s) of every capability this conversation's Finalize created (new capabilities only, not pre-existing ones it touched)
-    titleIsPlaceholder:true // cleared once a real, model-suggested title is applied — lets later turns keep retitling a still-generic conversation without ever overwriting a title the PM set themselves (rename or a genuinely specific suggestedTitle)
+    titleIsPlaceholder:true, // informational only — no longer gates auto-retitling (see titleLocked); tracks whether conv.title is still the boilerplate 'Release requirements' fallback
+    titleLocked:false // set true ONLY by an explicit PM rename (raSaveRename) — the actual gate on auto-retitling, so the model can keep proposing a better title on later turns (e.g. if the PM pivots to a different idea) without ever overwriting a title the PM chose themselves
   };
   raConversations.push(conv);
   raActiveConversationId=conv.id;
@@ -1636,14 +1637,15 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
       raAppendMessage(conv,'agent','I couldn’t process that update. Could you rephrase, or try again?');
       return;
     }
-    // QA fix — the opening turn's suggestedTitle falls back to generic
-    // boilerplate when the model omits it on turn 1; without this, a
-    // conversation stuck on that boilerplate could never improve as later
-    // turns made its scope more specific (titleIsPlaceholder stays true
-    // until a real suggestion lands, from either turn). Set BEFORE
-    // _raApplySectionUpdates() below — see raRunOpeningTurn()'s matching
-    // comment for why the ordering matters (conv.title feeds the brief's H1).
-    if(conv.titleIsPlaceholder){
+    // Gated on titleLocked, not titleIsPlaceholder — a PM's explicit rename
+    // is the only thing that should ever stop auto-retitling. Gating on
+    // titleIsPlaceholder instead (the old bug) latched permanently the
+    // FIRST time any real suggestedTitle landed, so a later, genuine topic
+    // pivot could never update the title again even though it was never
+    // manually set. Set BEFORE _raApplySectionUpdates() below — see
+    // raRunOpeningTurn()'s matching comment for why the ordering matters
+    // (conv.title feeds the brief's H1).
+    if(!conv.titleLocked){
       var _suggestedTurn=(parsed.suggestedTitle||'').trim();
       if(_suggestedTurn){conv.title=_suggestedTurn;conv.titleIsPlaceholder=false;}
     }
