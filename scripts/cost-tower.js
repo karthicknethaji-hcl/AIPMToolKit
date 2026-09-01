@@ -167,17 +167,19 @@ async function actBoot() {
   document.getElementById('act-app-shell').style.display = 'flex';
 
   try {
-    await Promise.all([actLoadMainContext(), actLoadBudgetAndAlerts(), actLoadProductNames(), actLoadTeamNames()]);
-    actRenderOverview();
+    await Promise.all([actLoadMainContext(), actLoadBudgetAndAlerts(), actLoadProductNames(), actLoadTeamNames(), actLoadLifetimeSpend()]);
+    await actSetOverviewPeriod('this_month');
     await actSetBreakdownPeriod('this_month');
     actRenderPlan();
     // Outcome-Based Cost (v2, Screen 4) — eager load at boot, same as every
     // other screen. actShowScreen() is a pure visibility toggle in this
     // file (confirmed: no per-screen fetch logic lives there), so this
     // follows the established pattern rather than a lazy-load-on-tab-click
-    // one. Reuses actMain.rows/actMain.prevRows (already fetched above by
-    // actLoadMainContext()) instead of re-fetching cost-event rows.
-    if (typeof actRenderOutcomeScreen === 'function') await actRenderOutcomeScreen();
+    // one. Now sources its own independent actOutcomePeriod rather than
+    // reusing actMain.rows/actMain.prevRows — Overview and Outcome each got
+    // their own period filter in this build; only Governance still reads
+    // actMain directly (no filter, by design).
+    if (typeof actSetOutcomePeriod === 'function') await actSetOutcomePeriod('this_month');
   } catch (err) {
     console.error('[Cost Tower] boot render failed:', err);
     actToast('Something went wrong loading cost data. Check the console for details.', 'error');
@@ -289,6 +291,17 @@ async function actLoadMainContext() {
 }
 
 var actBudget = null, actAlerts = [];
+
+// Lifetime spend — Governance-only, all-time total distinct from actMain's
+// calendar-month scope (spec Section 4.4/6.2). Floor date is a hardcoded
+// placeholder for v1; revisit if it proves inaccurate as history grows.
+// Loaded once at boot alongside actMain, not per-render.
+var actLifetimeSpendTotal = 0;
+async function actLoadLifetimeSpend() {
+  var floor = new Date(2024, 0, 1);
+  var rows = await actFetchRows(floor, new Date());
+  actLifetimeSpendTotal = actSumCost(rows);
+}
 async function actLoadBudgetAndAlerts() {
   var client = authInit();
   try {
@@ -552,8 +565,67 @@ function actComputeOpportunities(rows) {
 // SCREEN 1: Overview (spec Section 4)
 // ══════════════════════════════════════════════════════════════════════
 
+// Independent period state, mirroring actBreakdown's shape — Overview no
+// longer reads actMain directly (Governance still does, by design; it gets
+// no filter). actOverviewPeriod.now is captured at fetch time since
+// actRunRate() below needs a "now" pinned to when this period was loaded,
+// the same role actMain.now already plays for Governance.
+var actOverviewPeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, now: null };
+
+async function actSetOverviewPeriod(type, customStart, customEnd) {
+  actOverviewPeriod.type = type;
+  var range, prior;
+  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
+  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
+  else if (type === 'last_3_months') {
+    var now = new Date();
+    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
+    prior = actPriorPeriod(range.start, range.end);
+  } else {
+    range = { start: customStart, end: customEnd };
+    prior = actPriorPeriod(range.start, range.end);
+  }
+  actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
+  actOverviewPeriod.rows = await actFetchRows(range.start, range.end);
+  actOverviewPeriod.prevRows = await actFetchRows(prior.start, prior.end);
+  actRenderOverview();
+}
+
+function actSelectOverviewPeriodChip(type, label) {
+  actOverviewPeriod.label = label;
+  document.getElementById('act-overview-period-menu').classList.remove('open');
+  actSetOverviewPeriod(type).catch(function (e) { console.error(e); });
+}
+
+function actOpenOverviewCustomRangeModal() {
+  document.getElementById('act-overview-period-menu').classList.remove('open');
+  document.getElementById('act-modal-title').textContent = 'Custom Date Range';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-config-grid">' +
+    '<div class="act-field"><div class="act-field-label">From</div><input id="act-overview-custom-from" type="date"></div>' +
+    '<div class="act-field"><div class="act-field-label">To</div><input id="act-overview-custom-to" type="date"></div>' +
+    '</div>' +
+    '<div style="margin-top:14px;color:var(--red);font-size:11px;" id="act-overview-custom-range-error"></div>' +
+    '<div style="margin-top:14px;display:flex;justify-content:flex-end;"><button class="act-btn act-btn-primary act-btn-sm" onclick="actApplyOverviewCustomRange()">Apply</button></div>';
+  actShowModal();
+}
+
+async function actApplyOverviewCustomRange() {
+  var fromVal = document.getElementById('act-overview-custom-from').value;
+  var toVal = document.getElementById('act-overview-custom-to').value;
+  var errEl = document.getElementById('act-overview-custom-range-error');
+  if (!fromVal || !toVal) { errEl.textContent = 'Choose both a start and end date.'; return; }
+  var start = new Date(fromVal + 'T00:00:00');
+  var end = new Date(new Date(toVal + 'T00:00:00').getTime() + 86400000);
+  if (start >= end) { errEl.textContent = 'Start date must be before end date.'; return; }
+  errEl.textContent = '';
+  actCloseModal();
+  actOverviewPeriod.label = fromVal + ' – ' + toVal;
+  await actSetOverviewPeriod('custom', start, end);
+}
+
 function actRenderOverview() {
-  var rows = actMain.rows, prevRows = actMain.prevRows;
+  var rows = actOverviewPeriod.rows, prevRows = actOverviewPeriod.prevRows;
   var totalSpend = actSumCost(rows), prevSpend = actSumCost(prevRows);
   var spendDelta = actDeltaPct(totalSpend, prevSpend);
   var budgetAmount = actBudget ? Number(actBudget.amount) : null;
@@ -566,7 +638,7 @@ function actRenderOverview() {
   var pricingMatch = actPricingMatchRate(rows);
   var unpricedCount = rows.length - actPricedRows(rows).length;
   var attrib = actAttributionGap(rows);
-  var run = actRunRate(totalSpend, actMain.start, actMain.now, actMain.end);
+  var run = actRunRate(totalSpend, actOverviewPeriod.start, actOverviewPeriod.now, actOverviewPeriod.end);
   var tier = actHealthTier(run.projected, budgetAmount);
   var tierClass = tier === 'Critical' ? 'red' : (tier === 'Watch' ? 'amber' : (tier === 'On Track' ? 'green' : ''));
 
@@ -603,7 +675,7 @@ function actRenderOverview() {
   if (tier !== 'On Track' && tier !== 'Unknown') {
     var headline = (overallDeltaPct === null
         ? 'Spend has no comparable prior-period data yet'
-        : 'Spend is running ' + Math.abs(Math.round(overallDeltaPct)) + '% above last month’s pace') +
+        : 'Spend is running ' + Math.abs(Math.round(overallDeltaPct)) + '% above prior period’s pace') +
       (topFeature ? ', mainly because ' + actEsc(topFeature.key) + ' increased' : '') +
       (tierShiftPp > 5 ? ' and higher-tier model usage increased ' + tierShiftPp.toFixed(0) + ' percentage points' : '') + '.';
     var variance = run.projected - budgetAmount;
@@ -629,13 +701,22 @@ function actRenderOverview() {
 
   var html =
     '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">Overview</div><div class="act-screen-subtitle">Leadership glance: spend health, top drivers, budget risk, and evidence-backed recommendation.</div></div>' +
-    '<button class="export-cta-btn" id="act-export-overview-btn" onclick="actDownloadReport(\'overview\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button></div>' +
+    '<div class="act-header-actions">' +
+    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-overview-period-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-overview-period-value">' + actEsc(actOverviewPeriod.label) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="act-dropdown-chip-menu" id="act-overview-period-menu">' +
+    '<button onclick="actSelectOverviewPeriodChip(\'this_month\',\'This Month\')">This Month</button>' +
+    '<button onclick="actSelectOverviewPeriodChip(\'last_month\',\'Last Month\')">Last Month</button>' +
+    '<button onclick="actSelectOverviewPeriodChip(\'last_3_months\',\'Last 3 Months\')">Last 3 Months</button>' +
+    '<button onclick="actOpenOverviewCustomRangeModal()">Custom Range…</button>' +
+    '</div></div>' +
+    '<button class="export-cta-btn" id="act-export-overview-btn" onclick="actDownloadReport(\'overview\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button>' +
+    '</div></div>' +
     '<div id="act-export-overview-target">' +
     '<div id="act-export-overview-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
     '<div class="act-section-title" style="margin-top:0;">At A Glance</div>' +
     '<div class="act-kpi-strip">' +
     '<div class="act-kpi health ' + (tier === 'Critical' ? 'critical' : tier === 'On Track' ? 'ok' : '') + '"><div class="act-kpi-label">Health</div><div class="act-kpi-value ' + tierClass + '">' + tier + '</div><div class="act-kpi-sub">' + (tier === 'On Track' ? 'Tracking within budget' : tier === 'Unknown' ? 'No active budget configured' : 'Projected over budget') + '</div></div>' +
-    '<div class="act-kpi"><div class="act-kpi-label">Total Spend</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div><div class="act-kpi-delta">' + actDeltaHtml(spendDelta) + ' vs last month</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Total Spend</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div><div class="act-kpi-delta">' + actDeltaHtml(spendDelta) + ' vs prior period</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Budget Used</div><div class="act-kpi-value ' + tierClass + '">' + (budgetUsedPct !== null ? actFmtPct(budgetUsedPct, 0) : '—') + '</div><div class="act-kpi-sub">' + actFmtUSD0(totalSpend) + ' of ' + (budgetAmount ? actFmtUSD0(budgetAmount) : 'no budget set') + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Calls</div><div class="act-kpi-value">' + actFmtNum(totalCalls) + '</div><div class="act-kpi-delta">' + actDeltaHtml(callsDelta) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Tokens</div><div class="act-kpi-value">' + actFmtTokens(inTok + outTok) + '</div><div class="act-kpi-sub">' + actFmtTokens(inTok) + ' input · ' + actFmtTokens(outTok) + ' output</div></div>' +
@@ -821,21 +902,14 @@ function actRenderCostBreakdown() {
 
   var html =
     '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">Cost Breakdown</div><div class="act-screen-subtitle">Investigate spend by feature, product, model, user, prompt version, selection path, failure, and data quality.</div></div>' +
-    '<button class="export-cta-btn" id="act-export-cost-btn" onclick="actDownloadReport(\'cost\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button></div>' +
+    '<div class="act-header-actions">' +
+    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-period-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-period-value">' + actEsc(actBreakdown.label) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="act-dropdown-chip-menu" id="act-period-menu">' + periodMenuHtml + '</div></div>' +
+    '<button class="export-cta-btn" id="act-export-cost-btn" onclick="actDownloadReport(\'cost\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button>' +
+    '</div></div>' +
     '<div id="act-export-cost-target">' +
     '<div id="act-export-cost-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
-    '<div class="act-filter-toolbar">' +
-    '<div class="act-filter-group"><span class="act-filter-group-label">Reporting period</span>' +
-    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-period-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-period-value">' + actEsc(actBreakdown.label) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
-    '<div class="act-dropdown-chip-menu" id="act-period-menu">' + periodMenuHtml + '</div></div></div>' +
-    '<div class="act-filter-divider"></div>' +
-    '<div class="act-filter-group"><span class="act-filter-group-label">Group by</span>' +
-    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-group-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-value" id="act-group-value">' + actEsc({ feature: 'Feature', product: 'Product', model: 'Model', user: 'User', prompt: 'Prompt Version' }[actBreakdown.group]) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
-    '<div class="act-dropdown-chip-menu" id="act-group-menu">' +
-    '<button onclick="actSelectGroup(\'feature\')">Feature</button><button onclick="actSelectGroup(\'product\')">Product</button><button onclick="actSelectGroup(\'model\')">Model</button><button onclick="actSelectGroup(\'user\')">User</button><button onclick="actSelectGroup(\'prompt\')">Prompt Version</button>' +
-    '</div></div></div>' +
-    '<span class="act-filter-toolbar-hint">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span>' +
-    '</div>' +
+    '<div class="act-filter-toolbar-hint" style="margin:0 0 14px;">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span>' +
     '<div class="act-anchor-row">' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-main-breakdown\')">Main Breakdown</span>' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-economics-signals\')">Economics Signals</span>' +
@@ -843,7 +917,12 @@ function actRenderCostBreakdown() {
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-trust-audit\')">Trust &amp; Audit</span>' +
     '</div>' +
 
-    '<div id="act-main-breakdown" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">A. Main Breakdown</div><div class="act-group-title">Where cost is concentrated</div></div>' +
+    '<div id="act-main-breakdown" class="act-group-card"><div class="act-group-head"><div><div class="act-group-kicker">A. Main Breakdown</div><div class="act-group-title">Where cost is concentrated</div></div>' +
+    '<div class="act-dropdown-chip-wrap"><button class="act-dropdown-chip" onclick="actToggleMenu(\'act-group-menu\')" aria-haspopup="true"><span class="act-dropdown-chip-label">Group by</span><span class="act-dropdown-chip-value" id="act-group-value">' + actEsc({ feature: 'Feature', product: 'Product', model: 'Model', user: 'User', prompt: 'Prompt Version' }[actBreakdown.group]) + '</span><svg class="act-chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg></button>' +
+    '<div class="act-dropdown-chip-menu" id="act-group-menu">' +
+    '<button onclick="actSelectGroup(\'feature\')">Feature</button><button onclick="actSelectGroup(\'product\')">Product</button><button onclick="actSelectGroup(\'model\')">Model</button><button onclick="actSelectGroup(\'user\')">User</button><button onclick="actSelectGroup(\'prompt\')">Prompt Version</button>' +
+    '</div></div>' +
+    '</div>' +
     '<div class="act-group-body"><div class="act-section-insight" id="act-main-breakdown-insight"></div><table class="act-data-table" id="act-main-breakdown-table"></table></div></div>' +
 
     '<div id="act-economics-signals" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">B. Economics Signals</div><div class="act-group-title">What may be driving cost behavior</div></div>' +
@@ -1094,7 +1173,7 @@ function actRenderPlan() {
     '<div class="act-section-title" style="margin-top:20px;">Cost Governance</div>' +
     '<div class="act-section-insight">Not a statistical forecast yet. This is a straight run-rate projection from the current period’s pace.</div>' +
     '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px;">' +
-    '<div class="act-kpi"><div class="act-kpi-label">Spend So Far</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Spend This Month (MTD)</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div><div class="act-kpi-sub" style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--divider);">Total spent overall: <b>' + actFmtUSD0(actLifetimeSpendTotal) + '</b></div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Daily Average</div><div class="act-kpi-value">' + actFmtUSD0(run.dailyAvg) + '</div><div class="act-kpi-sub">' + Math.round(run.daysElapsed) + ' days elapsed</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Projected Month-End</div><div class="act-kpi-value">' + actFmtUSD0(run.projected) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Budget Variance</div><div class="act-kpi-value ' + (variance !== null && variance > 0 ? 'amber' : 'green') + '">' + (variance !== null ? (variance >= 0 ? '+' : '') + actFmtUSD0(variance) : '—') + '</div></div>' +

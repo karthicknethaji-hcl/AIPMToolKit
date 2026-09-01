@@ -348,7 +348,7 @@ function renderOutcomeKpiStrip() {
   var strip = document.getElementById('outcome-kpi-strip');
   if (!strip) return;
   strip.innerHTML =
-    '<div class="act-kpi"><div class="act-kpi-label">Outcome-Attributed Spend</div><div class="act-kpi-value">' + fmt$(p.totalOutcomeSpend) + '</div><div class="act-kpi-sub">of ' + fmt$(TOTAL_AI_SPEND_PERIOD) + ' total AI spend (Overview)</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Outcome-Attributed Spend</div><div class="act-kpi-value">' + fmt$(p.totalOutcomeSpend) + '</div><div class="act-kpi-sub">of ' + fmt$(TOTAL_AI_SPEND_PERIOD) + ' total AI spend this period</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Completed Deliverable Cost</div><div class="act-kpi-value green">' + fmt$(p.completedValue) + '</div><div class="act-kpi-sub">deliverables only, cost not proof of value</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Abandoned Deliverable Cost</div><div class="act-kpi-value red">' + fmt$(p.totalSunk) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Completion Rate</div><div class="act-kpi-value">' + p.completionRate + '%</div><div class="act-kpi-sub">' + p.completed + ' of ' + p.attempts + ' attempts</div></div>' +
@@ -560,8 +560,80 @@ function openOutcomeModal(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// Independent period state (spec Section 4.5) — mirrors actBreakdown/
+// actOverviewPeriod's shape and actSetBreakdownPeriod()'s period-resolution
+// logic exactly. Outcome-Based Cost no longer reuses actMain/actMonthRange
+// locals — it fetches both cost-event rows and outcome rows itself, for
+// current + prior range, so its filter genuinely governs every widget.
+// ══════════════════════════════════════════════════════════════════════
+
+var actOutcomePeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, outcomes: [], prevOutcomes: [] };
+
+async function actSetOutcomePeriod(type, customStart, customEnd) {
+  actOutcomePeriod.type = type;
+  var range, prior;
+  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
+  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
+  else if (type === 'last_3_months') {
+    var now = new Date();
+    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
+    prior = actPriorPeriod(range.start, range.end);
+  } else {
+    range = { start: customStart, end: customEnd };
+    prior = actPriorPeriod(range.start, range.end);
+  }
+  actOutcomePeriod.start = range.start; actOutcomePeriod.end = range.end;
+  var valEl = document.getElementById('act-outcome-period-value');
+  if (valEl) valEl.textContent = actOutcomePeriod.label;
+  var results = await Promise.all([
+    actFetchRows(range.start, range.end),
+    actFetchRows(prior.start, prior.end),
+    _outcomesFetchOutcomeRows(range.start, range.end),
+    _outcomesFetchOutcomeRows(prior.start, prior.end)
+  ]);
+  actOutcomePeriod.rows = results[0];
+  actOutcomePeriod.prevRows = results[1];
+  actOutcomePeriod.outcomes = results[2];
+  actOutcomePeriod.prevOutcomes = results[3];
+  await actRenderOutcomeScreen();
+}
+
+function actSelectOutcomePeriodChip(type, label) {
+  actOutcomePeriod.label = label;
+  document.getElementById('act-outcome-period-menu').classList.remove('open');
+  actSetOutcomePeriod(type).catch(function (e) { console.error(e); });
+}
+
+function actOpenOutcomeCustomRangeModal() {
+  document.getElementById('act-outcome-period-menu').classList.remove('open');
+  document.getElementById('act-modal-title').textContent = 'Custom Date Range';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-config-grid">' +
+    '<div class="act-field"><div class="act-field-label">From</div><input id="act-outcome-custom-from" type="date"></div>' +
+    '<div class="act-field"><div class="act-field-label">To</div><input id="act-outcome-custom-to" type="date"></div>' +
+    '</div>' +
+    '<div style="margin-top:14px;color:var(--red);font-size:11px;" id="act-outcome-custom-range-error"></div>' +
+    '<div style="margin-top:14px;display:flex;justify-content:flex-end;"><button class="act-btn act-btn-primary act-btn-sm" onclick="actApplyOutcomeCustomRange()">Apply</button></div>';
+  actShowModal();
+}
+
+async function actApplyOutcomeCustomRange() {
+  var fromVal = document.getElementById('act-outcome-custom-from').value;
+  var toVal = document.getElementById('act-outcome-custom-to').value;
+  var errEl = document.getElementById('act-outcome-custom-range-error');
+  if (!fromVal || !toVal) { errEl.textContent = 'Choose both a start and end date.'; return; }
+  var start = new Date(fromVal + 'T00:00:00');
+  var end = new Date(new Date(toVal + 'T00:00:00').getTime() + 86400000);
+  if (start >= end) { errEl.textContent = 'Start date must be before end date.'; return; }
+  errEl.textContent = '';
+  actCloseModal();
+  actOutcomePeriod.label = fromVal + ' – ' + toVal;
+  await actSetOutcomePeriod('custom', start, end);
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // Orchestration — called once from actBoot()'s existing sequential chain
-// (after the initial Promise.all, alongside actRenderOverview()/
+// (after the initial Promise.all, alongside actSetOverviewPeriod()/
 // actSetBreakdownPeriod()), not lazily on tab entry. actShowScreen() is a
 // pure visibility toggle in this file (confirmed: no per-screen fetch logic
 // lives there) — every screen's data loads eagerly at boot, this one
@@ -570,22 +642,16 @@ function openOutcomeModal(id) {
 
 async function actRenderOutcomeScreen() {
   try {
-    var thisMonth = actMonthRange(0);
-    var lastMonth = actMonthRange(-1);
-
-    // Cost-event rows for both periods are already fetched and memoized by
-    // actLoadMainContext() (part of actBoot()'s earlier Promise.all) — reuse
-    // actMain.rows/actMain.prevRows directly rather than re-fetching.
-    var currCosts = (typeof actMain !== 'undefined' && actMain.rows) ? actMain.rows : await actFetchRows(thisMonth.start, thisMonth.end);
-    var prevCosts = (typeof actMain !== 'undefined' && actMain.prevRows) ? actMain.prevRows : await actFetchRows(lastMonth.start, lastMonth.end);
+    var currCosts = actOutcomePeriod.rows;
+    var prevCosts = actOutcomePeriod.prevRows;
+    var currOutcomes = actOutcomePeriod.outcomes;
+    var prevOutcomes = actOutcomePeriod.prevOutcomes;
 
     var results = await Promise.all([
       _outcomesFetchTypes(),
-      _outcomesFetchOutcomeRows(thisMonth.start, thisMonth.end),
-      _outcomesFetchOutcomeRows(lastMonth.start, lastMonth.end),
       _outcomesFetchCallerModes()
     ]);
-    var typeRows = results[0], currOutcomes = results[1], prevOutcomes = results[2], callerModes = results[3];
+    var typeRows = results[0], callerModes = results[1];
 
     TOTAL_AI_SPEND_PERIOD = actSumCost(currCosts);
     outcomeTypes = buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prevCosts, callerModes);
