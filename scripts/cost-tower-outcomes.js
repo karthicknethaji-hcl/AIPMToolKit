@@ -567,34 +567,43 @@ function openOutcomeModal(id) {
 // current + prior range, so its filter genuinely governs every widget.
 // ══════════════════════════════════════════════════════════════════════
 
-var actOutcomePeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, outcomes: [], prevOutcomes: [] };
+var actOutcomePeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, outcomes: [], prevOutcomes: [], typeRows: [], callerModes: {} };
+
+// Sequence guard against out-of-order resolution — mirrors
+// _actOverviewPeriodSeq (cost-tower.js). If the user selects a second
+// period before the first one's fetch resolves, the first call's
+// continuation must not clobber the second's already-committed (or
+// still-pending) newer data and re-render with it.
+var _actOutcomePeriodSeq = 0;
 
 async function actSetOutcomePeriod(type, customStart, customEnd) {
   actOutcomePeriod.type = type;
-  var range, prior;
-  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
-  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
-  else if (type === 'last_3_months') {
-    var now = new Date();
-    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
-    prior = actPriorPeriod(range.start, range.end);
-  } else {
-    range = { start: customStart, end: customEnd };
-    prior = actPriorPeriod(range.start, range.end);
-  }
+  var mySeq = ++_actOutcomePeriodSeq;
+  var resolved = actResolvePeriodRange(type, customStart, customEnd);
+  var range = resolved.range, prior = resolved.prior;
   actOutcomePeriod.start = range.start; actOutcomePeriod.end = range.end;
   var valEl = document.getElementById('act-outcome-period-value');
   if (valEl) valEl.textContent = actOutcomePeriod.label;
+  // All six fetches run in one round-trip, including _outcomesFetchTypes()/
+  // _outcomesFetchCallerModes() — neither depends on the period range, but
+  // running them here (rather than in actRenderOutcomeScreen(), after this
+  // Promise.all already resolved) avoids paying a second, fully sequential
+  // round-trip on every period change.
   var results = await Promise.all([
     actFetchRows(range.start, range.end),
     actFetchRows(prior.start, prior.end),
     _outcomesFetchOutcomeRows(range.start, range.end),
-    _outcomesFetchOutcomeRows(prior.start, prior.end)
+    _outcomesFetchOutcomeRows(prior.start, prior.end),
+    _outcomesFetchTypes(),
+    _outcomesFetchCallerModes()
   ]);
+  if (mySeq !== _actOutcomePeriodSeq) return;
   actOutcomePeriod.rows = results[0];
   actOutcomePeriod.prevRows = results[1];
   actOutcomePeriod.outcomes = results[2];
   actOutcomePeriod.prevOutcomes = results[3];
+  actOutcomePeriod.typeRows = results[4];
+  actOutcomePeriod.callerModes = results[5];
   await actRenderOutcomeScreen();
 }
 
@@ -646,12 +655,8 @@ async function actRenderOutcomeScreen() {
     var prevCosts = actOutcomePeriod.prevRows;
     var currOutcomes = actOutcomePeriod.outcomes;
     var prevOutcomes = actOutcomePeriod.prevOutcomes;
-
-    var results = await Promise.all([
-      _outcomesFetchTypes(),
-      _outcomesFetchCallerModes()
-    ]);
-    var typeRows = results[0], callerModes = results[1];
+    var typeRows = actOutcomePeriod.typeRows;
+    var callerModes = actOutcomePeriod.callerModes;
 
     TOTAL_AI_SPEND_PERIOD = actSumCost(currCosts);
     outcomeTypes = buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prevCosts, callerModes);

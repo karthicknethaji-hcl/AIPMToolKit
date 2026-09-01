@@ -262,6 +262,30 @@ function actPriorPeriod(start, end) {
   return { start: new Date(start.getTime() - len), end: new Date(start.getTime()) };
 }
 
+// Shared period-resolution logic — used by actSetBreakdownPeriod,
+// actSetOverviewPeriod, and actSetOutcomePeriod (cost-tower-outcomes.js) so
+// this math only has to be fixed in one place. For the two calendar-month
+// options, compares against the actual calendar prior month (same
+// definition Overview's own KPI deltas use via actMonthRange(-1)) rather
+// than a rolling window of equal length — the two would otherwise silently
+// disagree whenever adjacent months have different day counts. A rolling
+// window is kept for Last 3 Months/Custom, where there's no single
+// well-defined "calendar-aligned prior period."
+function actResolvePeriodRange(type, customStart, customEnd) {
+  var range, prior;
+  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
+  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
+  else if (type === 'last_3_months') {
+    var now = new Date();
+    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
+    prior = actPriorPeriod(range.start, range.end);
+  } else {
+    range = { start: customStart, end: customEnd };
+    prior = actPriorPeriod(range.start, range.end);
+  }
+  return { range: range, prior: prior };
+}
+
 var _actRowCache = {};
 async function actFetchRows(start, end) {
   var key = start.toISOString() + '|' + end.toISOString();
@@ -572,22 +596,22 @@ function actComputeOpportunities(rows) {
 // the same role actMain.now already plays for Governance.
 var actOverviewPeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, now: null };
 
+// Sequence guard against out-of-order resolution — if the user selects a
+// second period before the first one's fetch resolves, the first call's
+// continuation must not clobber the second's already-committed (or
+// still-pending) newer data. Each call captures its own sequence number and
+// only commits/renders if it's still the latest when its fetch resolves.
+var _actOverviewPeriodSeq = 0;
+
 async function actSetOverviewPeriod(type, customStart, customEnd) {
   actOverviewPeriod.type = type;
-  var range, prior;
-  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
-  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
-  else if (type === 'last_3_months') {
-    var now = new Date();
-    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
-    prior = actPriorPeriod(range.start, range.end);
-  } else {
-    range = { start: customStart, end: customEnd };
-    prior = actPriorPeriod(range.start, range.end);
-  }
+  var mySeq = ++_actOverviewPeriodSeq;
+  var resolved = actResolvePeriodRange(type, customStart, customEnd);
+  var range = resolved.range, prior = resolved.prior;
   actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
   actOverviewPeriod.rows = await actFetchRows(range.start, range.end);
   actOverviewPeriod.prevRows = await actFetchRows(prior.start, prior.end);
+  if (mySeq !== _actOverviewPeriodSeq) return;
   actRenderOverview();
 }
 
@@ -751,23 +775,8 @@ var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows
 
 async function actSetBreakdownPeriod(type, customStart, customEnd) {
   actBreakdown.type = type;
-  var range, prior;
-  // For the two calendar-month options, compare against the actual calendar
-  // prior month (same definition Overview's own KPI deltas use via
-  // actMonthRange(-1)) rather than a rolling window of equal length — the
-  // two would otherwise silently disagree whenever adjacent months have
-  // different day counts. A rolling window is kept for Last 3 Months/Custom,
-  // where there's no single well-defined "calendar-aligned prior period."
-  if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
-  else if (type === 'last_month') { range = actMonthRange(-1); prior = actMonthRange(-2); }
-  else if (type === 'last_3_months') {
-    var now = new Date();
-    range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
-    prior = actPriorPeriod(range.start, range.end);
-  } else {
-    range = { start: customStart, end: customEnd };
-    prior = actPriorPeriod(range.start, range.end);
-  }
+  var resolved = actResolvePeriodRange(type, customStart, customEnd);
+  var range = resolved.range, prior = resolved.prior;
   actBreakdown.start = range.start; actBreakdown.end = range.end;
   actBreakdown.rows = await actFetchRows(range.start, range.end);
   actBreakdown.prevRows = await actFetchRows(prior.start, prior.end);
