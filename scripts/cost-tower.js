@@ -163,8 +163,10 @@ async function actBoot() {
   var aeEl = document.getElementById('act-avatar-email');
   if (aeEl) aeEl.textContent = actCurrentUser.email || '';
 
-  actHideGate();
-  document.getElementById('act-app-shell').style.display = 'flex';
+  // Gate stays up through the data-fetch phase too — previously hidden
+  // right here, before the Promise.all below even started, leaving the
+  // (now-visible) app shell's content area blank for the 2-3s this takes.
+  actShowGate('Loading…', 'Loading your cost and usage data…');
 
   try {
     await Promise.all([actLoadMainContext(), actLoadBudgetAndAlerts(), actLoadProductNames(), actLoadTeamNames(), actLoadLifetimeSpend()]);
@@ -183,6 +185,9 @@ async function actBoot() {
   } catch (err) {
     console.error('[Cost Tower] boot render failed:', err);
     actToast('Something went wrong loading cost data. Check the console for details.', 'error');
+  } finally {
+    actHideGate();
+    document.getElementById('act-app-shell').style.display = 'flex';
   }
 }
 
