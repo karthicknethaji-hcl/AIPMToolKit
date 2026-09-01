@@ -152,6 +152,12 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
 
       var abandonedIds = {};
       currTypeOutcomes.forEach(function (o) { if (o.is_abandoned) abandonedIds[o.outcome_id] = true; });
+      // Completed and abandoned are mutually exclusive by construction
+      // (is_abandoned only ever applies to a still-in_progress outcome,
+      // per mt_outcomes_list()'s SQL) — an outcome_id can appear in at most
+      // one of completedIds/abandonedIds, never both.
+      var completedIds = {};
+      currTypeOutcomes.forEach(function (o) { if (o.status === 'completed') completedIds[o.outcome_id] = true; });
 
       var totalCost = actSumCost(currTypeCosts);
       var trendFields = _outcomesTrendFields(totalCost, actSumCost(prevTypeCosts));
@@ -164,6 +170,12 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         completed: currTypeOutcomes.filter(function (o) { return o.status === 'completed'; }).length,
         abandoned: currTypeOutcomes.filter(function (o) { return o.is_abandoned; }).length,
         totalCost: totalCost,
+        // Cost actually attributable to outcomes that reached status
+        // 'completed' — NOT totalCost minus sunkCost. That residual would
+        // silently include cost from outcomes still in progress (neither
+        // completed nor abandoned yet), which is a different, third bucket
+        // (see computePortfolio()'s inProgressValue).
+        completedCost: actSumCost(currTypeCosts.filter(function (e) { return completedIds[e.outcome_id]; })),
         sunkCost: actSumCost(currTypeCosts.filter(function (e) { return abandonedIds[e.outcome_id]; })),
         trend: trendFields.trend,
         trendDir: trendFields.trendDir,
@@ -265,13 +277,21 @@ function computePortfolio() {
   var yieldSpend = yields.reduce(function (s, t) { return s + yieldTotal(t); }, 0);
   var totalOutcomeSpend = deliverableSpend + yieldSpend;
   var totalSunk = deliverables.reduce(function (s, t) { return s + t.sunkCost; }, 0);
-  var completedValue = deliverableSpend - totalSunk;
+  // completedValue is cost actually attributed to status==='completed'
+  // outcomes (see buildOutcomeTypes()'s completedCost) — deliberately NOT
+  // deliverableSpend - totalSunk, which would silently fold in-progress
+  // (neither completed nor abandoned) cost into "completed." inProgressValue
+  // is the remainder, surfaced explicitly rather than dropped, so every
+  // dollar of deliverableSpend is accounted for across exactly one of the
+  // three buckets.
+  var completedValue = deliverables.reduce(function (s, t) { return s + t.completedCost; }, 0);
+  var inProgressValue = deliverableSpend - completedValue - totalSunk;
   var attempts = deliverables.reduce(function (s, t) { return s + t.attempts; }, 0);
   var completed = deliverables.reduce(function (s, t) { return s + t.completed; }, 0);
   var completionRate = attempts > 0 ? Math.round((completed / attempts) * 100) : 0;
   var unattributed = TOTAL_AI_SPEND_PERIOD - totalOutcomeSpend;
   var unattributedPct = TOTAL_AI_SPEND_PERIOD > 0 ? Math.round((unattributed / TOTAL_AI_SPEND_PERIOD) * 100) : 0;
-  return { deliverableSpend: deliverableSpend, yieldSpend: yieldSpend, totalOutcomeSpend: totalOutcomeSpend, totalSunk: totalSunk, completedValue: completedValue, attempts: attempts, completed: completed, completionRate: completionRate, unattributed: unattributed, unattributedPct: unattributedPct };
+  return { deliverableSpend: deliverableSpend, yieldSpend: yieldSpend, totalOutcomeSpend: totalOutcomeSpend, totalSunk: totalSunk, completedValue: completedValue, inProgressValue: inProgressValue, attempts: attempts, completed: completed, completionRate: completionRate, unattributed: unattributed, unattributedPct: unattributedPct };
 }
 
 function topCostType() {
@@ -339,7 +359,7 @@ function renderOutcomeSupport() {
   var el = document.getElementById('outcome-support');
   if (!el) return;
   el.innerHTML =
-    fmt$(p.totalOutcomeSpend) + ' was spent on outcome-generating work this period, ' + fmt$(p.completedValue) + ' of it landed in a completed deliverable and ' + fmt$(p.totalSunk) + ' was lost to abandoned work (' + p.completionRate + '% completion). ' +
+    fmt$(p.totalOutcomeSpend) + ' was spent on outcome-generating work this period, ' + fmt$(p.completedValue) + ' of it landed in a completed deliverable, ' + fmt$(p.inProgressValue) + ' is still in progress, and ' + fmt$(p.totalSunk) + ' was lost to abandoned work (' + p.completionRate + '% completion). ' +
     fmt$(p.unattributed) + ' (' + p.unattributedPct + '% of this period\'s <b>total</b> AI spend, not just outcome-eligible spend) isn\'t attributed to any of the eleven outcome types yet, mostly small utility and assist calls made outside an active outcome\'s session.';
 }
 

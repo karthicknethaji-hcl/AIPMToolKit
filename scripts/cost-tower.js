@@ -262,6 +262,14 @@ function actPriorPeriod(start, end) {
   return { start: new Date(start.getTime() - len), end: new Date(start.getTime()) };
 }
 
+// Single source of truth for the lifetime-spend floor date (spec Section
+// 6.2, placeholder for v1; revisit if it proves inaccurate as history
+// grows) — used by actLoadLifetimeSpend() (Governance's "Total spent
+// overall") and actResolvePeriodRange()'s 'overall' branch below. Returns a
+// fresh Date each call since Date objects are mutable and get reused as
+// range boundaries elsewhere in this file.
+function actLifetimeFloorDate() { return new Date(2024, 0, 1); }
+
 // Shared period-resolution logic — used by actSetBreakdownPeriod,
 // actSetOverviewPeriod, and actSetOutcomePeriod (cost-tower-outcomes.js) so
 // this math only has to be fixed in one place. For the two calendar-month
@@ -270,7 +278,10 @@ function actPriorPeriod(start, end) {
 // than a rolling window of equal length — the two would otherwise silently
 // disagree whenever adjacent months have different day counts. A rolling
 // window is kept for Last 3 Months/Custom, where there's no single
-// well-defined "calendar-aligned prior period."
+// well-defined "calendar-aligned prior period." 'overall' has no
+// meaningful prior period at all — prior is a zero-width range (fetches 0
+// rows), so every existing "vs prior period" delta already renders "No
+// prior data" via actDeltaPct's existing prev===0 guard, with no new code.
 function actResolvePeriodRange(type, customStart, customEnd) {
   var range, prior;
   if (type === 'this_month') { range = actMonthRange(0); prior = actMonthRange(-1); }
@@ -279,6 +290,9 @@ function actResolvePeriodRange(type, customStart, customEnd) {
     var now = new Date();
     range = { start: new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0), end: now };
     prior = actPriorPeriod(range.start, range.end);
+  } else if (type === 'overall') {
+    range = { start: actLifetimeFloorDate(), end: new Date() };
+    prior = { start: range.start, end: range.start };
   } else {
     range = { start: customStart, end: customEnd };
     prior = actPriorPeriod(range.start, range.end);
@@ -322,8 +336,7 @@ var actBudget = null, actAlerts = [];
 // Loaded once at boot alongside actMain, not per-render.
 var actLifetimeSpendTotal = 0;
 async function actLoadLifetimeSpend() {
-  var floor = new Date(2024, 0, 1);
-  var rows = await actFetchRows(floor, new Date());
+  var rows = await actFetchRows(actLifetimeFloorDate(), new Date());
   actLifetimeSpendTotal = actSumCost(rows);
 }
 async function actLoadBudgetAndAlerts() {
@@ -652,7 +665,13 @@ function actRenderOverview() {
   var rows = actOverviewPeriod.rows, prevRows = actOverviewPeriod.prevRows;
   var totalSpend = actSumCost(rows), prevSpend = actSumCost(prevRows);
   var spendDelta = actDeltaPct(totalSpend, prevSpend);
-  var budgetAmount = actBudget ? Number(actBudget.amount) : null;
+  // The budget is a monthly figure — comparing an all-time total against it
+  // (Overall) would show a nonsensical "Budget Used: 1,600%"/"Health:
+  // Critical" rather than a wrong-but-plausible number, so it's treated as
+  // not-configured for this render, reusing the existing no-budget fallback
+  // path (Health→"Unknown", Needs Attention card doesn't render) rather
+  // than inventing a separate "Overall" rendering branch.
+  var budgetAmount = (actBudget && actOverviewPeriod.type !== 'overall') ? Number(actBudget.amount) : null;
   var budgetUsedPct = budgetAmount ? (totalSpend / budgetAmount * 100) : null;
   var totalCalls = rows.length, prevCalls = prevRows.length;
   var callsDelta = actDeltaPct(totalCalls, prevCalls);
@@ -731,6 +750,7 @@ function actRenderOverview() {
     '<button onclick="actSelectOverviewPeriodChip(\'this_month\',\'This Month\')">This Month</button>' +
     '<button onclick="actSelectOverviewPeriodChip(\'last_month\',\'Last Month\')">Last Month</button>' +
     '<button onclick="actSelectOverviewPeriodChip(\'last_3_months\',\'Last 3 Months\')">Last 3 Months</button>' +
+    '<button onclick="actSelectOverviewPeriodChip(\'overall\',\'Overall\')">Overall</button>' +
     '<button onclick="actOpenOverviewCustomRangeModal()">Custom Range…</button>' +
     '</div></div>' +
     '<button class="export-cta-btn" id="act-export-overview-btn" onclick="actDownloadReport(\'overview\')"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Export</button>' +
@@ -739,9 +759,9 @@ function actRenderOverview() {
     '<div id="act-export-overview-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
     '<div class="act-section-title" style="margin-top:0;">At A Glance</div>' +
     '<div class="act-kpi-strip">' +
-    '<div class="act-kpi health ' + (tier === 'Critical' ? 'critical' : tier === 'On Track' ? 'ok' : '') + '"><div class="act-kpi-label">Health</div><div class="act-kpi-value ' + tierClass + '">' + tier + '</div><div class="act-kpi-sub">' + (tier === 'On Track' ? 'Tracking within budget' : tier === 'Unknown' ? 'No active budget configured' : 'Projected over budget') + '</div></div>' +
+    '<div class="act-kpi health ' + (tier === 'Critical' ? 'critical' : tier === 'On Track' ? 'ok' : '') + '"><div class="act-kpi-label">Health</div><div class="act-kpi-value ' + tierClass + '">' + tier + '</div><div class="act-kpi-sub">' + (tier === 'On Track' ? 'Tracking within budget' : tier === 'Unknown' ? (actOverviewPeriod.type === 'overall' ? 'Budget comparisons don\'t apply to Overall' : 'No active budget configured') : 'Projected over budget') + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Spend</div><div class="act-kpi-value">' + actFmtUSD0(totalSpend) + '</div><div class="act-kpi-delta">' + actDeltaHtml(spendDelta) + ' vs prior period</div></div>' +
-    '<div class="act-kpi"><div class="act-kpi-label">Budget Used</div><div class="act-kpi-value ' + tierClass + '">' + (budgetUsedPct !== null ? actFmtPct(budgetUsedPct, 0) : '—') + '</div><div class="act-kpi-sub">' + actFmtUSD0(totalSpend) + ' of ' + (budgetAmount ? actFmtUSD0(budgetAmount) : 'no budget set') + '</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Budget Used</div><div class="act-kpi-value ' + tierClass + '">' + (budgetUsedPct !== null ? actFmtPct(budgetUsedPct, 0) : '—') + '</div><div class="act-kpi-sub">' + actFmtUSD0(totalSpend) + ' of ' + (budgetAmount ? actFmtUSD0(budgetAmount) : (actOverviewPeriod.type === 'overall' ? 'not applicable to Overall' : 'no budget set')) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Calls</div><div class="act-kpi-value">' + actFmtNum(totalCalls) + '</div><div class="act-kpi-delta">' + actDeltaHtml(callsDelta) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Total Tokens</div><div class="act-kpi-value">' + actFmtTokens(inTok + outTok) + '</div><div class="act-kpi-sub">' + actFmtTokens(inTok) + ' input · ' + actFmtTokens(outTok) + ' output</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Avg Cost / Call</div><div class="act-kpi-value">' + actFmtUSD(avgCost) + '</div><div class="act-kpi-delta">' + actDeltaHtml(avgCostDelta) + '</div></div>' +
@@ -903,7 +923,8 @@ function actRenderCostBreakdown() {
   var periodMenuOptions = [
     { type: 'this_month', label: 'This Month' },
     { type: 'last_month', label: 'Last Month' },
-    { type: 'last_3_months', label: 'Last 3 Months' }
+    { type: 'last_3_months', label: 'Last 3 Months' },
+    { type: 'overall', label: 'Overall' }
   ];
   var periodMenuHtml = periodMenuOptions.map(function (o) {
     return '<button onclick="actSelectPeriodChip(\'' + o.type + '\',\'' + o.label + '\')">' + o.label + '</button>';
