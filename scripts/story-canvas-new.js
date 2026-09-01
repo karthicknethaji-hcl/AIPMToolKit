@@ -378,11 +378,9 @@ function newScRenderLeftNav(){
 function newScToggleNav(){
   const nav=document.getElementById('nsc-left');
   if(!nav)return;
-  nav.classList.toggle('collapsed');
-  newScNavCollapsed=nav.classList.contains('collapsed');
+  const isCol=newScNavCollapsed=nav.classList.toggle('collapsed');
   const btn=document.getElementById('nsc-collapse-btn');
   if(btn){
-    const isCol=nav.classList.contains('collapsed');
     btn.title=isCol?'Expand':'Collapse';
     btn.innerHTML=isCol
       ?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>'

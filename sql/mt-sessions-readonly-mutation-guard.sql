@@ -21,31 +21,53 @@
 -- mt_sessions directly, so the role check is actually exercised on every
 -- rename/delete/share-toggle, not just at the UI layer.
 --
+-- p_company_id (all three RPCs) restores the cross-company scoping the
+-- prior client-side-only `.eq('company_id', activeCompanyId)` guard gave —
+-- without it, a caller who owns a session in Company A and remains a
+-- non-readonly member of Company A could mutate it via direct RPC call
+-- regardless of which company is presently active in their browser. NULL
+-- (the default) skips this specific check, matching the old guard's own
+-- behavior when activeCompanyId wasn't available client-side — ownership +
+-- non-readonly role are still always required either way.
+--
 -- Idempotent: CREATE OR REPLACE FUNCTION, safe to re-run.
 
-CREATE OR REPLACE FUNCTION mt_session_rename(p_session_id uuid, p_new_name text)
+-- ─── Shared authorization check, reused by all three RPCs below ───
+-- One definition instead of three copies of the same ownership+role+
+-- (optional) company-scope subquery, so a future change to the rule (e.g.
+-- a grace period, or an additional role) only needs to be made once.
+CREATE OR REPLACE FUNCTION _mt_session_can_mutate(p_owner_user_id uuid, p_session_company_id uuid, p_caller uuid, p_company_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT p_owner_user_id = p_caller
+     AND (p_company_id IS NULL OR p_session_company_id = p_company_id)
+     AND EXISTS (
+       SELECT 1 FROM mt_users_companies uc
+       WHERE uc.company_id = p_session_company_id
+         AND uc.user_id = p_caller
+         AND uc.is_active
+         AND uc.role <> 'readonly'
+     );
+$$;
+
+CREATE OR REPLACE FUNCTION mt_session_rename(p_session_id uuid, p_new_name text, p_company_id uuid DEFAULT NULL)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
   v_caller uuid := current_app_user();
-  v_updated integer;
+  v_id uuid;
 BEGIN
   UPDATE mt_sessions
   SET name = p_new_name
   WHERE id = p_session_id
-    AND user_id = v_caller
-    AND EXISTS (
-      SELECT 1 FROM mt_users_companies uc
-      WHERE uc.company_id = mt_sessions.company_id
-        AND uc.user_id = v_caller
-        AND uc.is_active
-        AND uc.role <> 'readonly'
-    );
+    AND _mt_session_can_mutate(user_id, company_id, v_caller, p_company_id)
+  RETURNING id INTO v_id;
 
-  GET DIAGNOSTICS v_updated = ROW_COUNT;
-  IF v_updated = 0 THEN
+  IF v_id IS NULL THEN
     RAISE EXCEPTION 'Unable to rename session %: not found or insufficient permission', p_session_id;
   END IF;
 
@@ -53,30 +75,23 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION mt_session_rename(uuid, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION mt_session_rename(uuid, text, uuid) TO authenticated;
 
-CREATE OR REPLACE FUNCTION mt_session_delete(p_session_id uuid)
+CREATE OR REPLACE FUNCTION mt_session_delete(p_session_id uuid, p_company_id uuid DEFAULT NULL)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
   v_caller uuid := current_app_user();
-  v_deleted integer;
+  v_id uuid;
 BEGIN
   DELETE FROM mt_sessions
   WHERE id = p_session_id
-    AND user_id = v_caller
-    AND EXISTS (
-      SELECT 1 FROM mt_users_companies uc
-      WHERE uc.company_id = mt_sessions.company_id
-        AND uc.user_id = v_caller
-        AND uc.is_active
-        AND uc.role <> 'readonly'
-    );
+    AND _mt_session_can_mutate(user_id, company_id, v_caller, p_company_id)
+  RETURNING id INTO v_id;
 
-  GET DIAGNOSTICS v_deleted = ROW_COUNT;
-  IF v_deleted = 0 THEN
+  IF v_id IS NULL THEN
     RAISE EXCEPTION 'Unable to delete session %: not found or insufficient permission', p_session_id;
   END IF;
 
@@ -84,31 +99,24 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION mt_session_delete(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION mt_session_delete(uuid, uuid) TO authenticated;
 
-CREATE OR REPLACE FUNCTION mt_session_set_shared(p_session_id uuid, p_is_shared boolean, p_share_mode text)
+CREATE OR REPLACE FUNCTION mt_session_set_shared(p_session_id uuid, p_is_shared boolean, p_share_mode text, p_company_id uuid DEFAULT NULL)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
   v_caller uuid := current_app_user();
-  v_updated integer;
+  v_id uuid;
 BEGIN
   UPDATE mt_sessions
   SET is_shared = p_is_shared, share_mode = p_share_mode
   WHERE id = p_session_id
-    AND user_id = v_caller
-    AND EXISTS (
-      SELECT 1 FROM mt_users_companies uc
-      WHERE uc.company_id = mt_sessions.company_id
-        AND uc.user_id = v_caller
-        AND uc.is_active
-        AND uc.role <> 'readonly'
-    );
+    AND _mt_session_can_mutate(user_id, company_id, v_caller, p_company_id)
+  RETURNING id INTO v_id;
 
-  GET DIAGNOSTICS v_updated = ROW_COUNT;
-  IF v_updated = 0 THEN
+  IF v_id IS NULL THEN
     RAISE EXCEPTION 'Unable to update sharing for session %: not found or insufficient permission', p_session_id;
   END IF;
 
@@ -116,7 +124,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION mt_session_set_shared(uuid, boolean, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION mt_session_set_shared(uuid, boolean, text, uuid) TO authenticated;
 
 -- ─── Post-flight validation (run manually after applying, not by app code) ───
 
@@ -133,3 +141,8 @@ GRANT EXECUTE ON FUNCTION mt_session_set_shared(uuid, boolean, text) TO authenti
 
 -- 3. As a non-readonly owner, confirm the RPCs still succeed normally
 --    (same session, role reverted to a non-readonly membership).
+
+-- 4. Cross-company scoping: as a non-readonly member of Company A who owns
+--    a session there, call mt_session_delete('<company-A-session-id>',
+--    '<company-B-id>') — expect exception (company mismatch), then the
+--    same call with '<company-A-id>' or NULL — expect success.

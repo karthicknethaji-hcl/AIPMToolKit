@@ -160,6 +160,15 @@ function laRenameRun(runId){
 }
 
 
+// Shared DOM read-back for the left panel's collapsed state - #la-left
+// stays in the DOM (just hidden) between tab switches, see
+// laToggleLeftPanel()'s matching write. Used both here and by
+// laRenderLeftPanel() below, instead of each inlining the same read.
+function laIsLeftPanelCollapsed(){
+  const lp=document.getElementById('la-left');
+  return !!(lp&&lp.classList.contains('collapsed'));
+}
+
 function laRenderAnalysis(){
   const container=document.getElementById('la-tab');
   if(!container)return;
@@ -169,10 +178,8 @@ function laRenderAnalysis(){
   }
 
   const session=diagnosticSessions&&diagnosticSessions.find(function(s){return s.id===activeDiagnosticId;});
-  // Restore panel collapsed state from the existing #la-left (la-tab stays in the
-  // DOM, just hidden, between tab switches - see laToggleLeftPanel()'s matching write).
-  const prevLaLeft=document.getElementById('la-left');
-  const laLeftCollapsed=!!(prevLaLeft&&prevLaLeft.classList.contains('collapsed'));
+  // Restore panel collapsed state from the existing #la-left.
+  const laLeftCollapsed=laIsLeftPanelCollapsed();
   const laLeftHtml=laRenderLeftPanelInner(session,laLeftCollapsed);
   const activeRun=laGetActiveRun();
   const mainTitle=activeRun?activeRun.runLabel+' — diagnostic detail':'Experiment Canvas';
@@ -339,7 +346,7 @@ function laRenderLeftPanelInner(session,isCollapsed){
 
 
 function laRenderLeftPanel(session,isCollapsed){
-  if(isCollapsed===undefined){const lp=document.getElementById('la-left');isCollapsed=lp&&lp.classList.contains('collapsed');}
+  if(isCollapsed===undefined){isCollapsed=laIsLeftPanelCollapsed();}
   return laRenderLeftPanelInner(session,isCollapsed);
 }
 

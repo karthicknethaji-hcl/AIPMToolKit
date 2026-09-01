@@ -53,6 +53,14 @@ var _activeSessionShareMode = 'view';
 // non-shared session is always editable by its owner. A shared session is
 // editable only if share_mode is explicitly 'edit'. Any unrecognized/
 // missing state falls through to false — fails closed, not open.
+// Shared, fail-closed role check — hoisted out of canEditSession() so every
+// readonly-role gate in this codebase (canEditSession() below, the session
+// card render/mutation guards, the header rename control) shares ONE
+// fail-closed definition instead of each hand-copying the comparison with
+// its own undefined/null handling.
+function _ssIsReadOnlyRole(){
+  return typeof currentUserRole === 'undefined' || currentUserRole === null || currentUserRole === 'readonly';
+}
 function canEditSession(){
   var uid = (typeof currentUser !== 'undefined' && currentUser) ? currentUser.id : null;
   if (!uid) return false;
@@ -72,7 +80,7 @@ function canEditSession(){
   // any caller actually invokes canEditSession(). Safe, but fragile if this
   // function is ever called synchronously during initial script evaluation
   // rather than in response to a later event/render.
-  if (typeof currentUserRole === 'undefined' || currentUserRole === null || currentUserRole === 'readonly') return false;
+  if (_ssIsReadOnlyRole()) return false;
   if (_activeSessionOwnerId && _activeSessionOwnerId === uid) return true;
   if (_activeSessionIsShared === true) return _activeSessionShareMode === 'edit';
   if (_activeSessionIsShared === false) return true;
@@ -680,6 +688,11 @@ function hdrApplySessionNameVisibility(){
   if(typeof _activeSessionIsShared!=='undefined'&&_activeSessionIsShared){
     _canRename=(_ssIsSessionOwner()!==false); // fails open on unknown ownership — see _ssIsSessionOwner()'s own comment
   }
+  // A readonly-role owner sees no rename control either — this control was
+  // missing the same gate the session card's 3-dot menu already has,
+  // letting the header rename silently diverge from sessionStoreRename()'s
+  // no-op-for-readonly behavior (UI shows a rename that never persisted).
+  if(_ssIsReadOnlyRole())_canRename=false;
   el.classList.toggle('has-name',hasName);
   if(onHome||!hasName){
     el.style.display='none';
@@ -1341,7 +1354,7 @@ function sessionStoreDelete(sessionId) {
   // fix: mt_session_delete (see below) re-checks role+ownership server-side
   // via SECURITY DEFINER, so a devtools call bypassing this early return
   // would still be rejected at the DB layer, not just here.
-  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+  if (_ssIsReadOnlyRole()) {
     console.warn('sessionStoreDelete blocked: readonly role');
     return;
   }
@@ -1361,13 +1374,19 @@ function sessionStoreDelete(sessionId) {
   // sql/mt-sessions-readonly-mutation-guard.sql) — mt_sessions' own RLS is
   // ownership-only, with no role condition, so a raw .delete() here would
   // let a demoted-to-readonly owner still delete their own session via a
-  // direct API call, bypassing every client-side check above. Fire and
-  // forget, matching this function's existing pattern.
+  // direct API call, bypassing every client-side check above. p_company_id
+  // is re-derived from the active company (same as the pre-RPC .eq() guard
+  // this replaced) so a stale cross-company session id can't succeed
+  // purely on ownership+role in a DIFFERENT company than the one active
+  // right now. Fire and forget, matching this function's existing pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
-        const { error } = await client.rpc('mt_session_delete', { p_session_id: sessionId });
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
+        const { error } = await client.rpc('mt_session_delete', { p_session_id: sessionId, p_company_id: activeCompanyId });
         if (error) console.warn('sessionStoreDelete DB delete failed:', error.message);
       }
     } catch(e) {
@@ -1381,7 +1400,7 @@ function sessionStoreRename(sessionId, newName) {
   // Fail fast for a readonly-role caller — see sessionStoreDelete's matching
   // comment. The real enforcement is mt_session_rename's server-side
   // re-check; this just avoids a pointless localStorage write + round trip.
-  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+  if (_ssIsReadOnlyRole()) {
     console.warn('sessionStoreRename blocked: readonly role');
     return;
   }
@@ -1405,13 +1424,18 @@ function sessionStoreRename(sessionId, newName) {
   // sql/mt-sessions-readonly-mutation-guard.sql) — mt_sessions' own RLS is
   // ownership-only, with no role condition, so a raw .update() here would
   // let a demoted-to-readonly owner still rename their own session via a
-  // direct API call, bypassing every client-side check above. Fire and
-  // forget, matching this function's existing pattern.
+  // direct API call, bypassing every client-side check above. p_company_id
+  // restores the same cross-company guard sessionStoreDelete's matching
+  // comment describes. Fire and forget, matching this function's existing
+  // pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
-        const { error } = await client.rpc('mt_session_rename', { p_session_id: sessionId, p_new_name: trimmed });
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
+        const { error } = await client.rpc('mt_session_rename', { p_session_id: sessionId, p_new_name: trimmed, p_company_id: activeCompanyId });
         if (error) console.warn('sessionStoreRename DB update failed:', error.message);
       }
     } catch(e) {
@@ -1430,7 +1454,7 @@ function homeSessionToggleShare(sessionId){
   // Fail fast for a readonly-role caller — see sessionStoreDelete's matching
   // comment. The real enforcement is mt_session_set_shared's server-side
   // re-check; this just avoids a pointless localStorage write + round trip.
-  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+  if (_ssIsReadOnlyRole()) {
     console.warn('homeSessionToggleShare blocked: readonly role');
     return;
   }
@@ -1493,15 +1517,21 @@ function homeSessionToggleShare(sessionId){
   // ownership-only, with no role condition, so a raw .update() here would
   // let a demoted-to-readonly owner still toggle sharing on their own
   // session via a direct API call, bypassing every client-side check
-  // above. Fire and forget, matching this function's existing pattern.
+  // above. p_company_id restores the same cross-company guard
+  // sessionStoreDelete's matching comment describes. Fire and forget,
+  // matching this function's existing pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
+        const activeCompanyId = (function(){
+          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+        })();
         const { error } = await client.rpc('mt_session_set_shared', {
           p_session_id: sessionId,
           p_is_shared: _nextShared,
-          p_share_mode: _nextShareMode || 'view'
+          p_share_mode: _nextShareMode || 'view',
+          p_company_id: activeCompanyId
         });
         if (error) console.warn('homeSessionToggleShare DB update failed:', error.message);
       }

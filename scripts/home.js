@@ -774,6 +774,7 @@ function homeClearSession(p_releaseSessionId){
   miProductMode='market';
   miCapabilities=[];
   miSelectedCapNames=new Set();
+  if(typeof miLeftCollapsed!=='undefined') miLeftCollapsed=false;
   piMode=false;
   piFirstBuilt=false;
   piPlan=null;
@@ -797,6 +798,7 @@ function homeClearSession(p_releaseSessionId){
   scCanvas=[];
   if(typeof protoStore!=='undefined') protoStore={};
   if(typeof newScProtoView!=='undefined') newScProtoView=false;
+  if(typeof newScNavCollapsed!=='undefined') newScNavCollapsed=false;
   if(typeof scSelectedIds!=='undefined') scSelectedIds=new Set();
   if(typeof scPanelFeatureId!=='undefined') scPanelFeatureId=null;
   if(typeof scCapNavFilter!=='undefined') scCapNavFilter=null;
@@ -1432,7 +1434,7 @@ function _homeRenderPinnedBanner(sess){
   // target that silently no-ops (or ghost-deletes then reappears on
   // next sync) server-side. See _homeApplyReadOnlyState()'s identical
   // currentUserRole check for the Setup panel's equivalent gate.
-  const _isReadOnlyUser=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+  const _isReadOnlyUser=(typeof _ssIsReadOnlyRole==='function')&&_ssIsReadOnlyRole();
   const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
@@ -1496,7 +1498,7 @@ function _homeRenderSessionCard(sess, isLastActive){
   // target that silently no-ops (or ghost-deletes then reappears on
   // next sync) server-side. See _homeApplyReadOnlyState()'s identical
   // currentUserRole check for the Setup panel's equivalent gate.
-  const _isReadOnlyUser=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+  const _isReadOnlyUser=(typeof _ssIsReadOnlyRole==='function')&&_ssIsReadOnlyRole();
   const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 

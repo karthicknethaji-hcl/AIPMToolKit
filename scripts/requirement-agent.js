@@ -403,6 +403,14 @@ function _raApplySectionUpdates(conv,sectionUpdates){
       if(_RA_SECTION_NAMES[i].toLowerCase()===rawName.toLowerCase()){matched=_RA_SECTION_NAMES[i];break;}
     }
     if(!matched){console.warn('[requirement-agent] sectionUpdates: unrecognized section name, dropped',u.section);return;}
+    // Empty-body clearing is scoped to "Open Questions" only - the one
+    // section the prompt is actually instructed to send body:"" for (see
+    // prompts.js's "CRITICAL - openQuestions consistency" rule). Any OTHER
+    // section with an empty/whitespace-only body is dropped exactly like
+    // the old behavior (safe no-op, keeps existing content) instead of
+    // wiping real PM-written content because of a malformed/hallucinated
+    // turn that sent an empty body for the wrong section.
+    if(!body&&matched!=='Open Questions'){console.warn('[requirement-agent] sectionUpdates: empty body for non-Open-Questions section, dropped',matched);return;}
     if(!body)console.warn('[requirement-agent] sectionUpdates: empty body for section, clearing to placeholder',matched);
     map[matched]=body;
   });
