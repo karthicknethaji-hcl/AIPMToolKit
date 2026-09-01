@@ -1425,7 +1425,15 @@ function _homeRenderPinnedBanner(sess){
   // all — without this fallback, a real owner's own old session would
   // incorrectly hide the menu from THEM. Confirmed direction from
   // stakeholder: non-owner sees NO trigger at all, not an empty menu.
-  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  // Read Only role blocks the same actions the DB's RLS already blocks
+  // (Rename/Delete are UPDATE/DELETE) - without this, a read-only user
+  // viewing their OWN pre-downgrade sessions still passes the raw
+  // ownership check below and sees a live-looking 3-dot menu/rename
+  // target that silently no-ops (or ghost-deletes then reappears on
+  // next sync) server-side. See _homeApplyReadOnlyState()'s identical
+  // currentUserRole check for the Setup panel's equivalent gate.
+  const _isReadOnlyUser=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+  const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-pin-banner" onclick="homeSessionResume(\''+sess.id+'\')">';
@@ -1481,7 +1489,15 @@ function _homeRenderSessionCard(sess, isLastActive){
   // full rationale. Both render functions must apply this consistently,
   // since they render the same underlying session data in two different
   // card layouts (pinned banner vs. regular grid card).
-  const _isOwner=!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null);
+  // Read Only role blocks the same actions the DB's RLS already blocks
+  // (Rename/Delete are UPDATE/DELETE) - without this, a read-only user
+  // viewing their OWN pre-downgrade sessions still passes the raw
+  // ownership check below and sees a live-looking 3-dot menu/rename
+  // target that silently no-ops (or ghost-deletes then reappears on
+  // next sync) server-side. See _homeApplyReadOnlyState()'s identical
+  // currentUserRole check for the Setup panel's equivalent gate.
+  const _isReadOnlyUser=(typeof currentUserRole!=='undefined')&&currentUserRole==='readonly';
+  const _isOwner=!_isReadOnlyUser&&(!sess.userId||sess.userId===(typeof currentUser!=='undefined'&&currentUser?currentUser.id:null));
   const _dotsBtn=_isOwner?'<button class="tm-dots" aria-label="Session actions" aria-expanded="false" style="position:absolute;top:6px;right:6px;" onclick="event.stopPropagation();homeToggleSessMenu(this,\''+sess.id+'\')"><i class="ti ti-dots-vertical" aria-hidden="true"></i></button>':'';
 
   let html='<div class="home-sess-card'+(isLastActive?' home-sess-card-last-active':'')+(isActive?' home-sess-card-active':'')+'" onclick="homeSessionResume(\''+sess.id+'\')">';

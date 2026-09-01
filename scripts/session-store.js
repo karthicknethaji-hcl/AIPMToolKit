@@ -1335,6 +1335,17 @@ async function sessionStoreRestore(sessionId) {
 
 // Delete a session by ID
 function sessionStoreDelete(sessionId) {
+  // Fail fast for a readonly-role caller — before touching localStorage at
+  // all, so there is no optimistic "card vanishes, then reappears a few
+  // seconds later" flicker. This is a UX improvement on top of the real
+  // fix: mt_session_delete (see below) re-checks role+ownership server-side
+  // via SECURITY DEFINER, so a devtools call bypassing this early return
+  // would still be rejected at the DB layer, not just here.
+  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+    console.warn('sessionStoreDelete blocked: readonly role');
+    return;
+  }
+
   // Remove from localStorage first
   try {
     localStorage.removeItem(_SS_PREFIX + sessionId);
@@ -1344,23 +1355,19 @@ function sessionStoreDelete(sessionId) {
     console.warn('sessionStoreDelete localStorage failed:', e);
   }
 
-  // Async DB delete — fire and forget
+  // Async DB delete via mt_session_delete — a SECURITY DEFINER RPC that
+  // re-derives the caller server-side and re-checks ownership + active,
+  // non-readonly company membership inline (see
+  // sql/mt-sessions-readonly-mutation-guard.sql) — mt_sessions' own RLS is
+  // ownership-only, with no role condition, so a raw .delete() here would
+  // let a demoted-to-readonly owner still delete their own session via a
+  // direct API call, bypassing every client-side check above. Fire and
+  // forget, matching this function's existing pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
-        // company_id added per adversarial review — not because RLS is
-        // insufficient (a bare id match can't let anyone touch a session
-        // they don't already have rights to), but to stop a stale local
-        // index entry from letting a delete succeed against a session in a
-        // company other than the one presently active, if that entry ever
-        // pointed at one.
-        const activeCompanyId = (function(){
-          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
-        })();
-        let q = client.from(_SS_TABLE).delete().eq('id', sessionId);
-        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
-        const { error } = await q;
+        const { error } = await client.rpc('mt_session_delete', { p_session_id: sessionId });
         if (error) console.warn('sessionStoreDelete DB delete failed:', error.message);
       }
     } catch(e) {
@@ -1371,6 +1378,14 @@ function sessionStoreDelete(sessionId) {
 
 // Rename a session
 function sessionStoreRename(sessionId, newName) {
+  // Fail fast for a readonly-role caller — see sessionStoreDelete's matching
+  // comment. The real enforcement is mt_session_rename's server-side
+  // re-check; this just avoids a pointless localStorage write + round trip.
+  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+    console.warn('sessionStoreRename blocked: readonly role');
+    return;
+  }
+
   const trimmed = (newName || '').trim();
 
   // Update localStorage first
@@ -1384,18 +1399,19 @@ function sessionStoreRename(sessionId, newName) {
     console.warn('sessionStoreRename localStorage failed:', e);
   }
 
-  // Async DB update — fire and forget
+  // Async DB update via mt_session_rename — a SECURITY DEFINER RPC that
+  // re-derives the caller server-side and re-checks ownership + active,
+  // non-readonly company membership inline (see
+  // sql/mt-sessions-readonly-mutation-guard.sql) — mt_sessions' own RLS is
+  // ownership-only, with no role condition, so a raw .update() here would
+  // let a demoted-to-readonly owner still rename their own session via a
+  // direct API call, bypassing every client-side check above. Fire and
+  // forget, matching this function's existing pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
-        // Same company_id guard as sessionStoreDelete above, same reasoning.
-        const activeCompanyId = (function(){
-          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
-        })();
-        let q = client.from(_SS_TABLE).update({ name: trimmed }).eq('id', sessionId);
-        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
-        const { error } = await q;
+        const { error } = await client.rpc('mt_session_rename', { p_session_id: sessionId, p_new_name: trimmed });
         if (error) console.warn('sessionStoreRename DB update failed:', error.message);
       }
     } catch(e) {
@@ -1411,6 +1427,14 @@ function sessionStoreRename(sessionId, newName) {
 // content change, and the existing size-guard/wireframe-compression logic
 // in sessionStoreSave() would be wasted work for what's happening here.
 function homeSessionToggleShare(sessionId){
+  // Fail fast for a readonly-role caller — see sessionStoreDelete's matching
+  // comment. The real enforcement is mt_session_set_shared's server-side
+  // re-check; this just avoids a pointless localStorage write + round trip.
+  if (typeof currentUserRole !== 'undefined' && currentUserRole === 'readonly') {
+    console.warn('homeSessionToggleShare blocked: readonly role');
+    return;
+  }
+
   let _nextShared = null;
   // v9.08.01 fix: hoisted alongside _nextShared. The DB-write block below
   // is a separate async IIFE, outside this function's try block — `entry`
@@ -1462,17 +1486,23 @@ function homeSessionToggleShare(sessionId){
     }
   }
 
-  // Async DB update — fire and forget
+  // Async DB update via mt_session_set_shared — a SECURITY DEFINER RPC that
+  // re-derives the caller server-side and re-checks ownership + active,
+  // non-readonly company membership inline (see
+  // sql/mt-sessions-readonly-mutation-guard.sql) — mt_sessions' own RLS is
+  // ownership-only, with no role condition, so a raw .update() here would
+  // let a demoted-to-readonly owner still toggle sharing on their own
+  // session via a direct API call, bypassing every client-side check
+  // above. Fire and forget, matching this function's existing pattern.
   (async function() {
     try {
       const client = _ssGetClient();
       if (client) {
-        const activeCompanyId = (function(){
-          try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
-        })();
-        let q = client.from(_SS_TABLE).update({ is_shared: _nextShared, share_mode: _nextShareMode || 'view' }).eq('id', sessionId);
-        if (activeCompanyId) q = q.eq('company_id', activeCompanyId);
-        const { error } = await q;
+        const { error } = await client.rpc('mt_session_set_shared', {
+          p_session_id: sessionId,
+          p_is_shared: _nextShared,
+          p_share_mode: _nextShareMode || 'view'
+        });
         if (error) console.warn('homeSessionToggleShare DB update failed:', error.message);
       }
     } catch(e) {
