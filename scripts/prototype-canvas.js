@@ -59,6 +59,34 @@ function pcNormalizeBriefResponse(parsed) {
   };
 }
 
+// ── Outcome-Based Cost report-back (v9.31) — reports whether a
+// prototype-wireframe/prototype-brief call actually produced usable output,
+// via the existing Yield report-back endpoint (proxy/server.js,
+// POST /api/usage-events/units-generated). Fire-and-forget: this is
+// cost-accounting metadata, not user-facing state, so a failure here must
+// never block or delay the user seeing their prototype. Local copy of the
+// base-URL/auth-header pattern already duplicated per-file elsewhere in this
+// app (team-management.js's _tmProxyBase()/_tmCall(), cost-tower.js's
+// actLoadTeamNames()) rather than a cross-file call into any of them.
+async function _pcReportUnitsGenerated(clientCallId, unitsGenerated) {
+  try {
+    var authToken = '';
+    try { if (typeof authGetFreshToken === 'function') authToken = await authGetFreshToken(); } catch (e) {}
+    var host = window.location.hostname;
+    var isLocal = (host === '' || host === 'localhost' || host === '127.0.0.1');
+    var base = isLocal ? 'http://localhost:3001' : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
+    var companyId = (function () { try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || ''; } catch (e) { return ''; } })();
+    var headers = { 'Content-Type': 'application/json' };
+    if (authToken) headers['X-Auth-Token'] = authToken;
+    await fetch(base + '/api/usage-events/units-generated', {
+      method: 'POST', headers: headers,
+      body: JSON.stringify({ client_call_id: clientCallId, units_generated: unitsGenerated, company_id: companyId })
+    });
+  } catch (e) {
+    console.warn('[Prototype] units-generated report-back failed:', e);
+  }
+}
+
 // ── Style guide cache ──
 let _prototypeStyleCache = null;
 
@@ -1041,6 +1069,14 @@ async function pcGenerate(featId, triggerEl) {
   let call1Ok = false;
   let parsed1 = null;
 
+  // Outcome-Based Cost report-back ids (v9.31) — one per underlying AI call,
+  // not per click. Only briefCallId ever reports a nonzero units_generated;
+  // wireframeCallId may only ever report 0, on its own failure. See
+  // proxy/server.js's CALLER_ATTRIBUTION_MODE comment for why (double-count
+  // risk if this asymmetry is ever "fixed" to be symmetric).
+  const wireframeCallId = (typeof crypto!=='undefined'&&crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2));
+  const briefCallId = (typeof crypto!=='undefined'&&crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+'-'+Math.random().toString(36).slice(2)+'-b');
+
   try {
     // Fetch style guide (signal-aware — aborts correctly if user leaves)
     const styleGuide = await _pcGetStyleGuide(signal);
@@ -1055,13 +1091,22 @@ async function pcGenerate(featId, triggerEl) {
 
       let parsed1Raw;
       try {
-        const txt1 = await callAPI(wfPrompt.sys, wfPrompt.usr, 4000, signal, 'claude-haiku-4-5', 'prototype-wireframe');
+        const txt1 = await callAPI(wfPrompt.sys, wfPrompt.usr, 4000, signal, 'claude-haiku-4-5', 'prototype-wireframe', undefined, { client_call_id: wireframeCallId });
         const clean1 = txt1.replace(/```json|```/g, '').trim();
         try { parsed1Raw = JSON.parse(clean1); }
         catch(pe1) { throw new Error('Wireframe response could not be parsed. Please try again.'); }
         parsed1 = pcNormalizeWireframeResponse(parsed1Raw);
         call1Ok = true;
       } catch(e1) {
+        // Unconditional, and safe either way: if callAPI() itself threw
+        // (network/timeout), that row is already auto-resolved to 0
+        // server-side and this call is a no-op (report-back's WHERE
+        // units_generated IS NULL guard). Only meaningfully updates the row
+        // when callAPI() succeeded but JSON.parse/normalize failed after —
+        // that row is 'success' status, not eligible for the automatic
+        // error/timeout resolution, and would otherwise sit at
+        // units_generated=null forever, silently excluded from Attempts.
+        _pcReportUnitsGenerated(wireframeCallId, 0);
         e1.pcPhase = 1;
         throw e1;
       }
@@ -1089,11 +1134,14 @@ async function pcGenerate(featId, triggerEl) {
 
     let parsed2Raw;
     try {
-      const txt2 = await callAPI(briefPrompt.sys, briefPrompt.usr, 3000, signal, null, 'prototype-brief');
+      const txt2 = await callAPI(briefPrompt.sys, briefPrompt.usr, 3000, signal, null, 'prototype-brief', undefined, { client_call_id: briefCallId });
       const clean2 = txt2.replace(/```json|```/g, '').trim();
       try { parsed2Raw = JSON.parse(clean2); }
       catch(pe2) { throw new Error('Design brief response could not be parsed.'); }
     } catch(e2) {
+      // Unconditional, same idempotent-no-op reasoning as wireframe's catch
+      // above — already auto-resolved to 0 if callAPI() itself threw.
+      _pcReportUnitsGenerated(briefCallId, 0);
       e2.pcPhase = 2;
       throw e2;
     }
@@ -1111,10 +1159,23 @@ async function pcGenerate(featId, triggerEl) {
     try {
       briefData = pcNormalizeBriefResponse(parsed2Raw);
     } catch(e3a) {
+      _pcReportUnitsGenerated(briefCallId, 0);
       e3a.pcPhase = 3;
       e3a.pcSubphase = 'normalize';
       throw e3a;
     }
+
+    // Outcome-Based Cost: decide + report now, before the feature-existence
+    // check below — deliberately, not an oversight. "Created" measures that
+    // the model did its job, not that the user still has this feature to
+    // look at (confirmed product decision) — so this must fire even if the
+    // feature gets deleted, or the commit/render below crashes, a moment
+    // later. isNonUI features never attempt a wireframe, so the design
+    // brief's own substantive content is the only available signal for them.
+    const prototypeCreated = isNonUI
+      ? !!(briefData.screenPurpose && briefData.screenPurpose.trim())
+      : !!v.wireframeHTML;
+    _pcReportUnitsGenerated(briefCallId, prototypeCreated ? 1 : 0);
 
     // Feature existence check after Call 2
     const featNow = pcGetLiveFeature(featId);

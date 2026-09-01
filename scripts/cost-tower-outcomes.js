@@ -238,6 +238,15 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         // guards on this the same way it guards Release Plan's rollupCost,
         // rather than showing a wildly overstated avg from a near-empty count.
         units: hasAnyUnits ? units : null,
+        // Count of rows across this type's callers with a resolved (non-null)
+        // units_generated — meaningful today for any fixed_1 caller (always
+        // resolved), fills in for array/binary-counted callers as their own
+        // report-back wiring lands. Relies on the same invariant units above
+        // depends on: at most one caller per type ever reports a nonzero
+        // value for a given real attempt (see e.g. Prototype's
+        // prototype-wireframe/prototype-brief pairing) — if that's ever
+        // violated, this double-counts right alongside units.
+        attempts: currTypeCosts2.filter(function (e) { return e.units_generated !== null && e.units_generated !== undefined; }).length,
         failedSharePct: failedSharePct,
         trend: trendFields2.trend,
         trendDir: trendFields2.trendDir,
@@ -453,12 +462,13 @@ function outcomeCardHtml(id, t) {
     var unitsRow = t.units !== null
       ? '<div class="act-outcome-secondary-row"><span>' + t.units.toLocaleString() + ' generated</span><span></span></div>'
       : '<div class="act-outcome-secondary-row"><span class="act-cell-muted">Unit count not yet available</span><span></span></div>';
+    var attemptsRow = '<div class="act-outcome-secondary-row"><span>Attempts</span><span>' + t.attempts.toLocaleString() + '</span></div>';
     return '<div class="act-outcome-card" onclick="openOutcomeModal(\'' + id + '\')">' +
       '<div class="act-outcome-top"><span class="act-outcome-type-tag yield">Generated Artifact</span>' + trendBadge(t) + lowSampleBadge(t) + '</div>' +
       '<div class="act-outcome-name">' + t.name + '</div>' +
       '<div class="act-outcome-primary-label">Total Cost</div>' +
       '<div class="act-outcome-primary-stat">' + fmt$(yieldTotal(t)) + '</div>' +
-      avgRow + unitsRow +
+      attemptsRow + avgRow + unitsRow +
       (t.failedSharePct >= 3 ? '<div class="act-outcome-flag-row">&#9888; ' + t.failedSharePct + '% of cost from failed calls</div>' : '<div class="act-outcome-flag-row none">' + t.failedSharePct + '% of cost from failed calls</div>') +
       '<div class="act-outcome-card-foot"><span class="act-outcome-view-link">View formula &rarr;</span></div>' +
     '</div>';

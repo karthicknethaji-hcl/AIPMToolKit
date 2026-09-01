@@ -892,7 +892,12 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
   // relying on server-generated ids alone. crypto.randomUUID() is available
   // in all evergreen browsers this app targets; the fallback only matters
   // for an environment lacking it entirely.
-  const _clientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
+  // A caller that needs this id back afterward (to invoke the Yield
+  // report-back endpoint, POST /api/usage-events/units-generated) may supply
+  // its own via extraFields.client_call_id — this function has no return-shape
+  // change to expose one otherwise (it returns a bare string). Every other
+  // caller omits this field and gets the same auto-generated id as before.
+  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
 
   const body = JSON.stringify({
     model:_decision.model,

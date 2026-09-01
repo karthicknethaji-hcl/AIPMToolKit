@@ -1,5 +1,12 @@
 # Changelog — Product Studio
 
+## v9.31 - 2026-09-01: AI Control Tower: Prototype as a 12th outcome type
+
+- Added - Outcome-Based Cost now attributes Prototype Canvas's "Generate Prototype" spend (`prototype-wireframe`/`prototype-brief`) as its own card, with Total Cost, Avg Cost/Unit, and units generated — same pattern as the six existing Generated Artifact types. A prototype only counts as created if a usable result actually exists, not merely if the underlying API call didn't error (both failure modes — the call itself failing, and the call succeeding with no usable content — count the same way).
+- Added - `scripts/api.js`'s `callAPI()` can now accept a caller-supplied `client_call_id`, closing the gap that had left the existing Yield report-back endpoint (`POST /api/usage-events/units-generated`) unusable by any caller since it shipped — backward-compatible, every other call site is unaffected.
+- Added - Every yield-type card (all seven, not just Prototype) gained a new "Attempts" figure — count of resolved (non-null `units_generated`) calls — filling in immediately for `fixed_1` callers and growing for the rest as their own report-back wiring lands.
+- Fixed/Hardening - `prototype-wireframe` may only ever report a failure (`0`), never a success, to avoid double-counting a single "Generate Prototype" click's two underlying AI calls as two prototypes; enforced with comments at both the proxy config and the two frontend report-back call sites, not just by convention.
+
 ## v9.30 - 2026-09-01: AI Control Tower: Reporting Period filter for Overview & Outcome-Based Cost, layout cleanup
 
 - Added - Overview and Outcome-Based Cost now have their own independent Reporting Period filter (This Month / Last Month / Last 3 Months / Custom Range), matching Cost Breakdown's existing pattern and governing every widget on each screen. Outcome-Based Cost also gained the Export button it was missing.
