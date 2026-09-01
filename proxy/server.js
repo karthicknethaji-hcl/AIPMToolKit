@@ -243,6 +243,16 @@ const CALLER_ATTRIBUTION_MODE = {
   'ai-recommendations':        { mode: 'yield_anchor', outcomeType: 'ai_recommendation', unitsFrom: 'recommendations' },
   'diagnostic-leak':           { mode: 'yield_anchor', outcomeType: 'experiment', unitsFrom: 'experiments' },
   'outcome-pulse-suggest':     { mode: 'yield_anchor', outcomeType: 'experiment', unitsFrom: 'fixed_1' },
+  // Only prototype-brief ever reports a nonzero units_generated (0 or 1) —
+  // prototype-wireframe may only ever report 0, for its own failure. This
+  // protects TWO counts computed in cost-tower-outcomes.js's buildOutcomeTypes():
+  // units (summed across a type's callers) AND attempts (summed the same way,
+  // filtered on non-null). If both callers ever reported 1 on the same
+  // successful attempt, one real prototype would double-count as 2 in BOTH
+  // figures. See scripts/prototype-canvas.js's _pcReportUnitsGenerated() call
+  // sites for the enforcing code.
+  'prototype-wireframe':       { mode: 'yield_anchor', outcomeType: 'prototype', unitsFrom: 'prototypes' },
+  'prototype-brief':           { mode: 'yield_anchor', outcomeType: 'prototype', unitsFrom: 'prototypes' },
 
   'doc-summary':               { mode: 'attachable_support' },
 

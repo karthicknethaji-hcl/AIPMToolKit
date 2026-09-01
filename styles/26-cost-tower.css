@@ -44,6 +44,12 @@
 
 .act-screen-header-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px;}
 .act-screen-title-block{display:flex;flex-direction:column;gap:4px;}
+/* Wraps (period chip + Export button) as one flex child of
+   .act-screen-header-row, so justify-content:space-between only ever sees
+   two top-level children (title block, actions) — without this, a bare
+   third child would float in the row's middle instead of sitting flush
+   against Export. Used on Overview, Cost Breakdown, Outcome-Based Cost. */
+.act-header-actions{display:flex;align-items:center;gap:10px;flex-shrink:0;}
 .act-eyebrow{font-size:10px;font-weight:800;color:var(--blue);letter-spacing:1px;text-transform:uppercase;}
 .act-screen-subtitle{font-size:11px;color:var(--t3);}
 .act-section-title{font-size:14px;font-weight:800;color:var(--t1);margin:26px 0 6px;}
@@ -123,11 +129,7 @@ button:focus-visible.act-fv,
 .act-confidence-pill.warn{background:var(--amber-pale);color:var(--amber);}
 .act-confidence-dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
 
-.act-filter-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--card);border:1px solid var(--divider);border-radius:10px;padding:11px 12px;margin-bottom:18px;}
-.act-filter-group{display:flex;align-items:center;gap:8px;}
-.act-filter-group-label{font-size:10px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:0.5px;}
-.act-filter-divider{width:1px;height:20px;background:var(--divider);}
-.act-filter-toolbar-hint{font-size:10px;color:var(--t4);margin-left:auto;}
+.act-filter-toolbar-hint{font-size:10px;color:var(--t4);}
 
 /* ===== cards ===== */
 .act-scoped-card{border:1px solid var(--divider);border-radius:12px;padding:17px 18px;margin-bottom:16px;background:var(--white);}
@@ -136,6 +138,13 @@ button:focus-visible.act-fv,
 .act-scoped-card-note{font-size:10px;color:var(--t4);margin-top:9px;line-height:1.5;}
 .act-group-card{border:1px solid var(--divider);border-radius:13px;margin-bottom:18px;overflow:hidden;background:var(--white);}
 .act-group-head{background:var(--card);border-bottom:1px solid var(--divider);padding:12px 16px;}
+/* Scoped to Main Breakdown only (#act-main-breakdown), not .act-group-head
+   generally — Economics Signals/Operational Signals/Trust & Audit reuse the
+   same class with only kicker+title as children (no chip) and must keep
+   their current vertical stacking; this is the only one of the four that
+   gets a second flex item. flex-wrap:wrap is a safety net for the longest
+   Group By value ("Prompt Version") against the title text. */
+#act-main-breakdown .act-group-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;}
 .act-group-kicker{font-size:9.5px;font-weight:800;letter-spacing:.7px;color:var(--label);text-transform:uppercase;}
 .act-group-title{font-size:14px;font-weight:800;margin-top:2px;}
 .act-group-body{padding:16px 18px 18px;}

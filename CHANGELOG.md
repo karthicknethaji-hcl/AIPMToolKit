@@ -1,5 +1,22 @@
 # Changelog — Product Studio
 
+## v9.30.01 - 2026-09-01: AI Control Tower: Prototype as a 12th outcome type; boot loading-gate fix
+
+Note: bundling multiple unrelated fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01, v9.29.01) — this whole branch stays under the v9.30 feature release as patches until it ships as a whole, rather than spawning new feature-version numbers for each follow-on piece of work.
+
+- Added - Outcome-Based Cost now attributes Prototype Canvas's "Generate Prototype" spend (`prototype-wireframe`/`prototype-brief`) as its own card, with Total Cost, Avg Cost/Unit, and units generated — same pattern as the six existing Generated Artifact types. A prototype only counts as created if a usable result actually exists, not merely if the underlying API call didn't error (both failure modes — the call itself failing, and the call succeeding with no usable content — count the same way).
+- Added - `scripts/api.js`'s `callAPI()` can now accept a caller-supplied `client_call_id`, closing the gap that had left the existing Yield report-back endpoint (`POST /api/usage-events/units-generated`) unusable by any caller since it shipped — backward-compatible, every other call site is unaffected.
+- Added - Every yield-type card (all seven, not just Prototype) gained a new "Attempts" figure — count of resolved (non-null `units_generated`) calls — filling in immediately for `fixed_1` callers and growing for the rest as their own report-back wiring lands.
+- Fixed/Hardening - `prototype-wireframe` may only ever report a failure (`0`), never a success, to avoid double-counting a single "Generate Prototype" click's two underlying AI calls as two prototypes; enforced with comments at both the proxy config and the two frontend report-back call sites, not just by convention.
+- Fixed - The Control Tower's boot sequence hid the loading gate and revealed the app shell right after the auth/role check passed, before the actual data fetch completed — leaving the shell's content area blank for the 2-3s that took. The gate now stays up (with updated copy) through the whole fetch.
+
+## v9.30 - 2026-09-01: AI Control Tower: Reporting Period filter for Overview & Outcome-Based Cost, layout cleanup
+
+- Added - Overview and Outcome-Based Cost now have their own independent Reporting Period filter (This Month / Last Month / Last 3 Months / Custom Range), matching Cost Breakdown's existing pattern and governing every widget on each screen. Outcome-Based Cost also gained the Export button it was missing.
+- Changed - Cost Breakdown's Reporting Period filter moved into the screen's header row (next to Export, same position Overview/Outcome-Based Cost now use); the mid-page filter toolbar is gone and Group By moved into the Main Breakdown card's own header, since it only ever scoped that one table.
+- Changed - AI Governance's "Spend So Far" KPI is now labeled "Spend This Month (MTD)" with a new "Total spent overall" all-time total beneath it; tab order changed to Overview → Cost Breakdown → Outcome-Based Cost → AI Governance (insights-first, controls-last).
+- Fixed - Overview's spend-delta copy hardcoded "vs/above last month" in two places; both now read "vs/above prior period" now that the period is variable. Outcome-Based Cost's Outcome-Attributed Spend KPI no longer names "(Overview)" for the same reason — it could show a different period than what Outcome itself is displaying.
+
 ## v9.29.02 - 2026-09-01: Requirement Agent title/prompting fixes, panel-collapse persistence, readonly-session security hardening
 
 Note: bundling multiple unrelated fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01) — none of these were shipped individually before the next was found, so there was no intermediate version to attach each one to.

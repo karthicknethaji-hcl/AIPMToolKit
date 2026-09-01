@@ -152,6 +152,12 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
 
       var abandonedIds = {};
       currTypeOutcomes.forEach(function (o) { if (o.is_abandoned) abandonedIds[o.outcome_id] = true; });
+      // Completed and abandoned are mutually exclusive by construction
+      // (is_abandoned only ever applies to a still-in_progress outcome,
+      // per mt_outcomes_list()'s SQL) — an outcome_id can appear in at most
+      // one of completedIds/abandonedIds, never both.
+      var completedIds = {};
+      currTypeOutcomes.forEach(function (o) { if (o.status === 'completed') completedIds[o.outcome_id] = true; });
 
       var totalCost = actSumCost(currTypeCosts);
       var trendFields = _outcomesTrendFields(totalCost, actSumCost(prevTypeCosts));
@@ -164,6 +170,12 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         completed: currTypeOutcomes.filter(function (o) { return o.status === 'completed'; }).length,
         abandoned: currTypeOutcomes.filter(function (o) { return o.is_abandoned; }).length,
         totalCost: totalCost,
+        // Cost actually attributable to outcomes that reached status
+        // 'completed' — NOT totalCost minus sunkCost. That residual would
+        // silently include cost from outcomes still in progress (neither
+        // completed nor abandoned yet), which is a different, third bucket
+        // (see computePortfolio()'s inProgressValue).
+        completedCost: actSumCost(currTypeCosts.filter(function (e) { return completedIds[e.outcome_id]; })),
         sunkCost: actSumCost(currTypeCosts.filter(function (e) { return abandonedIds[e.outcome_id]; })),
         trend: trendFields.trend,
         trendDir: trendFields.trendDir,
@@ -226,6 +238,15 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         // guards on this the same way it guards Release Plan's rollupCost,
         // rather than showing a wildly overstated avg from a near-empty count.
         units: hasAnyUnits ? units : null,
+        // Count of rows across this type's callers with a resolved (non-null)
+        // units_generated — meaningful today for any fixed_1 caller (always
+        // resolved), fills in for array/binary-counted callers as their own
+        // report-back wiring lands. Relies on the same invariant units above
+        // depends on: at most one caller per type ever reports a nonzero
+        // value for a given real attempt (see e.g. Prototype's
+        // prototype-wireframe/prototype-brief pairing) — if that's ever
+        // violated, this double-counts right alongside units.
+        attempts: currTypeCosts2.filter(function (e) { return e.units_generated !== null && e.units_generated !== undefined; }).length,
         failedSharePct: failedSharePct,
         trend: trendFields2.trend,
         trendDir: trendFields2.trendDir,
@@ -265,13 +286,21 @@ function computePortfolio() {
   var yieldSpend = yields.reduce(function (s, t) { return s + yieldTotal(t); }, 0);
   var totalOutcomeSpend = deliverableSpend + yieldSpend;
   var totalSunk = deliverables.reduce(function (s, t) { return s + t.sunkCost; }, 0);
-  var completedValue = deliverableSpend - totalSunk;
+  // completedValue is cost actually attributed to status==='completed'
+  // outcomes (see buildOutcomeTypes()'s completedCost) — deliberately NOT
+  // deliverableSpend - totalSunk, which would silently fold in-progress
+  // (neither completed nor abandoned) cost into "completed." inProgressValue
+  // is the remainder, surfaced explicitly rather than dropped, so every
+  // dollar of deliverableSpend is accounted for across exactly one of the
+  // three buckets.
+  var completedValue = deliverables.reduce(function (s, t) { return s + t.completedCost; }, 0);
+  var inProgressValue = deliverableSpend - completedValue - totalSunk;
   var attempts = deliverables.reduce(function (s, t) { return s + t.attempts; }, 0);
   var completed = deliverables.reduce(function (s, t) { return s + t.completed; }, 0);
   var completionRate = attempts > 0 ? Math.round((completed / attempts) * 100) : 0;
   var unattributed = TOTAL_AI_SPEND_PERIOD - totalOutcomeSpend;
   var unattributedPct = TOTAL_AI_SPEND_PERIOD > 0 ? Math.round((unattributed / TOTAL_AI_SPEND_PERIOD) * 100) : 0;
-  return { deliverableSpend: deliverableSpend, yieldSpend: yieldSpend, totalOutcomeSpend: totalOutcomeSpend, totalSunk: totalSunk, completedValue: completedValue, attempts: attempts, completed: completed, completionRate: completionRate, unattributed: unattributed, unattributedPct: unattributedPct };
+  return { deliverableSpend: deliverableSpend, yieldSpend: yieldSpend, totalOutcomeSpend: totalOutcomeSpend, totalSunk: totalSunk, completedValue: completedValue, inProgressValue: inProgressValue, attempts: attempts, completed: completed, completionRate: completionRate, unattributed: unattributed, unattributedPct: unattributedPct };
 }
 
 function topCostType() {
@@ -339,8 +368,8 @@ function renderOutcomeSupport() {
   var el = document.getElementById('outcome-support');
   if (!el) return;
   el.innerHTML =
-    fmt$(p.totalOutcomeSpend) + ' was spent on outcome-generating work this period, ' + fmt$(p.completedValue) + ' of it landed in a completed deliverable and ' + fmt$(p.totalSunk) + ' was lost to abandoned work (' + p.completionRate + '% completion). ' +
-    fmt$(p.unattributed) + ' (' + p.unattributedPct + '% of this period\'s <b>total</b> AI spend, not just outcome-eligible spend) isn\'t attributed to any of the eleven outcome types yet, mostly small utility and assist calls made outside an active outcome\'s session.';
+    fmt$(p.totalOutcomeSpend) + ' was spent on outcome-generating work this period, ' + fmt$(p.completedValue) + ' of it landed in a completed deliverable, ' + fmt$(p.inProgressValue) + ' is still in progress, and ' + fmt$(p.totalSunk) + ' was lost to abandoned work (' + p.completionRate + '% completion). ' +
+    fmt$(p.unattributed) + ' (' + p.unattributedPct + '% of this period\'s <b>total</b> AI spend, not just outcome-eligible spend) isn\'t attributed to any of the twelve outcome types yet, mostly small utility and assist calls made outside an active outcome\'s session.';
 }
 
 function renderOutcomeKpiStrip() {
@@ -348,7 +377,7 @@ function renderOutcomeKpiStrip() {
   var strip = document.getElementById('outcome-kpi-strip');
   if (!strip) return;
   strip.innerHTML =
-    '<div class="act-kpi"><div class="act-kpi-label">Outcome-Attributed Spend</div><div class="act-kpi-value">' + fmt$(p.totalOutcomeSpend) + '</div><div class="act-kpi-sub">of ' + fmt$(TOTAL_AI_SPEND_PERIOD) + ' total AI spend (Overview)</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Outcome-Attributed Spend</div><div class="act-kpi-value">' + fmt$(p.totalOutcomeSpend) + '</div><div class="act-kpi-sub">of ' + fmt$(TOTAL_AI_SPEND_PERIOD) + ' total AI spend this period</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Completed Deliverable Cost</div><div class="act-kpi-value green">' + fmt$(p.completedValue) + '</div><div class="act-kpi-sub">deliverables only, cost not proof of value</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Abandoned Deliverable Cost</div><div class="act-kpi-value red">' + fmt$(p.totalSunk) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Completion Rate</div><div class="act-kpi-value">' + p.completionRate + '%</div><div class="act-kpi-sub">' + p.completed + ' of ' + p.attempts + ' attempts</div></div>' +
@@ -433,12 +462,13 @@ function outcomeCardHtml(id, t) {
     var unitsRow = t.units !== null
       ? '<div class="act-outcome-secondary-row"><span>' + t.units.toLocaleString() + ' generated</span><span></span></div>'
       : '<div class="act-outcome-secondary-row"><span class="act-cell-muted">Unit count not yet available</span><span></span></div>';
+    var attemptsRow = '<div class="act-outcome-secondary-row"><span>Attempts</span><span>' + t.attempts.toLocaleString() + '</span></div>';
     return '<div class="act-outcome-card" onclick="openOutcomeModal(\'' + id + '\')">' +
       '<div class="act-outcome-top"><span class="act-outcome-type-tag yield">Generated Artifact</span>' + trendBadge(t) + lowSampleBadge(t) + '</div>' +
       '<div class="act-outcome-name">' + t.name + '</div>' +
       '<div class="act-outcome-primary-label">Total Cost</div>' +
       '<div class="act-outcome-primary-stat">' + fmt$(yieldTotal(t)) + '</div>' +
-      avgRow + unitsRow +
+      attemptsRow + avgRow + unitsRow +
       (t.failedSharePct >= 3 ? '<div class="act-outcome-flag-row">&#9888; ' + t.failedSharePct + '% of cost from failed calls</div>' : '<div class="act-outcome-flag-row none">' + t.failedSharePct + '% of cost from failed calls</div>') +
       '<div class="act-outcome-card-foot"><span class="act-outcome-view-link">View formula &rarr;</span></div>' +
     '</div>';
@@ -560,8 +590,89 @@ function openOutcomeModal(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// Independent period state (spec Section 4.5) — mirrors actBreakdown/
+// actOverviewPeriod's shape and actSetBreakdownPeriod()'s period-resolution
+// logic exactly. Outcome-Based Cost no longer reuses actMain/actMonthRange
+// locals — it fetches both cost-event rows and outcome rows itself, for
+// current + prior range, so its filter genuinely governs every widget.
+// ══════════════════════════════════════════════════════════════════════
+
+var actOutcomePeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, outcomes: [], prevOutcomes: [], typeRows: [], callerModes: {} };
+
+// Sequence guard against out-of-order resolution — mirrors
+// _actOverviewPeriodSeq (cost-tower.js). If the user selects a second
+// period before the first one's fetch resolves, the first call's
+// continuation must not clobber the second's already-committed (or
+// still-pending) newer data and re-render with it.
+var _actOutcomePeriodSeq = 0;
+
+async function actSetOutcomePeriod(type, customStart, customEnd) {
+  actOutcomePeriod.type = type;
+  var mySeq = ++_actOutcomePeriodSeq;
+  var resolved = actResolvePeriodRange(type, customStart, customEnd);
+  var range = resolved.range, prior = resolved.prior;
+  actOutcomePeriod.start = range.start; actOutcomePeriod.end = range.end;
+  var valEl = document.getElementById('act-outcome-period-value');
+  if (valEl) valEl.textContent = actOutcomePeriod.label;
+  // All six fetches run in one round-trip, including _outcomesFetchTypes()/
+  // _outcomesFetchCallerModes() — neither depends on the period range, but
+  // running them here (rather than in actRenderOutcomeScreen(), after this
+  // Promise.all already resolved) avoids paying a second, fully sequential
+  // round-trip on every period change.
+  var results = await Promise.all([
+    actFetchRows(range.start, range.end),
+    actFetchRows(prior.start, prior.end),
+    _outcomesFetchOutcomeRows(range.start, range.end),
+    _outcomesFetchOutcomeRows(prior.start, prior.end),
+    _outcomesFetchTypes(),
+    _outcomesFetchCallerModes()
+  ]);
+  if (mySeq !== _actOutcomePeriodSeq) return;
+  actOutcomePeriod.rows = results[0];
+  actOutcomePeriod.prevRows = results[1];
+  actOutcomePeriod.outcomes = results[2];
+  actOutcomePeriod.prevOutcomes = results[3];
+  actOutcomePeriod.typeRows = results[4];
+  actOutcomePeriod.callerModes = results[5];
+  await actRenderOutcomeScreen();
+}
+
+function actSelectOutcomePeriodChip(type, label) {
+  actOutcomePeriod.label = label;
+  document.getElementById('act-outcome-period-menu').classList.remove('open');
+  actSetOutcomePeriod(type).catch(function (e) { console.error(e); });
+}
+
+function actOpenOutcomeCustomRangeModal() {
+  document.getElementById('act-outcome-period-menu').classList.remove('open');
+  document.getElementById('act-modal-title').textContent = 'Custom Date Range';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-config-grid">' +
+    '<div class="act-field"><div class="act-field-label">From</div><input id="act-outcome-custom-from" type="date"></div>' +
+    '<div class="act-field"><div class="act-field-label">To</div><input id="act-outcome-custom-to" type="date"></div>' +
+    '</div>' +
+    '<div style="margin-top:14px;color:var(--red);font-size:11px;" id="act-outcome-custom-range-error"></div>' +
+    '<div style="margin-top:14px;display:flex;justify-content:flex-end;"><button class="act-btn act-btn-primary act-btn-sm" onclick="actApplyOutcomeCustomRange()">Apply</button></div>';
+  actShowModal();
+}
+
+async function actApplyOutcomeCustomRange() {
+  var fromVal = document.getElementById('act-outcome-custom-from').value;
+  var toVal = document.getElementById('act-outcome-custom-to').value;
+  var errEl = document.getElementById('act-outcome-custom-range-error');
+  if (!fromVal || !toVal) { errEl.textContent = 'Choose both a start and end date.'; return; }
+  var start = new Date(fromVal + 'T00:00:00');
+  var end = new Date(new Date(toVal + 'T00:00:00').getTime() + 86400000);
+  if (start >= end) { errEl.textContent = 'Start date must be before end date.'; return; }
+  errEl.textContent = '';
+  actCloseModal();
+  actOutcomePeriod.label = fromVal + ' – ' + toVal;
+  await actSetOutcomePeriod('custom', start, end);
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // Orchestration — called once from actBoot()'s existing sequential chain
-// (after the initial Promise.all, alongside actRenderOverview()/
+// (after the initial Promise.all, alongside actSetOverviewPeriod()/
 // actSetBreakdownPeriod()), not lazily on tab entry. actShowScreen() is a
 // pure visibility toggle in this file (confirmed: no per-screen fetch logic
 // lives there) — every screen's data loads eagerly at boot, this one
@@ -570,22 +681,12 @@ function openOutcomeModal(id) {
 
 async function actRenderOutcomeScreen() {
   try {
-    var thisMonth = actMonthRange(0);
-    var lastMonth = actMonthRange(-1);
-
-    // Cost-event rows for both periods are already fetched and memoized by
-    // actLoadMainContext() (part of actBoot()'s earlier Promise.all) — reuse
-    // actMain.rows/actMain.prevRows directly rather than re-fetching.
-    var currCosts = (typeof actMain !== 'undefined' && actMain.rows) ? actMain.rows : await actFetchRows(thisMonth.start, thisMonth.end);
-    var prevCosts = (typeof actMain !== 'undefined' && actMain.prevRows) ? actMain.prevRows : await actFetchRows(lastMonth.start, lastMonth.end);
-
-    var results = await Promise.all([
-      _outcomesFetchTypes(),
-      _outcomesFetchOutcomeRows(thisMonth.start, thisMonth.end),
-      _outcomesFetchOutcomeRows(lastMonth.start, lastMonth.end),
-      _outcomesFetchCallerModes()
-    ]);
-    var typeRows = results[0], currOutcomes = results[1], prevOutcomes = results[2], callerModes = results[3];
+    var currCosts = actOutcomePeriod.rows;
+    var prevCosts = actOutcomePeriod.prevRows;
+    var currOutcomes = actOutcomePeriod.outcomes;
+    var prevOutcomes = actOutcomePeriod.prevOutcomes;
+    var typeRows = actOutcomePeriod.typeRows;
+    var callerModes = actOutcomePeriod.callerModes;
 
     TOTAL_AI_SPEND_PERIOD = actSumCost(currCosts);
     outcomeTypes = buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prevCosts, callerModes);
