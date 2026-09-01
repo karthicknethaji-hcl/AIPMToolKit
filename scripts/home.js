@@ -1023,11 +1023,9 @@ function mmRenderSessionPanel(){
 
   const p=sc.productProfile||{};
 
-  // Restore panel open state (may have been collapsed before navigating away)
+  // Restore panel collapsed state (may have been collapsed before navigating away)
   const isCollapsed=lp.classList.contains('collapsed');
-  // Ensure panelOpen state is synced — session panel always starts expanded
-  if(typeof panelOpen!=='undefined') panelOpen=true;
-  lp.classList.remove('collapsed');
+  if(typeof panelOpen!=='undefined') panelOpen=!isCollapsed;
   lp.classList.remove('sc-hidden');
 
   lp.innerHTML=`
@@ -1040,8 +1038,8 @@ function mmRenderSessionPanel(){
         )}</div>
       </div>
       <button class="collapse-btn" onclick="togglePanel()" title="Toggle panel">
-        <svg id="icon-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
-        <svg id="icon-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:none"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
+        <svg id="icon-exp" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="${isCollapsed?'display:none':''}"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+        <svg id="icon-col" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="${isCollapsed?'':'display:none'}"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>
       </button>
     </div>
     <div class="form-scroll" style="padding:12px 14px;overflow:hidden;">

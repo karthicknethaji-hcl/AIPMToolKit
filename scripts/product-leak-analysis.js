@@ -169,7 +169,11 @@ function laRenderAnalysis(){
   }
 
   const session=diagnosticSessions&&diagnosticSessions.find(function(s){return s.id===activeDiagnosticId;});
-  const laLeftHtml=laRenderLeftPanelInner(session,false);
+  // Restore panel collapsed state from the existing #la-left (la-tab stays in the
+  // DOM, just hidden, between tab switches - see laToggleLeftPanel()'s matching write).
+  const prevLaLeft=document.getElementById('la-left');
+  const laLeftCollapsed=!!(prevLaLeft&&prevLaLeft.classList.contains('collapsed'));
+  const laLeftHtml=laRenderLeftPanelInner(session,laLeftCollapsed);
   const activeRun=laGetActiveRun();
   const mainTitle=activeRun?activeRun.runLabel+' — diagnostic detail':'Experiment Canvas';
   const mainSub=activeRun
@@ -178,7 +182,7 @@ function laRenderAnalysis(){
 
   container.innerHTML=`
     <div class="la-layout">
-      <div class="la-left" id="la-left">${laLeftHtml}</div>
+      <div class="la-left${laLeftCollapsed?' collapsed':''}" id="la-left">${laLeftHtml}</div>
       <div class="la-main" id="la-main">
         <div class="la-main-content">
           <div class="la-scroll" id="la-scroll">

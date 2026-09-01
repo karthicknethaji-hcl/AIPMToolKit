@@ -270,7 +270,7 @@ function miToggleLeftPanel(){
   miLeftCollapsed=!miLeftCollapsed;
   const left=document.querySelector('.mi-left');
   if(!left)return;
-  left.classList.toggle('mi-left-collapsed',miLeftCollapsed);
+  left.classList.toggle('collapsed',miLeftCollapsed);
   // Re-render left panel so icon direction and visibility update correctly
   miRenderLeftPanel();
 }
@@ -382,7 +382,7 @@ function miRenderLeftPanel(){
 </div>`  ;
 
   // Re-apply collapsed class after re-render (innerHTML wipes it)
-  if(miLeftCollapsed) panel.classList.add('mi-left-collapsed');
+  if(miLeftCollapsed) panel.classList.add('collapsed');
 }
 
 // ── Section 1: Market Snapshot ──

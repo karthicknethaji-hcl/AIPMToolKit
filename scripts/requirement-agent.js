@@ -391,13 +391,19 @@ function _raApplySectionUpdates(conv,sectionUpdates){
   (sectionUpdates||[]).forEach(function(u){
     if(!u||typeof u!=='object')return;
     var rawName=String(u.section||'').trim().replace(/^#{1,6}\s*(?:\d+\.\s*)?/,'');
-    var body=String(u.body||'').trim();
-    if(!rawName||!body)return;
+    if(!rawName)return;
+    // u.body===undefined/null means the model sent no body at all for this
+    // entry - not a real update, drop it. An explicit body:"" IS a real
+    // update (a deliberate clear-to-placeholder, e.g. openQuestions just
+    // emptied out) and must be applied, not treated the same as "no update".
+    if(u.body===undefined||u.body===null)return;
+    var body=String(u.body).trim();
     var matched=null;
     for(var i=0;i<_RA_SECTION_NAMES.length;i++){
       if(_RA_SECTION_NAMES[i].toLowerCase()===rawName.toLowerCase()){matched=_RA_SECTION_NAMES[i];break;}
     }
     if(!matched){console.warn('[requirement-agent] sectionUpdates: unrecognized section name, dropped',u.section);return;}
+    if(!body)console.warn('[requirement-agent] sectionUpdates: empty body for section, clearing to placeholder',matched);
     map[matched]=body;
   });
   return _raBuildDraftMd(conv&&conv.title,map);
