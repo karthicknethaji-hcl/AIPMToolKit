@@ -45,9 +45,11 @@
 
 <div class="hdr">
   <div class="hdr-l">
-    <span class="logo-txt" id="logo-txt"></span>
-    <div class="hdr-sep" id="hdr-sep" style="display:none;"></div>
-    <span class="hdr-title">Product Studio</span>
+    <div class="hdr-brand-cluster" id="hdr-brand-cluster" onclick="switchTab('home')" title="Go to Home" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();switchTab('home');}">
+      <span class="logo-txt" id="logo-txt"></span>
+      <div class="hdr-sep" id="hdr-sep" style="display:none;"></div>
+      <span class="hdr-title">Product Studio</span>
+    </div>
     <span class="hdr-version" id="hdr-version"></span>
   </div>
   <div class="hdr-session-wrap" id="hdr-session-wrap">
