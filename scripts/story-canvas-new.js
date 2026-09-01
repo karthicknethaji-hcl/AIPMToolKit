@@ -11,6 +11,7 @@ let newScPanelFeatId=null;
 let newScFilterOpen=false;
 let newScActiveNavFeat=null; // null = All Stories, else feature id
 let newScProtoView=false;    // true = Prototype view active
+let newScNavCollapsed=false; // left nav collapsed state, persisted across newScRender() rebuilds
 
 // ── Normalize active feature state ──
 // Validates newScActiveNavFeat is still a visible SC feature.
@@ -97,14 +98,16 @@ function newScBuildLayout(){
   const isProto=!!(newScProtoView&&showToggle);
   const pcModeClass=isProto?' pc-mode':'';
   return `<div class="nsc-body">
-    <div class="nsc-left" id="nsc-left">
+    <div class="nsc-left${newScNavCollapsed?' collapsed':''}" id="nsc-left">
       <div class="nsc-left-hdr">
         <div class="nsc-left-hdr-inner">
           <div class="nsc-left-title">Story Canvas</div>
           <div class="nsc-left-sub">Groom and select stories for PI</div>
         </div>
-        <button class="sc-cap-nav-collapse" id="nsc-collapse-btn" onclick="newScToggleNav()" title="Collapse" style="color:var(--t3);">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/></svg>
+        <button class="sc-cap-nav-collapse" id="nsc-collapse-btn" onclick="newScToggleNav()" title="${newScNavCollapsed?'Expand':'Collapse'}" style="color:var(--t3);">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">${newScNavCollapsed
+            ?'<polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/>'
+            :'<polyline points="15 18 9 12 15 6"/><polyline points="21 18 15 12 21 6"/>'}</svg>
         </button>
       </div>
       <div id="nsc-nav-tree"></div>
@@ -375,10 +378,9 @@ function newScRenderLeftNav(){
 function newScToggleNav(){
   const nav=document.getElementById('nsc-left');
   if(!nav)return;
-  nav.classList.toggle('collapsed');
+  const isCol=newScNavCollapsed=nav.classList.toggle('collapsed');
   const btn=document.getElementById('nsc-collapse-btn');
   if(btn){
-    const isCol=nav.classList.contains('collapsed');
     btn.title=isCol?'Expand':'Collapse';
     btn.innerHTML=isCol
       ?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/><polyline points="3 18 9 12 3 6"/></svg>'
