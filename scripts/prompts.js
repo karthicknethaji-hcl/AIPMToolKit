@@ -913,6 +913,32 @@ function buildSummariseDocumentPrompt(truncatedText, fileName){
   return {sys:sys, usr:usr};
 }
 
+// ── buildRequirementAgentDocGistPrompt ──
+// v9.30.03 — lightweight, cheap gist + suggested-questions call fired
+// once, fire-and-forget, right after a mid-chat Requirement Agent upload
+// finishes indexing (requirement-agent.js's _raShowDocGist(), called from
+// raHandleUpload()). Deliberately NOT buildSummariseDocumentPrompt's full
+// docType/keyDecisions/constraints/metrics dossier above — that's a
+// heavier, differently-purposed structured extraction (Home's session-
+// document upload). This just gives the PM a starting point for what to
+// ask, so it stays small and cheap: one short gist line, a few candidate
+// questions, nothing else.
+function buildRequirementAgentDocGistPrompt(fileName, truncatedText){
+  var sys='You are a product analyst previewing a just-uploaded document for a product manager. Return ONLY valid JSON. No markdown, no backticks, no preamble.';
+  var usr='Skim this document and return JSON matching this exact schema:\n'
+    +'{\n'
+    +'  "gist": "1-2 sentences, max 40 words, plain-language description of what this document appears to cover",\n'
+    +'  "suggestedQuestions": ["question 1", "question 2", "question 3"]\n'
+    +'}\n\n'
+    +'Rules:\n'
+    +'- gist: hedge appropriately ("looks like", "appears to cover") since you are only skimming an excerpt, not fully verifying - never state its contents as certain fact.\n'
+    +'- suggestedQuestions: exactly 2-3 short, specific questions (max 15 words each) a product manager could ask about THIS document\'s actual content to help draft a requirement - not generic questions that would fit any document.\n'
+    +'- Base both fields only on what is actually in the document below - never invent content it does not contain.\n'
+    +'- filename hint: "'+fileName+'"\n\n'
+    +'DOCUMENT:\n'+truncatedText;
+  return {sys:sys, usr:usr};
+}
+
 // ── buildAIRecommendationsPrompt ──
 // Extracted from home.js AI recommendations panel.
 // Returns {sys, usr} for the next-action recommendations call.

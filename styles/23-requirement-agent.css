@@ -71,6 +71,16 @@
 .ra-finalized-note{font-size:11px;color:var(--t3);text-align:center;padding:6px 0;}
 .ra-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;padding:40px;}
 
+/* ── Attached-documents list (#ra-attached-docs, raRenderAttachedDocs()) ──
+   v9.30.03 — read-only traceability line, not a management surface (no
+   remove control, no per-file pill/icon — see the function's own comment
+   for why). :not(:empty) keeps the box at 0 height when there's nothing to
+   show (innerHTML is set to '' in that case). */
+.ra-attached-docs:not(:empty){padding:8px 16px 0;}
+.ra-doc-list-plain{font-size:10.5px;color:var(--t3);line-height:1.6;}
+.ra-doc-plain-item{color:var(--t2);}
+.ra-doc-plain-sep{margin:0 6px;color:var(--divider);}
+
 /* ── Right: live draft ──
    Standard 440px right-panel width (DESIGN_SYSTEM.md §5) + the mandatory
    chrome-content-chrome anatomy: var(--card) header/footer framing a #fff

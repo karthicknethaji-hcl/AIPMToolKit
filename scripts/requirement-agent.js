@@ -1011,15 +1011,49 @@ function _raQuickReplyHtml(cq){
     +'</div>';
   }).join('');
 }
+// v9.30.03 — suggested-questions chip row, rendered under a doc-gist
+// message (raAppendMessage's {suggestedQuestions:[...]} extra, set by
+// _raShowDocGist() after a mid-chat upload). Visually matches
+// .ra-quick-reply-chip/-row but is a DELIBERATELY separate field/click
+// handler from clarifyingQuestions: those are structured
+// {question,targetSection,options} tied into conv.openQuestions'
+// resolved-tracking for the brief's own Open Questions section (see
+// _raSanitizeClarifyingQuestions()) — plain "things you could ask about
+// this document" have no targetSection and must never be tracked as an
+// open drafting question.
+function _raSuggestedQuestionsHtml(questions){
+  if(!questions||!questions.length)return'';
+  return '<div class="ra-quick-reply-block">'
+    +'<div class="ra-quick-reply-row">'
+      +questions.map(function(q){
+        return '<button type="button" class="ra-quick-reply-chip" data-question="'+e(q)+'" onclick="raSuggestedQuestionClick(this)">'+e(q)+'</button>';
+      }).join('')
+    +'</div>'
+  +'</div>';
+}
+function raSuggestedQuestionClick(btnEl){
+  var conv=_raActiveConv();
+  if(!conv||raBusy||conv.status!=='draft')return;
+  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
+  var question=btnEl.dataset.question;
+  if(!question)return;
+  var block=btnEl.closest('.ra-quick-reply-block');
+  if(block)block.remove();
+  _raSubmitUserMessage(conv,question);
+}
 function _raBubbleHtml(m,idx,total){
   var isUser=m.role==='user';
   var highlightId='ra-msg-'+idx;
   var conv=_raActiveConv();
-  var showChips=!isUser&&idx===(total-1)&&conv&&conv.status==='draft'&&m.clarifyingQuestions&&m.clarifyingQuestions.length>0&&((typeof _raCanEditOwner!=='function')||_raCanEditOwner());
+  var isLast=idx===(total-1);
+  var canEdit=(typeof _raCanEditOwner!=='function')||_raCanEditOwner();
+  var showChips=!isUser&&isLast&&conv&&conv.status==='draft'&&m.clarifyingQuestions&&m.clarifyingQuestions.length>0&&canEdit;
+  var showSuggested=!isUser&&isLast&&conv&&conv.status==='draft'&&m.suggestedQuestions&&m.suggestedQuestions.length>0&&canEdit;
   return '<div class="gl-msg-row '+(isUser?'user':'agent')+'" id="'+highlightId+'">'
     +'<div class="gl-avatar '+(isUser?'user-av':'agent-av')+'">'+(isUser?e((typeof _glUserInitials==='function')?_glUserInitials():'You'):'AI')+'</div>'
     +'<div class="gl-bubble">'+(typeof _glFormatChatText==='function'?_glFormatChatText(m.text):e(m.text||''))
       +(showChips?_raQuickReplyHtml(m.clarifyingQuestions):'')
+      +(showSuggested?_raSuggestedQuestionsHtml(m.suggestedQuestions):'')
     +'</div>'
   +'</div>';
 }
@@ -1682,6 +1716,11 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
 // make: retrieval happens later, per-turn, in _raRunTurn(); this function's
 // only job is getting the document indexed.
 var RA_MAX_UPLOAD_WORDS=20000;
+// v9.30.03 — separate, much smaller cap for _raShowDocGist()'s own call,
+// below. That call only needs enough text to characterize the document, not
+// the full up-to-20,000-word ingest text — keeping it small keeps the
+// gist/suggested-questions step cheap and fast.
+var RA_GIST_MAX_WORDS=3000;
 // v9.27.01 code-review fix — shared by both raHandleUpload() branches (RAG-
 // on ingest and RAG-off ephemeral), which otherwise duplicated this same
 // extract-and-normalize preamble verbatim and had already begun to drift
@@ -1696,7 +1735,7 @@ async function _raExtractUpload(file){
 }
 // v14 code-review fix (round 3) — the original deterministic-hash approach
 // (derived purely from name+size+lastModified, no randomness at all) meant
-// re-uploading the EXACT same file after deliberately removing it always
+// re-uploading the EXACT same file after a client-side timeout always
 // regenerated the identical doc_id — which D4's lifecycle model correctly
 // treats as terminal and never resurrects, so that specific file could
 // never be re-attached to that conversation again, and the RPC's own
@@ -1705,23 +1744,17 @@ async function _raExtractUpload(file){
 //
 // Replaced with a short-lived, in-memory-only retry cache instead: the
 // SAME file re-selected while an earlier attempt for it is still pending
-// (not yet confirmed success, and not explicitly removed since) reuses
-// that attempt's id — which is what D4's idempotency path actually exists
-// for (a client-side timeout after the server already committed). Any
-// other case — a fresh upload, or re-uploading after the earlier attempt
-// succeeded or was removed — gets a brand new random id via _raUid(),
-// exactly like every other identity in this file. Cleared on confirmed
-// ingest success (raHandleUpload()) and on removal (raRemoveDocument()) —
-// see both call sites below.
+// (not yet confirmed success) reuses that attempt's id — which is what
+// D4's idempotency path actually exists for (a client-side timeout after
+// the server already committed). Any other case — a fresh upload, or
+// re-uploading after the earlier attempt succeeded — gets a brand new
+// random id via _raUid(), exactly like every other identity in this file.
+// Cleared on confirmed ingest success (raHandleUpload(), below) —
+// per-document removal no longer exists (v9.30.03), so that's the only
+// clear path now.
 var _raPendingUploadIds={}; // key: "convId|name|size|lastModified" -> doc_id
 function _raUploadIdKey(conv,file){
   return conv.id+'|'+file.name+'|'+file.size+'|'+(file.lastModified||0);
-}
-function _raClearPendingUploadIdsForConv(convId){
-  var prefix=convId+'|';
-  Object.keys(_raPendingUploadIds).forEach(function(k){
-    if(k.indexOf(prefix)===0)delete _raPendingUploadIds[k];
-  });
 }
 
 // Item 3 — renders (or clears) the staged-attachment chip for the given
@@ -1885,6 +1918,10 @@ async function raHandleUpload(inputEl){
     _raSetBusy(false);
     raAppendMessage(conv,'agent','Indexed '+file.name+'.'+(wasTruncated?' Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words were indexed - for a longer document, consider uploading just the most relevant section.':'')+' You can ask me about it anytime while this conversation is open.');
     raRenderAttachedDocs(conv);
+    // v9.30.03 — fire-and-forget: never awaited, so a slow or failed gist
+    // call can't delay or break the "Indexed" confirmation above (already
+    // shown) or leave raBusy stuck. See _raShowDocGist()'s own comment.
+    _raShowDocGist(conv,file.name,text);
   }catch(err){
     _raHideIndexing();
     _raSetBusy(false);
@@ -1900,39 +1937,72 @@ async function raHandleUpload(inputEl){
   }
 }
 
-// ── Attached-documents display + removal (D5, D7) ──
+// v9.30.03 — best-effort, fire-and-forget gist + suggested-questions,
+// fired once right after a successful upload (raHandleUpload(), above)
+// finishes indexing. Deliberately separate from raHandleUpload()'s own
+// try/catch and never awaited by its caller: the "Indexed X.docx"
+// confirmation the PM already saw must never wait on, or be undone by, this
+// purely-additive enrichment step. Any failure here is silent
+// (console.warn only) — the upload already fully succeeded without it.
+// Renders via the SAME {gist text + suggestedQuestions chips} shape as a
+// normal agent turn, so it reuses _raBubbleHtml()'s existing "chips only on
+// the last message" rendering rule (raQuickReplyClick's sibling,
+// raSuggestedQuestionClick(), immediately submits the clicked question so
+// the PM sees the new document actually being used, not just parked).
+async function _raShowDocGist(conv,fileName,text){
+  try{
+    if(typeof buildRequirementAgentDocGistPrompt!=='function'||typeof _raCallModel!=='function')return;
+    var words=(text||'').trim().split(/\s+/).filter(Boolean);
+    var gistInput=words.length>RA_GIST_MAX_WORDS?words.slice(0,RA_GIST_MAX_WORDS).join(' '):text;
+    var built=buildRequirementAgentDocGistPrompt(fileName,gistInput);
+    var raw=await _raCallModel(built.sys,built.usr,null);
+    var parsed=_raParseJSON(raw);
+    var gist=parsed&&String(parsed.gist||'').trim();
+    if(!gist)return;
+    // The PM may have switched conversations, or this one may have been
+    // finalized, while the call above was in flight — only render into a
+    // conversation that's still the one open and still a draft.
+    if(_raActiveConv()!==conv||conv.status!=='draft')return;
+    var questions=Array.isArray(parsed.suggestedQuestions)
+      ?parsed.suggestedQuestions.map(function(q){return String(q||'').trim();}).filter(Boolean).slice(0,3)
+      :[];
+    raAppendMessage(conv,'agent',gist,{suggestedQuestions:questions});
+  }catch(err){
+    console.warn('[requirement-agent] doc gist skipped',err);
+  }
+}
+
+// ── Attached-documents display (D5) — read-only ──
 // Fetches fresh from ra_list_documents() every time — never cached, per D5
 // — since a stale client-side list could show a document as attached after
-// it (or its whole conversation) was removed elsewhere.
+// its conversation was removed elsewhere (raResetState()'s cleanup pass).
+//
+// v9.30.03 — per-document removal deliberately dropped. Product call: once a
+// file is indexed here it behaves like an attachment sent in any chat-LLM
+// turn — permanent for the rest of THIS conversation, not an editable
+// "staged" item you can retract later, matching how ChatGPT/Claude-style
+// chat handles an uploaded file once it's part of the thread (only the
+// pre-send staged chip, _raRenderStagedAttachment(), is ever removable).
+// This list is now pure traceability ("what's grounding this conversation"),
+// not a management surface — no remove control, no file-type icon, and no
+// per-doc embedding-staleness badge (ra_search_doc_chunks already filters
+// non-matching embedding-schema-version chunks server-side via
+// p_current_schema_version, so a stale doc is silently excluded from
+// retrieval regardless of any UI signal — the badge was transparency-only,
+// never functionally load-bearing).
 async function raRenderAttachedDocs(conv){
   var box=document.getElementById('ra-attached-docs');
   if(!box)return;
-  // v9.27.01 code-review fix — ra_list_documents()/ra_remove_document() are
-  // plain Supabase RPCs with no Azure OpenAI embedding dependency, so a PM
-  // must still be able to see and remove documents ingested while RAG was
-  // previously ON even after the toggle is switched off — otherwise those
-  // rows become permanently invisible and unremovable through the UI for
-  // as long as the toggle stays off, while still silently occupying the
-  // 5-document cap. Only the embedding-dependent bits (new-upload ingest in
-  // raHandleUpload(), and retrieval search in _raRunTurn()) stay gated by
-  // _raRagEnabled() — fetching/removing the existing list is not.
+  // ra_list_documents() is a plain Supabase RPC with no Azure OpenAI
+  // embedding dependency, so this list stays visible even while RAG is
+  // toggled off — only new-upload ingest (raHandleUpload()) and retrieval
+  // search (_raRunTurn()) are gated by _raRagEnabled().
   var ragOff=!_raRagEnabled();
   var offNote='<div style="font-size:11px;color:var(--t3);">RAG is off - uploads apply only to your next message.</div>';
   if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function'){box.innerHTML=ragOff?offNote:'';return;}
-  // v14 code-review fix — these two calls don't depend on each other's
-  // result (embedInfo is only used to flag the "stale" badge on whatever
-  // ra_list_documents returns), so they run concurrently rather than one
-  // full round trip after another. Wrapped in try/catch — confirmed
-  // _pgtRpc() can still reject (not just resolve to {error}) if authInit()
-  // itself throws, so this degrades the same way the rest of RA's
-  // retrieval code does rather than surfacing an uncaught rejection.
-  var res,embedInfo;
+  var res;
   try{
-    var _raResults=await Promise.all([
-      _pgtRpc('ra_list_documents',{p_session_id:_activeSessionId,p_conversation_id:conv.id}),
-      (typeof _raGetEmbedInfo==='function')?_raGetEmbedInfo():Promise.resolve(null)
-    ]);
-    res=_raResults[0];embedInfo=_raResults[1];
+    res=await _pgtRpc('ra_list_documents',{p_session_id:_activeSessionId,p_conversation_id:conv.id});
   }catch(err){
     console.warn('[requirement-agent] raRenderAttachedDocs failed',err);
     if(_raActiveConv()===conv)box.innerHTML=ragOff?offNote:'';
@@ -1951,55 +2021,10 @@ async function raRenderAttachedDocs(conv){
   // switch only because #ra-attached-docs is part of the same DOM subtree.
   if(_raActiveConv()!==conv)return;
   if(!res||res.error||!Array.isArray(res.data)||!res.data.length){box.innerHTML=ragOff?offNote:'';return;}
-  var canEdit=(typeof _raCanEditOwner!=='function')||_raCanEditOwner();
-  box.innerHTML=(ragOff?'<div style="font-size:11px;color:var(--t3);margin-bottom:4px;">RAG is off - these won\'t be searched, but you can still remove them.</div>':'')
-    +'<div class="ra-doc-list">'+res.data.map(function(d){
-    var stale=!!(embedInfo&&embedInfo.embedding_schema_version&&d.embedding_schema_version&&d.embedding_schema_version!==embedInfo.embedding_schema_version);
-    return '<div class="ra-doc-chip" title="'+e(d.doc_name)+'">'
-      +'<i class="ti ti-file-text" style="font-size:11px;" aria-hidden="true"></i>'
-      +'<span class="ra-doc-chip-name">'+e(d.doc_name)+'</span>'
-      +'<span class="ra-doc-chip-date">'+e(_raRelTime(d.created_at))+'</span>'
-      +(stale?'<span class="ra-doc-chip-stale" title="Indexed under an older embedding model - not matched against your current questions until it is re-uploaded">older index</span>':'')
-      +(canEdit?('<button type="button" class="ra-doc-chip-remove" onclick="raRemoveDocument(\''+e(conv.id)+'\',\''+e(d.doc_id)+'\')" title="Remove"><i class="ti ti-x" style="font-size:9px;" aria-hidden="true"></i></button>'):'')
-    +'</div>';
-  }).join('')+'</div>';
-}
-
-async function raRemoveDocument(convId,docId){
-  // v9.27.01 code-review fix — no _raRagEnabled() guard here: ra_remove_document
-  // is a plain Supabase RPC with no embedding dependency, and raRenderAttachedDocs()
-  // now renders this button even while RAG is off (see its own comment) so a PM
-  // can still remove documents ingested from before the toggle was switched off.
-  if(typeof _raCanEditOwner==='function'&&!_raCanEditOwner())return;
-  var conv=_raFindConv(convId);
-  if(!conv||typeof _activeSessionId==='undefined'||!_activeSessionId||typeof _pgtRpc!=='function')return;
-  // v14 code-review fix — wrapped in try/catch, same reasoning as
-  // raRenderAttachedDocs() above: confirmed _pgtRpc() can still reject
-  // (authInit() itself throwing), not just resolve to {error}.
-  var res;
-  try{
-    res=await _pgtRpc('ra_remove_document',{p_session_id:_activeSessionId,p_conversation_id:convId,p_doc_id:docId});
-  }catch(err){
-    if(typeof showToast==='function')showToast((err&&err.message)||'Could not remove document.','warn');
-    else console.warn('[requirement-agent] raRemoveDocument failed',err);
-    return;
-  }
-  if(res&&res.error){
-    if(typeof showToast==='function')showToast(res.error.message||'Could not remove document.','warn');
-    else console.warn('[requirement-agent] raRemoveDocument failed',res.error);
-    return;
-  }
-  // v14 code-review fix (round 3) — a removal invalidates any cached
-  // pending-upload id for this conversation, so a future re-upload of the
-  // same file (deliberately re-attaching it, not retrying a failed
-  // attempt) gets a fresh random id instead of colliding with the one that
-  // was just tombstoned. Coarse (clears every pending id for this
-  // conversation, not just the removed doc's own file) but safe — the
-  // worst case is a legitimate in-flight retry loses its cached id and
-  // falls back to a fresh one, which is exactly this file's pre-round-2
-  // behavior, not a regression.
-  _raClearPendingUploadIdsForConv(convId);
-  raRenderAttachedDocs(conv);
+  box.innerHTML=(ragOff?'<div style="font-size:11px;color:var(--t3);margin-bottom:4px;">RAG is off - these won\'t be searched for your next message.</div>':'')
+    +'<div class="ra-doc-list-plain">Attached: '+res.data.map(function(d){
+      return '<span class="ra-doc-plain-item" title="'+e(d.doc_name)+'">'+e(d.doc_name)+' ('+e(_raRelTime(d.created_at))+')</span>';
+    }).join('<span class="ra-doc-plain-sep">&middot;</span>')+'</div>';
 }
 
 // ── Live draft (right panel) ──
