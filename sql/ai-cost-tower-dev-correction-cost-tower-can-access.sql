@@ -359,7 +359,7 @@ $function$;
 
 -- 11 -- retire the old admin-only function LAST, only once all 7 real
 -- dependents above have been switched to _cost_tower_can_access.
-DROP FUNCTION public._cost_tower_is_admin(uuid, text);
+DROP FUNCTION IF EXISTS public._cost_tower_is_admin(uuid, text);
 
 -- 12 -- Fix: dev's original multi-app migration had the same gap as the
 -- tracked prod file did until this fix -- a CREATE OR REPLACE FUNCTION with
@@ -367,12 +367,12 @@ DROP FUNCTION public._cost_tower_is_admin(uuid, text);
 -- old pre-multi-app signature. Dev has been carrying these unused since
 -- that migration ran. Confirmed safe the same way as prod: every current
 -- call site already passes p_app_id, nothing calls these old signatures.
-DROP FUNCTION public.mt_ai_alerts_list(uuid);
-DROP FUNCTION public.mt_ai_budget_get_active(uuid);
-DROP FUNCTION public.mt_ai_budget_upsert(uuid, numeric, text, numeric, numeric, text, text);
-DROP FUNCTION public.mt_ai_cost_events_list(uuid, timestamp with time zone, timestamp with time zone);
-DROP FUNCTION public.mt_outcomes_list(uuid, timestamp with time zone, timestamp with time zone);
-DROP FUNCTION public.mt_outcome_types_list();
+DROP FUNCTION IF EXISTS public.mt_ai_alerts_list(uuid);
+DROP FUNCTION IF EXISTS public.mt_ai_budget_get_active(uuid);
+DROP FUNCTION IF EXISTS public.mt_ai_budget_upsert(uuid, numeric, text, numeric, numeric, text, text);
+DROP FUNCTION IF EXISTS public.mt_ai_cost_events_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION IF EXISTS public.mt_outcomes_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION IF EXISTS public.mt_outcome_types_list();
 
 -- 13 -- Fix: dev's original mt_company_apps_list shipped as a 3-column
 -- return (app_id, name, is_active) with no ordering. Prod's tracked
@@ -385,7 +385,7 @@ DROP FUNCTION public.mt_outcome_types_list();
 -- non-deterministic once a company has 2+ apps. DROP is required here,
 -- not CREATE OR REPLACE -- Postgres cannot change a function's return
 -- column list in place.
-DROP FUNCTION public.mt_company_apps_list(uuid);
+DROP FUNCTION IF EXISTS public.mt_company_apps_list(uuid);
 
 CREATE OR REPLACE FUNCTION public.mt_company_apps_list(p_company_id uuid)
  RETURNS TABLE(app_id text, name text, is_active boolean, granted_at timestamptz, supports_enforcement boolean)
