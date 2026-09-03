@@ -1012,8 +1012,8 @@ function _raQuickReplyHtml(cq){
   }).join('');
 }
 // v9.30.03 — suggested-questions chip row, rendered under a doc-gist
-// message (raAppendMessage's {suggestedQuestions:[...]} extra, set by
-// _raShowDocGist() after a mid-chat upload). Visually matches
+// message (raAppendMessage's {suggestedQuestions:[...]} extra, built from
+// _raGetDocGist()'s result in raHandleUpload()). Visually matches
 // .ra-quick-reply-chip/-row but is a DELIBERATELY separate field/click
 // handler from clarifyingQuestions: those are structured
 // {question,targetSection,options} tied into conv.openQuestions'
@@ -1381,6 +1381,7 @@ async function raRunOpeningTurn(conv){
     if(typeof endAiGen==='function')endAiGen();
     if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I had trouble putting together an opening summary just now. Try typing a message below and I’ll pick this up from there.');
+      _raPersist();
       return;
     }
     // QA issue #7 — use the AI's own contextual suggestedTitle if still on
@@ -1414,6 +1415,7 @@ async function raRunOpeningTurn(conv){
     if(err&&err.name==='AbortError')return; // user chose "Leave anyway" — no error bubble needed
     console.warn('[requirement-agent] opening turn failed',err);
     raAppendMessage(conv,'agent','Something went wrong generating the opening summary ('+(err&&err.message?err.message:'unknown error')+'). Type a message below, or refresh and try again.');
+    _raPersist();
   }finally{
     _raSetBusy(false);
   }
@@ -1460,7 +1462,11 @@ async function _raSubmitUserMessage(conv,text,staged){
   raAppendMessage(conv,'user',displayText);
   await _raRunTurn(conv,text,uploadedDocText,uploadedDocName);
   if(wasTruncated){
+    // v9.30.05 code-review fix — _raRunTurn()'s own persist (its success
+    // path) already ran before this message exists, so nothing else in
+    // this flow would ever save it; persisted explicitly here instead.
     raAppendMessage(conv,'agent','Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words of '+uploadedDocName+' were used - for a longer document, consider uploading just the most relevant section.');
+    _raPersist();
   }
   return true;
 }
@@ -1669,6 +1675,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     if(typeof endAiGen==='function')endAiGen();
     if(!parsed||!Array.isArray(parsed.sectionUpdates)){
       raAppendMessage(conv,'agent','I couldn’t process that update. Could you rephrase, or try again?');
+      _raPersist();
       return;
     }
     // Gated on titleLocked, not titleIsPlaceholder — a PM's explicit rename
@@ -1701,6 +1708,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     if(err&&err.name==='AbortError')return; // user chose "Leave anyway" — no error bubble needed
     console.warn('[requirement-agent] turn failed',err);
     raAppendMessage(conv,'agent','Something went wrong processing that ('+(err&&err.message?err.message:'unknown error')+'). Please try again.');
+    _raPersist();
   }finally{
     _raSetBusy(false);
   }
@@ -1716,7 +1724,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
 // make: retrieval happens later, per-turn, in _raRunTurn(); this function's
 // only job is getting the document indexed.
 var RA_MAX_UPLOAD_WORDS=20000;
-// v9.30.03 — separate, much smaller cap for _raShowDocGist()'s own call,
+// v9.30.03 — separate, much smaller cap for _raGetDocGist()'s own call,
 // below. That call only needs enough text to characterize the document, not
 // the full up-to-20,000-word ingest text — keeping it small keeps the
 // gist/suggested-questions step cheap and fast.
@@ -1794,6 +1802,7 @@ async function raHandleUpload(inputEl){
       _raSetBusy(false);
       if(!text||!text.trim()){
         raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+        _raPersist();
         return;
       }
       // Stage, don't submit — replaces any previously staged attachment for
@@ -1816,6 +1825,7 @@ async function raHandleUpload(inputEl){
         ?file.name+' is password-protected - remove the password and re-upload.'
         :'Could not read '+file.name+'.';
       raAppendMessage(conv,'agent',msg);
+      _raPersist();
     }
     return;
   }
@@ -1826,8 +1836,38 @@ async function raHandleUpload(inputEl){
   // extract/embed awaits below could pick up a DIFFERENT session's id if
   // the PM switched sessions mid-upload.
   var sessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
+
+  // v9.30.05 code-review fixes, both scoped to this RAG-on branch (the one
+  // with several multi-second awaits — embed, ingest, the gist call):
+  //  - _raPersistThisUpload(): _raPersist() itself always targets the LIVE
+  //    _activeSessionId global, not any argument, so calling it after the
+  //    PM has switched to a DIFFERENT session mid-upload would silently
+  //    persist that other session's own snapshot while this upload's
+  //    message is never saved anywhere. Guards on the sessionId captured
+  //    above — the same identity already used for every RPC call here —
+  //    and skips the persist rather than risk that silent misdirected save.
+  //  - _raUploadReject()/_raUploadFailAfterIndexing(): the
+  //    raAppendMessage()+persist(+cleanup) sequence was repeated verbatim
+  //    at every one of this branch's early-return/catch points; a future
+  //    edit to it (or a new early return) could easily miss the persist
+  //    call at one site, silently reintroducing the very bug these are
+  //    fixing. One call site per pattern instead of nine.
+  function _raPersistThisUpload(){
+    if(typeof _activeSessionId==='undefined'||_activeSessionId===sessionId)_raPersist();
+  }
+  function _raUploadReject(msg){
+    raAppendMessage(conv,'agent',msg);
+    _raPersistThisUpload();
+  }
+  function _raUploadFailAfterIndexing(msg){
+    _raHideIndexing();
+    _raSetBusy(false);
+    raAppendMessage(conv,'agent',msg);
+    _raPersistThisUpload();
+  }
+
   if(!sessionId){
-    raAppendMessage(conv,'agent','Could not upload '+file.name+' - no active session.');
+    _raUploadReject('Could not upload '+file.name+' - no active session.');
     return;
   }
   // v14 code-review fix — filename length checked client-side, before
@@ -1835,7 +1875,7 @@ async function raHandleUpload(inputEl){
   // catch this too, but only after extraction AND embedding already ran -
   // this rejects it for free, before any of that work starts.
   if(file.name.length>300){
-    raAppendMessage(conv,'agent','That filename is too long (over 300 characters) - rename the file and try again.');
+    _raUploadReject('That filename is too long (over 300 characters) - rename the file and try again.');
     return;
   }
 
@@ -1852,15 +1892,15 @@ async function raHandleUpload(inputEl){
   try{
     _raCountRes=await _pgtRpc('ra_list_documents',{p_session_id:sessionId,p_conversation_id:conv.id});
   }catch(err){
-    raAppendMessage(conv,'agent',(err&&err.message)||('Could not upload '+file.name+'.'));
+    _raUploadReject((err&&err.message)||('Could not upload '+file.name+'.'));
     return;
   }
   if(_raCountRes&&_raCountRes.error){
-    raAppendMessage(conv,'agent',_raCountRes.error.message||('Could not upload '+file.name+'.'));
+    _raUploadReject(_raCountRes.error.message||('Could not upload '+file.name+'.'));
     return;
   }
   if(Array.isArray(_raCountRes&&_raCountRes.data)&&_raCountRes.data.length>=5){
-    raAppendMessage(conv,'agent','Maximum 5 documents per conversation reached - remove one before uploading another.');
+    _raUploadReject('Maximum 5 documents per conversation reached - remove one before uploading another.');
     return;
   }
 
@@ -1871,9 +1911,7 @@ async function raHandleUpload(inputEl){
     var _raExt=await _raExtractUpload(file);
     var text=_raExt.text,wasTruncated=_raExt.wasTruncated;
     if(!text||!text.trim()){
-      _raHideIndexing();
-      _raSetBusy(false);
-      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+      _raUploadFailAfterIndexing(file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
       return;
     }
 
@@ -1883,9 +1921,7 @@ async function raHandleUpload(inputEl){
     // cap — see _raCapChunkChars()'s own comment in utils.js).
     var chunks=_raCapChunkChars(chunkText(text));
     if(!chunks.length){
-      _raHideIndexing();
-      _raSetBusy(false);
-      raAppendMessage(conv,'agent',file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
+      _raUploadFailAfterIndexing(file.name+' didn’t have any readable text - try a different file, or tell me about it directly in chat.');
       return;
     }
 
@@ -1914,17 +1950,42 @@ async function raHandleUpload(inputEl){
     if(ingestRes&&ingestRes.error)throw ingestRes.error;
     delete _raPendingUploadIds[_raUpKey]; // confirmed success - no longer "pending"; a future re-upload of this same file gets a fresh id
 
-    _raHideIndexing();
-    _raSetBusy(false);
-    raAppendMessage(conv,'agent','Indexed '+file.name+'.'+(wasTruncated?' Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words were indexed - for a longer document, consider uploading just the most relevant section.':'')+' You can ask me about it anytime while this conversation is open.');
+    // Attached-docs list reflects real, already-committed backend state, so
+    // it's shown immediately — independent of the gist wait below.
     raRenderAttachedDocs(conv);
-    // v9.30.03 — fire-and-forget: never awaited, so a slow or failed gist
-    // call can't delay or break the "Indexed" confirmation above (already
-    // shown) or leave raBusy stuck. See _raShowDocGist()'s own comment.
-    _raShowDocGist(conv,file.name,text);
-  }catch(err){
+
+    // v9.30.04 — the spinner (and raBusy, which keeps the composer from
+    // accepting a new message mid-upload) is now held through the gist call
+    // too, not just embed/ingest, and the two outcomes are revealed as ONE
+    // merged message. Confirmed via live PM feedback on the earlier design
+    // (separate, later, fire-and-forget gist message): "Indexed X" appearing
+    // immediately read as "upload finished, nothing else coming" — the PM
+    // had already started typing by the time the gist/suggested-questions
+    // message popped in seconds later, unprompted. _raGetDocGist() is
+    // internally bounded by RA_GIST_TIMEOUT_MS, so this can never leave the
+    // PM waiting indefinitely — on timeout or failure it resolves null and
+    // the plain "Indexed X..." confirmation below (today's original copy)
+    // is used as-is, with no chips and no later pop-in for the same reason.
+    var truncNote=wasTruncated?' Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words were indexed - for a longer document, consider uploading just the most relevant section.':'';
+    var gistResult=await _raGetDocGist(file.name,text);
     _raHideIndexing();
     _raSetBusy(false);
+    // v9.30.05 code-review fix — restores the guard the old, separate
+    // _raShowDocGist() had before its own append (dropped when its message
+    // was merged into this one): raOpenConversation() has no busy guard
+    // (see this branch's own earlier comment), so the PM can switch to a
+    // different conversation during this up-to-8s wait. raAppendMessage()
+    // is DOM-unconditional — appending here regardless would paint this
+    // confirmation (and its suggested-question chips, clickable via
+    // _raActiveConv()) into whichever OTHER conversation is now on screen.
+    if(_raActiveConv()!==conv||conv.status!=='draft')return;
+    // v9.30.05 code-review fix — one call with a computed tail instead of
+    // two near-identical raAppendMessage calls that both rebuilt the same
+    // 'Indexed '+file.name+'.'+truncNote+' ' prefix.
+    var tail=(gistResult&&gistResult.gist)?gistResult.gist:'You can ask me about it anytime while this conversation is open.';
+    raAppendMessage(conv,'agent','Indexed '+file.name+'.'+truncNote+' '+tail,{suggestedQuestions:gistResult&&gistResult.suggestedQuestions});
+    _raPersistThisUpload();
+  }catch(err){
     var msg;
     if(err&&err.message==='PASSWORD_PROTECTED'){
       msg=file.name+' is password-protected - remove the password and re-upload.';
@@ -1933,42 +1994,67 @@ async function raHandleUpload(inputEl){
     }else{
       msg='Could not upload '+file.name+'.';
     }
-    raAppendMessage(conv,'agent',msg);
+    _raUploadFailAfterIndexing(msg);
   }
 }
 
-// v9.30.03 — best-effort, fire-and-forget gist + suggested-questions,
-// fired once right after a successful upload (raHandleUpload(), above)
-// finishes indexing. Deliberately separate from raHandleUpload()'s own
-// try/catch and never awaited by its caller: the "Indexed X.docx"
-// confirmation the PM already saw must never wait on, or be undone by, this
-// purely-additive enrichment step. Any failure here is silent
-// (console.warn only) — the upload already fully succeeded without it.
-// Renders via the SAME {gist text + suggestedQuestions chips} shape as a
-// normal agent turn, so it reuses _raBubbleHtml()'s existing "chips only on
-// the last message" rendering rule (raQuickReplyClick's sibling,
-// raSuggestedQuestionClick(), immediately submits the clicked question so
-// the PM sees the new document actually being used, not just parked).
-async function _raShowDocGist(conv,fileName,text){
+// v9.30.04 — returns {gist,suggestedQuestions} once resolved, or null on
+// any failure/timeout; appends nothing itself (raHandleUpload(), above,
+// owns building and appending the single merged confirmation message, and
+// deciding the plain-copy fallback when this returns null).
+var RA_GIST_TIMEOUT_MS=8000;
+async function _raGetDocGist(fileName,text){
   try{
-    if(typeof buildRequirementAgentDocGistPrompt!=='function'||typeof _raCallModel!=='function')return;
-    var words=(text||'').trim().split(/\s+/).filter(Boolean);
-    var gistInput=words.length>RA_GIST_MAX_WORDS?words.slice(0,RA_GIST_MAX_WORDS).join(' '):text;
+    if(typeof buildRequirementAgentDocGistPrompt!=='function'||typeof _raCallModel!=='function')return null;
+    // v9.30.05 code-review fix (efficiency) — cheap length pre-check before
+    // the expensive split/filter below, which only ever matters for a
+    // document long enough to plausibly exceed RA_GIST_MAX_WORDS words; *2
+    // is a deliberately conservative (short) chars-per-word floor, so this
+    // can never skip truncation for a document that's actually over the
+    // cap. The common case (a short upload) now skips tokenizing the whole
+    // document just to learn it's already under the cap.
+    var gistInput=text;
+    if(text&&text.length>RA_GIST_MAX_WORDS*2){
+      var words=text.trim().split(/\s+/).filter(Boolean);
+      if(words.length>RA_GIST_MAX_WORDS)gistInput=words.slice(0,RA_GIST_MAX_WORDS).join(' ');
+    }
     var built=buildRequirementAgentDocGistPrompt(fileName,gistInput);
-    var raw=await _raCallModel(built.sys,built.usr,null);
+    // v9.30.05 code-review fix — AbortController is already used
+    // unconditionally elsewhere in this codebase (utils.js's startAiGen(),
+    // itself called by this file's own raRunOpeningTurn()/_raRunTurn()), so
+    // the previous typeof guard here was inconsistent, defensive complexity
+    // for a browser gap nothing else in this app guards against.
+    var controller=new AbortController();
+    // v9.30.05 code-review fix — the abort signal only reaches the eventual
+    // fetch() inside callAPI(); it does NOT cover the authGetFreshToken()
+    // await callAPI() runs before that fetch, so a stall there wasn't
+    // actually bounded by this timeout despite the old comment's claim.
+    // Racing the whole call against a timeout (in addition to still
+    // aborting, so the fetch itself is cancelled once/if reached)
+    // guarantees this never waits past RA_GIST_TIMEOUT_MS regardless of
+    // which stage stalls. The model call gets its own .catch() so a
+    // rejection landing after the timeout already won the race never
+    // surfaces as an unhandled promise rejection.
+    var timer;
+    var timeoutPromise=new Promise(function(resolve){
+      timer=setTimeout(function(){controller.abort();resolve(null);},RA_GIST_TIMEOUT_MS);
+    });
+    var raw=await Promise.race([
+      _raCallModel(built.sys,built.usr,controller.signal).catch(function(){return null;}),
+      timeoutPromise
+    ]);
+    clearTimeout(timer);
+    if(!raw)return null;
     var parsed=_raParseJSON(raw);
     var gist=parsed&&String(parsed.gist||'').trim();
-    if(!gist)return;
-    // The PM may have switched conversations, or this one may have been
-    // finalized, while the call above was in flight — only render into a
-    // conversation that's still the one open and still a draft.
-    if(_raActiveConv()!==conv||conv.status!=='draft')return;
+    if(!gist)return null;
     var questions=Array.isArray(parsed.suggestedQuestions)
       ?parsed.suggestedQuestions.map(function(q){return String(q||'').trim();}).filter(Boolean).slice(0,3)
       :[];
-    raAppendMessage(conv,'agent',gist,{suggestedQuestions:questions});
+    return {gist:gist,suggestedQuestions:questions};
   }catch(err){
-    console.warn('[requirement-agent] doc gist skipped',err);
+    console.warn('[requirement-agent] doc gist skipped (timeout or error)',err);
+    return null;
   }
 }
 
