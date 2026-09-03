@@ -906,6 +906,12 @@ async function requireActiveCompanyMember(req, res, next) {
     // it. is_active_company_member() only returns a boolean with no source
     // tracked in this repo, so this is a separate, additive query rather than
     // a change to that RPC's own (unverifiable) body.
+    // Also selects `role` and `is_active` here: role is stashed on req for
+    // the later usage-tracking snapshot (this endpoint's highest-frequency
+    // query would otherwise re-select the identical row a second time
+    // further down this handler purely for that); is_active guards against
+    // a stale/disabled row's access value ever overriding an active one's
+    // if (user_id, company_id) is ever not unique.
     // Fails open on a query error — same discipline as _checkGovernanceState()
     // further down this file: an additional business-rule restriction must
     // never be the reason AI generation goes down company-wide over an
@@ -914,13 +920,17 @@ async function requireActiveCompanyMember(req, res, next) {
     try {
       const { data: memberRow, error: accessErr } = await supabaseAdmin
         .from('mt_users_companies')
-        .select('access')
+        .select('role, access')
         .eq('user_id', req.user.id)
         .eq('company_id', companyId)
+        .eq('is_active', true)
         .maybeSingle();
-      if (!accessErr && memberRow && memberRow.access === 'control_tower') {
-        console.warn('[AI] control_tower-only access denied Product Studio generation:', req.user.email, '->', companyId);
-        return res.status(200).json({ error: { type: 'forbidden_error', message: "Control Tower access doesn't include Product Studio's AI generation features." } });
+      if (!accessErr && memberRow) {
+        req.roleAtCall = memberRow.role;
+        if (memberRow.access === 'control_tower') {
+          console.warn('[AI] control_tower-only access denied Product Studio generation:', req.user.email, '->', companyId);
+          return res.status(200).json({ error: { type: 'forbidden_error', message: "Control Tower access doesn't include Product Studio's AI generation features." } });
+        }
       }
     } catch (e) {
       console.warn('[AI] access-tier check exception, proceeding (fail open):', e.message);
@@ -1442,17 +1452,26 @@ app.post('/api/anthropic', async (req, res) => {
     // deserves its own scrutiny — out of scope for a telemetry addition.
     // Snapshotting here means later role changes never retroactively alter
     // what this historical row says the caller's role was at the time.
+    // requireActiveCompanyMember already selected this same row's role
+    // (for its own access-tier check) and stashed it on req.roleAtCall —
+    // reuse it instead of re-querying the identical row a second time on
+    // this endpoint's hot path. Only falls back to a fresh query if that
+    // didn't happen (e.g. the access-tier query itself failed open above).
     _userRoleAtCall = null;
-    try {
-      const { data: _roleRow } = await supabaseAdmin
-        .from('mt_users_companies')
-        .select('role')
-        .eq('user_id', req.user.id)
-        .eq('company_id', req.companyId)
-        .maybeSingle();
-      _userRoleAtCall = _roleRow ? _roleRow.role : null;
-    } catch (e) {
-      console.warn('[AI USAGE] role snapshot failed:', e.message);
+    if (req.roleAtCall !== undefined) {
+      _userRoleAtCall = req.roleAtCall;
+    } else {
+      try {
+        const { data: _roleRow } = await supabaseAdmin
+          .from('mt_users_companies')
+          .select('role')
+          .eq('user_id', req.user.id)
+          .eq('company_id', req.companyId)
+          .maybeSingle();
+        _userRoleAtCall = _roleRow ? _roleRow.role : null;
+      } catch (e) {
+        console.warn('[AI USAGE] role snapshot failed:', e.message);
+      }
     }
 
     // Outcome-Based Cost (AI Cost Control Tower v2) — resolved once per
@@ -1990,6 +2009,63 @@ app.post('/api/team/list', async (req, res) => {
   } catch (err) {
     console.error('[TEAM] list exception:', err.message);
     return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team members.' } });
+  }
+});
+
+// ── Cost Tower user-name resolution ── deliberately NOT under /api/team's
+// prefix, so it doesn't inherit requireCompanyAdmin. Cost Tower opened to
+// every active member regardless of role (this same multi-app platform
+// extension), but /api/team/list (used by actLoadTeamNames() before this
+// fix) stayed admin-gated -- a non-admin viewer got no names at all,
+// degrading to raw user ids. This route returns only {user_id, name}, never
+// email/role/access/status, gated on active membership alone (any role,
+// including control_tower -- Cost Tower is exactly who needs this).
+app.options('/api/cost-tower/team-names', cors(corsOptions));
+app.use('/api/cost-tower/team-names', teamLimiter);
+app.use('/api/cost-tower/team-names', express.json({ limit: '10kb' }));
+app.use('/api/cost-tower/team-names', requireAuthStrict);
+app.post('/api/cost-tower/team-names', async (req, res) => {
+  try {
+    const companyId = req.body && req.body.company_id;
+    if (!companyId) {
+      return res.status(200).json({ error: { type: 'invalid_request', message: 'company_id is required.' } });
+    }
+    const { data: isMember, error: memberErr } = await supabaseAdmin.rpc('is_active_company_member', {
+      p_user_id: req.user.id, p_company_id: companyId
+    });
+    if (memberErr) {
+      console.error('[COST TOWER] team-names: membership check failed:', memberErr.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
+    }
+    if (!isMember) {
+      return res.status(200).json({ error: { type: 'forbidden_error', message: "You don't have active access to this company." } });
+    }
+
+    const { data: rows, error } = await supabaseAdmin
+      .from('mt_users_companies')
+      .select('user_id')
+      .eq('company_id', companyId);
+    if (error) {
+      console.error('[COST TOWER] team-names query failed:', error.message);
+      return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
+    }
+
+    const names = await Promise.all((rows || []).map(async function(row) {
+      try {
+        const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(row.user_id);
+        if (userErr || !userData || !userData.user) return null;
+        const u = userData.user;
+        const displayName = (u.user_metadata && u.user_metadata.display_name) || (u.email || '').split('@')[0];
+        return { user_id: row.user_id, name: displayName };
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    return res.status(200).json({ names: names.filter(Boolean) });
+  } catch (err) {
+    console.error('[COST TOWER] team-names exception:', err.message);
+    return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not load team names.' } });
   }
 });
 

@@ -225,6 +225,10 @@ async function actBoot() {
   _actApplyScreenNameHeader();
   var switchAppItem = document.getElementById('act-switch-app-item');
   if (switchAppItem) switchAppItem.style.display = actAvailableApps.length >= 2 ? '' : 'none';
+  // Escape hatch for a control_tower-access admin (spec §6a.4 Option A) —
+  // hidden for non-admins, who couldn't reach Team Management anyway.
+  var teamSettingsItem = document.getElementById('act-team-settings-item');
+  if (teamSettingsItem) teamSettingsItem.style.display = membership.role === 'admin' ? '' : 'none';
 
   // Gate stays up through the data-fetch phase too — previously hidden
   // right here, before the Promise.all below even started, leaving the
@@ -493,9 +497,12 @@ async function actLoadTeamNames() {
     var base = isLocal ? 'http://localhost:3001' : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
     var headers = { 'Content-Type': 'application/json' };
     if (authToken) headers['X-Auth-Token'] = authToken;
-    var res = await fetch(base + '/api/team/list', { method: 'POST', headers: headers, body: JSON.stringify({ company_id: actCompanyId }) });
+    // /api/team/list is admin-gated; Cost Tower is open to every active
+    // member regardless of role, so name resolution goes through this
+    // separate, member-gated route instead (returns only user_id/name).
+    var res = await fetch(base + '/api/cost-tower/team-names', { method: 'POST', headers: headers, body: JSON.stringify({ company_id: actCompanyId }) });
     var data = await res.json().catch(function () { return {}; });
-    (data.members || []).forEach(function (m) { actUserNames[m.user_id] = m.name; });
+    (data.names || []).forEach(function (m) { actUserNames[m.user_id] = m.name; });
   } catch (e) { console.warn('[Cost Tower] team name lookup failed:', e); }
 }
 function actUserNameOf(id) { return actUserNames[id] || (id ? id : 'Unknown User'); }
@@ -1229,7 +1236,7 @@ function actRenderDataQuality(rows) {
   }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--t4);padding:12px;">No unpriced calls.</td></tr>';
 
   return '<div class="act-scoped-card"><div class="act-section-title">Data Quality and Trust</div>' +
-    '<div class="act-section-insight">Admin-only. A cost tool that silently undercounts is worse than no cost tool.</div>' +
+    '<div class="act-section-insight">A cost tool that silently undercounts is worse than no cost tool.</div>' +
     '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">' +
     '<div class="act-kpi"><div class="act-kpi-label">Pricing Match Rate</div><div class="act-kpi-value green">' + actFmtPct(pricingMatch, 1) + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Unpriced Calls</div><div class="act-kpi-value amber">' + unpricedRows.length + '</div></div>' +

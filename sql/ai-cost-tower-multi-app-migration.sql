@@ -180,6 +180,13 @@ AS $function$
   );
 $function$;
 
+-- Fix: the predecessor _cost_tower_is_admin(uuid) was explicitly revoked
+-- from PUBLIC/anon/authenticated as an internal, not-directly-callable
+-- helper (sql/ai-cost-tower.sql). Postgres grants EXECUTE to PUBLIC by
+-- default for a newly created function -- carrying the REVOKE forward
+-- explicitly here, matching every other internal helper in this codebase.
+REVOKE EXECUTE ON FUNCTION public._cost_tower_can_access(uuid, text) FROM PUBLIC, anon, authenticated;
+
 -- 9.2 -- mt_ai_alerts_list
 CREATE OR REPLACE FUNCTION public.mt_ai_alerts_list(p_company_id uuid, p_app_id text)
  RETURNS SETOF mt_ai_alerts
@@ -498,6 +505,23 @@ $function$;
 -- search query returned exactly 7 functions, all 7 updated above (9.2,
 -- 9.3, 9.4, 9.5, 9.6, 9.7, 9.8). Must run LAST in this section.
 DROP FUNCTION public._cost_tower_is_admin(uuid);
+
+-- 9.12 -- Fix: a CREATE OR REPLACE FUNCTION with a different parameter list
+-- creates a new overload alongside the old one, it does not replace it --
+-- unlike _cost_tower_is_admin above, none of the pre-multi-app signatures
+-- below were ever explicitly dropped. Two of them (mt_ai_budget_get_active,
+-- mt_ai_budget_upsert) reference mt_ai_budgets.scope_type, dropped in
+-- Section 7 -- calling either post-migration would raise "column does not
+-- exist" instead of a clean "function does not exist". Confirmed safe:
+-- every current call site in scripts/cost-tower.js and
+-- scripts/cost-tower-outcomes.js already passes p_app_id, so nothing in
+-- this codebase calls any of these old signatures.
+DROP FUNCTION public.mt_ai_alerts_list(uuid);
+DROP FUNCTION public.mt_ai_budget_get_active(uuid);
+DROP FUNCTION public.mt_ai_budget_upsert(uuid, numeric, text, numeric, numeric, text, text);
+DROP FUNCTION public.mt_ai_cost_events_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION public.mt_outcomes_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION public.mt_outcome_types_list();
 
 
 -- ═══════════════════════════════════════════════════════════════════

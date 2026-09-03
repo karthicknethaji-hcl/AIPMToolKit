@@ -156,19 +156,33 @@ function _pgtSetActiveCompany(companyId, role, lastActiveSessionId, access){
 }
 
 // Multi-app platform extension (spec §6): a control_tower-only member must
-// never land on this app's own UI, not just be redirected from a landing
+// not land on this app's own UI, not just be redirected from a landing
 // page as an afterthought — this runs from inside the same hard gate
-// _pgtResolveCompany() already blocks all other boot code behind, so a
-// control_tower member never sees so much as a flash of Product Studio's
-// shell before being sent to Cost Tower. Mirrors _pgtResolveCompany()'s own
-// "return false = something else took over, stop booting" convention
-// (see the zero-membership branch below) rather than inventing a new one.
+// _pgtResolveCompany() already blocks all other boot code behind. Mirrors
+// _pgtResolveCompany()'s own "return false = something else took over,
+// stop booting" convention (see the zero-membership branch below) rather
+// than inventing a new one.
+//
+// Escape hatch (fix, §6a.4 Option A): the redirect has one deliberate
+// carve-out — a `?screen=team` query param skips it entirely, so an admin
+// whose own access is control_tower (a valid, orthogonal combination) can
+// still reach Team Management to fix their own access instead of being
+// permanently redirected away from the only screen that could undo it.
+// This is the link ai-cost-tower.html's avatar dropdown points at ("Team
+// Settings"). Safe to leave unconditional on role: a non-admin who adds
+// this param manually lands on exactly the same reduced Settings view any
+// non-admin already sees (_spVisibleSections() excludes Team Management
+// for them regardless) — nothing new is exposed by skipping the redirect
+// alone. Real enforcement (blocking Product Studio's AI generation) still
+// lives server-side in requireActiveCompanyMember regardless of which
+// screen this client is looking at.
 function _pgtRedirectIfControlTowerOnly(access){
-  if (access === 'control_tower') {
-    window.location.href = 'ai-cost-tower.html';
-    return true;
-  }
-  return false;
+  if (access !== 'control_tower') return false;
+  var params;
+  try { params = new URLSearchParams(window.location.search); } catch (e) { params = null; }
+  if (params && params.get('screen') === 'team') return false;
+  window.location.href = 'ai-cost-tower.html';
+  return true;
 }
 
 // Resolves which company is active for this login. This is a hard gate —
@@ -526,4 +540,13 @@ document.addEventListener('DOMContentLoaded', async function(){
   if(typeof initSegControls==='function')initSegControls();
   // Apply feature toggles on load so MI-gated elements respect default off state
   if(typeof applyFeats==='function')applyFeats();
+
+  // ?screen=team — the control_tower escape-hatch's destination (see
+  // _pgtRedirectIfControlTowerOnly() above). openSettingsToSection() already
+  // falls back to section 0 for a non-admin, so this is safe unconditionally.
+  try {
+    if (new URLSearchParams(window.location.search).get('screen') === 'team' && typeof openSettingsToSection === 'function') {
+      openSettingsToSection(6);
+    }
+  } catch (e) {}
 });

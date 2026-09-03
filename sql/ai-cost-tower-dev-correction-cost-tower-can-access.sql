@@ -9,9 +9,16 @@
 -- Cost Tower is now open to every active member regardless of role, so
 -- that function has been renamed to _cost_tower_can_access and its
 -- role='admin' requirement dropped. This script:
---   1. Creates the new, renamed, widened function.
+--   1. Creates the new, renamed, widened function (with its own REVOKE,
+--      matching every other internal helper in this codebase).
 --   2. Points all 7 dependent RPCs at it (CREATE OR REPLACE, idempotent).
---   3. Drops the now-unused old admin-only function.
+--   3. Drops the now-unused old admin-only function, plus 6 further-stale
+--      pre-multi-app signatures the original dev migration never dropped
+--      (CREATE OR REPLACE with a new parameter list creates a new overload,
+--      it doesn't retire the old one).
+--   4. Corrects mt_company_apps_list to the version prod's tracked
+--      migration file now has (deterministic ordering + supports_
+--      enforcement), which the original dev migration shipped without.
 --
 -- No CREATE TABLE / ALTER TABLE anywhere in this file -- safe to run as
 -- one script even though every table this touches already exists on dev.
@@ -37,6 +44,11 @@ AS $function$
       AND ca.is_active
   );
 $function$;
+
+-- Fix: this internal helper must not be directly callable, matching its
+-- predecessor's REVOKE (sql/ai-cost-tower.sql). Postgres grants EXECUTE to
+-- PUBLIC by default for a new function -- this closes that on dev too.
+REVOKE EXECUTE ON FUNCTION public._cost_tower_can_access(uuid, text) FROM PUBLIC, anon, authenticated;
 
 -- 2 -- mt_ai_alerts_list
 CREATE OR REPLACE FUNCTION public.mt_ai_alerts_list(p_company_id uuid, p_app_id text)
@@ -348,6 +360,58 @@ $function$;
 -- 11 -- retire the old admin-only function LAST, only once all 7 real
 -- dependents above have been switched to _cost_tower_can_access.
 DROP FUNCTION public._cost_tower_is_admin(uuid, text);
+
+-- 12 -- Fix: dev's original multi-app migration had the same gap as the
+-- tracked prod file did until this fix -- a CREATE OR REPLACE FUNCTION with
+-- a different parameter list creates a new overload, it never drops the
+-- old pre-multi-app signature. Dev has been carrying these unused since
+-- that migration ran. Confirmed safe the same way as prod: every current
+-- call site already passes p_app_id, nothing calls these old signatures.
+DROP FUNCTION public.mt_ai_alerts_list(uuid);
+DROP FUNCTION public.mt_ai_budget_get_active(uuid);
+DROP FUNCTION public.mt_ai_budget_upsert(uuid, numeric, text, numeric, numeric, text, text);
+DROP FUNCTION public.mt_ai_cost_events_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION public.mt_outcomes_list(uuid, timestamp with time zone, timestamp with time zone);
+DROP FUNCTION public.mt_outcome_types_list();
+
+-- 13 -- Fix: dev's original mt_company_apps_list shipped as a 3-column
+-- return (app_id, name, is_active) with no ordering. Prod's tracked
+-- migration file was corrected mid-build to also return granted_at
+-- (ordered ASC -- the deterministic "oldest granted" default app-switch
+-- fallback in scripts/cost-tower.js's actResolveActiveApp() depends on
+-- this) and supports_enforcement (the Budget Configuration enforcement-
+-- lock in cost-tower.js reads this field). That correction was never
+-- carried into this file, leaving dev's default-app selection
+-- non-deterministic once a company has 2+ apps. DROP is required here,
+-- not CREATE OR REPLACE -- Postgres cannot change a function's return
+-- column list in place.
+DROP FUNCTION public.mt_company_apps_list(uuid);
+
+CREATE OR REPLACE FUNCTION public.mt_company_apps_list(p_company_id uuid)
+ RETURNS TABLE(app_id text, name text, is_active boolean, granted_at timestamptz, supports_enforcement boolean)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM mt_users_companies uc
+    WHERE uc.company_id = p_company_id
+      AND uc.user_id = current_app_user()
+      AND uc.is_active
+  ) THEN
+    RAISE EXCEPTION 'Not a member of company %', p_company_id;
+  END IF;
+
+  RETURN QUERY
+  SELECT ca.app_id, a.name, ca.is_active, ca.granted_at, a.supports_enforcement
+  FROM mt_company_apps ca
+  JOIN mt_apps a ON a.app_id = ca.app_id
+  WHERE ca.company_id = p_company_id
+    AND ca.is_active
+  ORDER BY ca.granted_at ASC;
+END;
+$function$;
 
 -- ═══════════════════════════════════════════════════════════════════
 -- End of dev correction.
