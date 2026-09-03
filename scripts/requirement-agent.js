@@ -2002,7 +2002,13 @@ async function raHandleUpload(inputEl){
 // any failure/timeout; appends nothing itself (raHandleUpload(), above,
 // owns building and appending the single merged confirmation message, and
 // deciding the plain-copy fallback when this returns null).
-var RA_GIST_TIMEOUT_MS=8000;
+// v9.30.06 — bumped from 8000: confirmed via live use that 8s was too
+// tight for the real call's latency (proxy relay + model) on at least one
+// real upload, silently falling back to the plain copy with zero evidence
+// of why — see the per-branch console.warn calls added below, which now
+// distinguish timeout / call failure / unusable response so the NEXT
+// silent fallback is actually diagnosable instead of a repeat guessing game.
+var RA_GIST_TIMEOUT_MS=20000;
 async function _raGetDocGist(fileName,text){
   try{
     if(typeof buildRequirementAgentDocGistPrompt!=='function'||typeof _raCallModel!=='function')return null;
@@ -2032,28 +2038,47 @@ async function _raGetDocGist(fileName,text){
     // Racing the whole call against a timeout (in addition to still
     // aborting, so the fetch itself is cancelled once/if reached)
     // guarantees this never waits past RA_GIST_TIMEOUT_MS regardless of
-    // which stage stalls. The model call gets its own .catch() so a
-    // rejection landing after the timeout already won the race never
-    // surfaces as an unhandled promise rejection.
+    // which stage stalls.
+    // v9.30.06 — the model call's .catch() now logs before resolving to
+    // null (previously silent, per a code-review fix that raced it against
+    // the timeout — that fix was correct to race it, but swallowing the
+    // real error along with it made a genuine failure indistinguishable
+    // from a plain timeout). `timedOut` disambiguates the two outcomes
+    // below: a rejection logs here; a timeout logs after the race instead
+    // (whichever settles first still wins the race and clears the other).
+    var timedOut=false;
     var timer;
     var timeoutPromise=new Promise(function(resolve){
-      timer=setTimeout(function(){controller.abort();resolve(null);},RA_GIST_TIMEOUT_MS);
+      timer=setTimeout(function(){timedOut=true;controller.abort();resolve(null);},RA_GIST_TIMEOUT_MS);
     });
     var raw=await Promise.race([
-      _raCallModel(built.sys,built.usr,controller.signal).catch(function(){return null;}),
+      _raCallModel(built.sys,built.usr,controller.signal).catch(function(err){
+        // Our own timeout firing first is what triggers this AbortError in
+        // the first place (controller.abort() above) — the dedicated
+        // "timed out" log below already covers that case, so logging it
+        // here too would just be a second, redundant line for one event.
+        if(!(err&&err.name==='AbortError'))console.warn('[requirement-agent] doc gist call failed for '+fileName,err);
+        return null;
+      }),
       timeoutPromise
     ]);
     clearTimeout(timer);
-    if(!raw)return null;
+    if(!raw){
+      if(timedOut)console.warn('[requirement-agent] doc gist timed out after '+RA_GIST_TIMEOUT_MS+'ms for '+fileName);
+      return null;
+    }
     var parsed=_raParseJSON(raw);
     var gist=parsed&&String(parsed.gist||'').trim();
-    if(!gist)return null;
+    if(!gist){
+      console.warn('[requirement-agent] doc gist response had no usable gist field for '+fileName,raw);
+      return null;
+    }
     var questions=Array.isArray(parsed.suggestedQuestions)
       ?parsed.suggestedQuestions.map(function(q){return String(q||'').trim();}).filter(Boolean).slice(0,3)
       :[];
     return {gist:gist,suggestedQuestions:questions};
   }catch(err){
-    console.warn('[requirement-agent] doc gist skipped (timeout or error)',err);
+    console.warn('[requirement-agent] doc gist skipped (unexpected error) for '+fileName,err);
     return null;
   }
 }
