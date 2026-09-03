@@ -1,5 +1,17 @@
 # Changelog — Product Studio
 
+## v9.30.07 - 2026-09-03: AI Cost Control Tower: multi-app platform extraction, Team Management Access tier
+
+Note: bundling schema, RPC, and UI work under one patch rather than the one-bullet-per-patch convention, matching the disclosed precedent already established for this branch (see v9.30.01) — this whole platform-extraction project ships as one patch rather than several thinner ones with interdependent migration ordering.
+
+- Added - Cost Control Tower's underlying tables now support any internal HCLTech application writing its own AI usage, not just Product Studio (`mt_apps`, `mt_company_apps` grant table, `app_id` added to `mt_ai_usage_events`/`mt_outcomes`/`mt_outcome_types`/`mt_ai_budgets`). Product Studio's own data and access are unaffected — every existing company was backfilled with its Product Studio grant.
+- Added - Cost Tower's avatar menu gains a "Switch App" item (visible once a company has 2+ apps granted), opening a modal to change the active app; the header now reads "AI Control Tower · [App Name]".
+- Added - Team Management gains an Access tier per member — Full Suite (default) or Control Tower Only — set at invite time or changed later from each row's action menu. Control Tower Only is meant to land a person on AI Cost Control Tower without exposing the rest of Product Studio's canvases; Team Management itself always stays reachable regardless of a person's own Access, so no one can lock themselves out of fixing it.
+- Added - Budget Configuration's "Action On Save" field shows a static "Notify Only" value (with an explanatory note) instead of a selectable dropdown for any app without real-time enforcement support — currently every app except Product Studio, since stop-at-budget enforcement lives in this proxy's own request path.
+- Changed - `CALLER_ATTRIBUTION_MODE` (the caller-to-outcome-type map used for Outcome-Based Cost attribution) is now keyed by app in addition to caller, so a second app's caller names can never collide with Product Studio's own.
+- Changed - AI Control Tower is now open to every active company member, not just admins (`_cost_tower_can_access` replaces the old admin-only `_cost_tower_is_admin` check across every Cost Tower RPC); the "AI Control Tower" menu item in Product Studio's avatar dropdown is always visible accordingly.
+- Added - A member with `access = 'control_tower'` is redirected straight to AI Control Tower on login or company switch, before any of Product Studio's own UI loads — enforced both client-side (the redirect itself) and server-side (`requireActiveCompanyMember` now rejects Control-Tower-only access on Product Studio's AI-generation endpoint), so the restriction can't be bypassed by calling the API directly.
+
 ## v9.30.01 - 2026-09-01: AI Control Tower: Prototype as a 12th outcome type; boot loading-gate fix
 
 Note: bundling multiple unrelated fixes in one patch rather than the one-bullet-per-patch AI_EDITING_RULES.md calls for, matching the disclosed precedent already established for code-review-driven fix batches (see v9.25.05, v9.26.03, v9.27.02, v9.28.01, v9.29.01) — this whole branch stays under the v9.30 feature release as patches until it ships as a whole, rather than spawning new feature-version numbers for each follow-on piece of work.

@@ -82,10 +82,11 @@
         <button class="hdr-avatar-profile" id="hdr-switch-company-btn" onclick="hdrOpenSwitchCompany()" style="display:none;">
           <i class="ti ti-building" aria-hidden="true"></i> Switch Company
         </button>
-        <!-- AI Cost Control Tower (v9.28) — admin-only, opens in a new tab so
-             in-flight state in this tab is never lost. Hidden by default,
-             shown by _pgtRenderCompanyMenuItems() only for _spIsAdmin(). -->
-        <button class="hdr-avatar-profile" id="hdr-cost-tower-btn" onclick="hdrOpenCostTower()" style="display:none;">
+        <!-- AI Cost Control Tower — opens in a new tab so in-flight state in
+             this tab is never lost. Open to every active member regardless
+             of role (multi-app platform extension; was admin-only in v9.28),
+             so no default display:none / JS-toggled visibility here. -->
+        <button class="hdr-avatar-profile" id="hdr-cost-tower-btn" onclick="hdrOpenCostTower()">
           <i class="ti ti-chart-histogram" aria-hidden="true"></i> AI Control Tower
         </button>
         <!-- "Create a New Company" removed in v8.101, per an explicit product

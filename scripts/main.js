@@ -137,15 +137,38 @@ function _pgtHideBootGate(){
 // permissive, as a second independent line of defense beyond the boot gate
 // already preventing Settings from being reachable this early.
 var currentUserRole = null;
+// Multi-app platform extension: per-membership access tier ('full_suite' |
+// 'control_tower'). Set alongside currentUserRole by _pgtSetActiveCompany()
+// below; _pgtResolveCompany() redirects away from this whole app before
+// boot completes whenever it's 'control_tower' — see the redirect helper
+// further down.
+var currentUserAccess = null;
 
-function _pgtSetActiveCompany(companyId, role, lastActiveSessionId){
+function _pgtSetActiveCompany(companyId, role, lastActiveSessionId, access){
   try{ localStorage.setItem(_PGT_ACTIVE_COMPANY_KEY, companyId); }catch(e){}
   currentUserRole = role || null;
+  currentUserAccess = access || null;
   // v8.149 fix (Issue 2): populate the local cache Home reads for "Last
   // Active" from this same membership row — undefined/omitted (the two
   // zero/error branches) leaves it null, correctly meaning "nothing to
   // show," rather than pointing at a stale or wrong session.
   if (typeof _pgtMyLastActiveSessionId !== 'undefined') _pgtMyLastActiveSessionId = lastActiveSessionId || null;
+}
+
+// Multi-app platform extension (spec §6): a control_tower-only member must
+// never land on this app's own UI, not just be redirected from a landing
+// page as an afterthought — this runs from inside the same hard gate
+// _pgtResolveCompany() already blocks all other boot code behind, so a
+// control_tower member never sees so much as a flash of Product Studio's
+// shell before being sent to Cost Tower. Mirrors _pgtResolveCompany()'s own
+// "return false = something else took over, stop booting" convention
+// (see the zero-membership branch below) rather than inventing a new one.
+function _pgtRedirectIfControlTowerOnly(access){
+  if (access === 'control_tower') {
+    window.location.href = 'ai-cost-tower.html';
+    return true;
+  }
+  return false;
 }
 
 // Resolves which company is active for this login. This is a hard gate —
@@ -159,7 +182,7 @@ async function _pgtResolveCompany(){
 
   const { data: rows, error } = await client
     .from('mt_users_companies')
-    .select('company_id, role, is_active, joined_at, last_active_session_id, mt_companies(name)')
+    .select('company_id, role, access, is_active, joined_at, last_active_session_id, mt_companies(name)')
     .eq('user_id', currentUser.id);
 
   if(error){
@@ -194,7 +217,8 @@ async function _pgtResolveCompany(){
   }
 
   if(memberships.length===1){
-    _pgtSetActiveCompany(memberships[0].company_id, memberships[0].role, memberships[0].last_active_session_id);
+    _pgtSetActiveCompany(memberships[0].company_id, memberships[0].role, memberships[0].last_active_session_id, memberships[0].access);
+    if (_pgtRedirectIfControlTowerOnly(memberships[0].access)) return false;
     return true;
   }
 
@@ -204,7 +228,8 @@ async function _pgtResolveCompany(){
   try{ stored=localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY); }catch(e){}
   var storedMembership = stored && memberships.find(function(m){ return m.company_id===stored; });
   if(storedMembership){
-    _pgtSetActiveCompany(storedMembership.company_id, storedMembership.role, storedMembership.last_active_session_id);
+    _pgtSetActiveCompany(storedMembership.company_id, storedMembership.role, storedMembership.last_active_session_id, storedMembership.access);
+    if (_pgtRedirectIfControlTowerOnly(storedMembership.access)) return false;
     return true;
   }
 
@@ -224,6 +249,7 @@ async function _pgtResolveCompany(){
   //    joined_at — the only signal left at that point.
   var fallbackCompanyId = null;
   var fallbackRole = null;
+  var fallbackAccess = null;
   try {
     const { data: recentSession } = await client
       .from('mt_sessions')
@@ -245,14 +271,17 @@ async function _pgtResolveCompany(){
     });
     fallbackCompanyId = oldestFirst[0].company_id;
     fallbackRole = oldestFirst[0].role;
+    fallbackAccess = oldestFirst[0].access;
     var fallbackLastActive = oldestFirst[0].last_active_session_id;
   } else {
     var matched = memberships.find(function(m){ return m.company_id===fallbackCompanyId; });
     fallbackRole = matched ? matched.role : null;
+    fallbackAccess = matched ? matched.access : null;
     var fallbackLastActive = matched ? matched.last_active_session_id : null;
   }
 
-  _pgtSetActiveCompany(fallbackCompanyId, fallbackRole, fallbackLastActive);
+  _pgtSetActiveCompany(fallbackCompanyId, fallbackRole, fallbackLastActive, fallbackAccess);
+  if (_pgtRedirectIfControlTowerOnly(fallbackAccess)) return false;
   return true;
 }
 
@@ -262,10 +291,11 @@ async function _pgtResolveCompany(){
 function _pgtRenderCompanyMenuItems(){
   var switchBtn=document.getElementById('hdr-switch-company-btn');
   if(switchBtn) switchBtn.style.display=(_pgtMembershipCount>=2)?'':'none';
-  // AI Cost Control Tower (v9.28) — admin-only, same currentUserRole gate
-  // as every other admin-only surface (_spIsAdmin(), settings-page.js).
-  var costTowerBtn=document.getElementById('hdr-cost-tower-btn');
-  if(costTowerBtn) costTowerBtn.style.display=(typeof _spIsAdmin==='function'&&_spIsAdmin())?'':'none';
+  // AI Cost Control Tower — open to every active member regardless of role
+  // (multi-app platform extension; previously admin-only, per v9.28). No
+  // conditional left to toggle: always visible, same as Sign Out — Cost
+  // Tower's own boot sequence already handles the no-active-company case
+  // (its "No Active Company" gate) gracefully on its own.
 }
 
 // ── Open AI Cost Control Tower (v9.28) ──

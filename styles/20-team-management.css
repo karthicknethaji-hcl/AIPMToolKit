@@ -2,7 +2,7 @@
 
 .tm-row {
   display: grid;
-  grid-template-columns: 1.6fr 2fr 1.1fr 1.1fr 40px;
+  grid-template-columns: 1.4fr 1.7fr 0.95fr 0.9fr 0.9fr 40px;
   align-items: center;
   padding: 10px 14px;
   border-bottom: 0.5px solid var(--divider);
@@ -35,6 +35,8 @@
 .tm-badge-active   { background: #EAF3DE;            color: #27500A; }
 .tm-badge-disabled { background: var(--card);        color: #444441; }
 .tm-badge-pending  { background: #FAEEDA;            color: #633806; }
+.tm-badge-full-suite    { background: var(--card);      color: #5A6472; border: 1px solid var(--divider); }
+.tm-badge-control-tower { background: var(--green-pale); color: var(--green); }
 
 .tm-dots {
   width: 24px; height: 24px;

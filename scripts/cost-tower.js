@@ -110,12 +110,56 @@ function _avatarInitialsLocal(displayName) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// Bootstrap: auth → company → admin-role gate (Section 5.7's admin gate
-// applies to the whole tool here, since mt_ai_cost_events_list() itself
-// raises an exception for a non-admin caller — every screen depends on it)
+// Bootstrap: auth → company → active-membership gate. Section 5.7's admin-
+// only gate (mt_ai_cost_events_list() raising for a non-admin caller) was
+// widened by the multi-app platform extension — every RPC's authorization
+// check now accepts any active member, not just admins; see
+// _cost_tower_can_access() in the SQL migration.
 // ══════════════════════════════════════════════════════════════════════
 
 var actCompanyId = null, actCompanyName = '', actCurrentUser = null;
+
+// ── Multi-app platform extension: active-app state ──
+// Cost Tower is a separate window.open() tab with its own boot-time context
+// read (see actCompanyId above) — resolved once at boot via
+// mt_company_apps_list(), never re-derived mid-session. actAvailableApps is
+// the full granted-apps list for the current company (ordered oldest-granted
+// first by the RPC itself), reused by the Switch App modal so it never has
+// to re-fetch just to render its own list.
+var actAppId = null, actAppName = '', actAppSupportsEnforcement = false, actAvailableApps = [];
+
+function _pgtActiveAppKey(companyId) { return 'pgt_active_app_id_' + (companyId || 'none'); }
+
+// Mirrors _pgtResolveCompany()'s two-step pattern (stored preference, else
+// oldest granted) — but for app-within-company, not company-within-user.
+// mt_company_apps_list() already orders by granted_at ASC, so "oldest
+// granted" is simply the first row when no valid stored preference exists.
+async function actResolveActiveApp() {
+  var client = authInit();
+  var result = await client.rpc('mt_company_apps_list', { p_company_id: actCompanyId });
+  if (result.error) {
+    console.error('[Cost Tower] mt_company_apps_list failed:', result.error.message);
+    actToast('Could not load the apps granted to this company.', 'error');
+  }
+  actAvailableApps = (!result.error && result.data) ? result.data : [];
+
+  if (!actAvailableApps.length) {
+    actAppId = null; actAppName = ''; actAppSupportsEnforcement = false;
+    return;
+  }
+
+  var stored = '';
+  try { stored = localStorage.getItem(_pgtActiveAppKey(actCompanyId)) || ''; } catch (e) {}
+  var match = null;
+  for (var i = 0; i < actAvailableApps.length; i++) {
+    if (actAvailableApps[i].app_id === stored) { match = actAvailableApps[i]; break; }
+  }
+  var chosen = match || actAvailableApps[0];
+
+  actAppId = chosen.app_id;
+  actAppName = chosen.name;
+  actAppSupportsEnforcement = !!chosen.supports_enforcement;
+}
 
 document.addEventListener('DOMContentLoaded', actBoot);
 
@@ -136,18 +180,34 @@ async function actBoot() {
   }
 
   var client = authInit();
+  // Membership check and app resolution both depend only on actCompanyId
+  // (already known above), not on each other's result — issued together so
+  // they run as one concurrent round-trip instead of two serial ones.
+  var membershipPromise = client.from('mt_users_companies')
+    .select('role, is_active, mt_companies(name)')
+    .eq('user_id', actCurrentUser.id)
+    .eq('company_id', actCompanyId)
+    .maybeSingle();
+  var appResolvePromise = actResolveActiveApp();
+
   var membership;
   try {
-    var res = await client.from('mt_users_companies')
-      .select('role, is_active, mt_companies(name)')
-      .eq('user_id', actCurrentUser.id)
-      .eq('company_id', actCompanyId)
-      .maybeSingle();
+    var res = await membershipPromise;
     membership = res.data;
   } catch (e) { membership = null; }
+  await appResolvePromise;
 
-  if (!membership || !membership.is_active || membership.role !== 'admin') {
-    actShowGate('Admin Access Required', 'The AI Control Tower reports on company-wide AI spend and is available to company admins only.');
+  // Open to every active member regardless of role (multi-app platform
+  // extension; was admin-only in v9.28) — mirrors _cost_tower_can_access()'s
+  // own widened check in the RPC layer, so the client-side gate and the
+  // server-side authorization can't disagree about who's let in.
+  if (!membership || !membership.is_active) {
+    actShowGate('Access Required', 'You need an active membership in this company to view the AI Control Tower.');
+    return;
+  }
+
+  if (!actAppId) {
+    actShowGate('No Apps Available', 'No apps are available for your company. Contact your admin.');
     return;
   }
 
@@ -162,6 +222,9 @@ async function actBoot() {
   if (anEl) anEl.textContent = actCurrentUser.displayName || '';
   var aeEl = document.getElementById('act-avatar-email');
   if (aeEl) aeEl.textContent = actCurrentUser.email || '';
+  _actApplyScreenNameHeader();
+  var switchAppItem = document.getElementById('act-switch-app-item');
+  if (switchAppItem) switchAppItem.style.display = actAvailableApps.length >= 2 ? '' : 'none';
 
   // Gate stays up through the data-fetch phase too — previously hidden
   // right here, before the Promise.all below even started, leaving the
@@ -218,6 +281,14 @@ function actAvatarClose() {
 // ══════════════════════════════════════════════════════════════════════
 
 var ACT_SCREEN_NAMES = { overview: 'Overview', cost: 'Cost Breakdown', plan: 'AI Governance', outcome: 'Outcome-Based Cost' };
+// Factored out of actShowScreen() so actBoot() can also set the header text
+// before any tab switch ever happens. Always shows the app name, even for a
+// single-app company — cheap now, sets the right expectation once a second
+// app exists (spec default, no override requested).
+function _actApplyScreenNameHeader() {
+  var nameEl = document.getElementById('act-screen-name');
+  if (nameEl) nameEl.textContent = actAppName ? 'AI Control Tower · ' + actAppName : 'AI Control Tower';
+}
 function actShowScreen(name) {
   document.querySelectorAll('.act-screen').forEach(function (s) { s.classList.remove('on'); });
   var scr = document.getElementById('act-scr-' + name);
@@ -225,10 +296,40 @@ function actShowScreen(name) {
   document.querySelectorAll('.act-tab-row .act-tab-btn').forEach(function (b) { b.classList.remove('active'); });
   var btn = document.getElementById('act-tab-' + name);
   if (btn) btn.classList.add('active');
-  var nameEl = document.getElementById('act-screen-name');
-  if (nameEl) nameEl.textContent = 'AI Control Tower';
+  _actApplyScreenNameHeader();
   var scroller = document.querySelector('.act-content-scroll');
   if (scroller) scroller.scrollTop = 0;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Switch App — avatar menu → modal, mirrors index.html's Switch Company
+// shape (one card per granted app, current selection checked), reusing this
+// page's own shared #act-modal-overlay/#act-modal-box rather than building
+// new modal chrome. Visibility of the menu item itself is gated in actBoot()
+// (2+ apps granted). On selection: persist the choice per-company (a user
+// could have a different last-used app per company) and reload this page —
+// Cost Tower is a reporting surface with no in-flight-generation state to
+// guard against losing, confirmed absent from this file's script graph.
+// ══════════════════════════════════════════════════════════════════════
+
+function actOpenSwitchAppModal() {
+  actAvatarClose();
+  document.getElementById('act-modal-title').textContent = 'Choose an app';
+  var cardsHtml = actAvailableApps.map(function (a) {
+    var isCurrent = a.app_id === actAppId;
+    return '<div class="act-switch-app-choice' + (isCurrent ? ' current' : '') + '"' +
+      (isCurrent ? '' : ' onclick="actSelectApp(\'' + actEsc(a.app_id) + '\')"') + '>' +
+      '<div class="act-switch-app-name">' + actEsc(a.name) + '</div>' +
+      (isCurrent ? '<span class="act-switch-app-check">&#10003;</span>' : '') +
+      '</div>';
+  }).join('');
+  document.getElementById('act-modal-body').innerHTML = '<div class="act-switch-app-list">' + cardsHtml + '</div>';
+  actShowModal();
+}
+function actSelectApp(appId) {
+  try { localStorage.setItem(_pgtActiveAppKey(actCompanyId), appId); } catch (e) {}
+  actCloseModal();
+  window.location.reload();
 }
 function actGoToBreakdown(group) {
   actShowScreen('cost');
@@ -312,6 +413,7 @@ async function actFetchRows(start, end) {
   var client = authInit();
   var result = await client.rpc('mt_ai_cost_events_list', {
     p_company_id: actCompanyId,
+    p_app_id: actAppId,
     p_period_start: start.toISOString(),
     p_period_end: end.toISOString()
   });
@@ -347,7 +449,7 @@ async function actLoadLifetimeSpend() {
 async function actLoadBudgetAndAlerts() {
   var client = authInit();
   try {
-    var r1 = await client.rpc('mt_ai_budget_get_active', { p_company_id: actCompanyId });
+    var r1 = await client.rpc('mt_ai_budget_get_active', { p_company_id: actCompanyId, p_app_id: actAppId });
     if (r1.error) {
       console.error('[Cost Tower] mt_ai_budget_get_active failed:', r1.error.message);
       actToast('Could not load budget configuration.', 'error');
@@ -355,7 +457,7 @@ async function actLoadBudgetAndAlerts() {
     actBudget = (!r1.error && r1.data && r1.data.budget_id) ? r1.data : null;
   } catch (e) { console.error('[Cost Tower] mt_ai_budget_get_active exception:', e); actToast('Could not load budget configuration.', 'error'); actBudget = null; }
   try {
-    var r2 = await client.rpc('mt_ai_alerts_list', { p_company_id: actCompanyId });
+    var r2 = await client.rpc('mt_ai_alerts_list', { p_company_id: actCompanyId, p_app_id: actAppId });
     if (r2.error) {
       console.error('[Cost Tower] mt_ai_alerts_list failed:', r2.error.message);
       actToast('Could not load budget alerts.', 'error');
@@ -1458,12 +1560,22 @@ function actRenderBudgetConfigCard() {
   var warnPct = actBudget ? Number(actBudget.warn_threshold_pct) : 80;
   var escPct = actBudget ? Number(actBudget.escalate_threshold_pct) : 90;
   var actionOnBreach = (actBudget && actBudget.action_on_breach) || 'notify';
+  // Multi-app platform extension (§3.6/§7.6): real-time enforcement only
+  // exists for Product Studio today. An app without it can never be given
+  // 'restrict_tier'/'stop' — mt_ai_budget_upsert rejects it server-side
+  // regardless, so a disabled-but-visible select would just invite "is this
+  // broken or unfinished" confusion. Static text instead, with the save call
+  // sending 'notify' unconditionally (never read from a control the person
+  // could manipulate client-side).
+  var actionField = actAppSupportsEnforcement
+    ? '<div class="act-field"><div class="act-field-label">Action On Save</div><select id="act-cfg-action"><option value="notify"' + (actionOnBreach === 'notify' ? ' selected' : '') + '>Notify Only</option><option value="restrict_tier"' + (actionOnBreach === 'restrict_tier' ? ' selected' : '') + '>Restrict to Economical Tier</option><option value="stop"' + (actionOnBreach === 'stop' ? ' selected' : '') + '>Stop AI Usage</option></select></div>'
+    : '<div class="act-field"><div class="act-field-label">Action On Save</div><input type="text" value="Notify Only" readonly><div class="act-field-hint">Real-time enforcement is only available for Product Studio.</div></div>';
   return '<div class="act-config-card"><div class="act-section-title">Budget Configuration</div>' +
     '<div class="act-config-grid">' +
     '<div class="act-field"><div class="act-field-label">Monthly Budget</div><input id="act-cfg-amount" type="number" min="0" step="1" value="' + (actBudget ? amount : '') + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Warn Threshold %</div><input id="act-cfg-warn" type="number" min="1" max="99" value="' + warnPct + '"></div>' +
     '<div class="act-field"><div class="act-field-label">Escalate Threshold %</div><input id="act-cfg-escalate" type="number" min="1" max="100" value="' + escPct + '"></div>' +
-    '<div class="act-field"><div class="act-field-label">Action On Save</div><select id="act-cfg-action"><option value="notify"' + (actionOnBreach === 'notify' ? ' selected' : '') + '>Notify Only</option><option value="restrict_tier"' + (actionOnBreach === 'restrict_tier' ? ' selected' : '') + '>Restrict to Economical Tier</option><option value="stop"' + (actionOnBreach === 'stop' ? ' selected' : '') + '>Stop AI Usage</option></select></div>' +
+    actionField +
     '</div>' +
     '<div class="act-scoped-card-note">Applies to every AI call the moment you save, regardless of current spend. Resets to Notify Only automatically at the start of next month.</div>' +
     '<div class="act-config-footer"><button class="act-btn act-btn-primary act-btn-sm" onclick="actSaveBudget()">Save Configuration</button></div>' +
@@ -1531,12 +1643,13 @@ async function actSaveBudget() {
   var amount = Number(document.getElementById('act-cfg-amount').value || 0);
   var warn = Number(document.getElementById('act-cfg-warn').value || 80);
   var esc = Number(document.getElementById('act-cfg-escalate').value || 90);
-  var actionOnBreach = document.getElementById('act-cfg-action').value;
+  var actionEl = document.getElementById('act-cfg-action');
+  var actionOnBreach = actAppSupportsEnforcement ? actionEl.value : 'notify';
   if (!amount || amount <= 0) { actToast('Enter a monthly budget amount greater than 0.', 'error'); return; }
   if (esc <= warn) { actToast('Escalate threshold must be greater than Warn threshold.', 'error'); return; }
   try {
     var result = await client.rpc('mt_ai_budget_upsert', {
-      p_company_id: actCompanyId, p_amount: amount, p_currency: 'USD',
+      p_company_id: actCompanyId, p_app_id: actAppId, p_amount: amount, p_currency: 'USD',
       p_warn_threshold_pct: warn, p_escalate_threshold_pct: esc,
       p_enforcement_mode: 'monitor', p_action_on_breach: actionOnBreach
     });
