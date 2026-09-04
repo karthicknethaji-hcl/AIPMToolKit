@@ -108,6 +108,12 @@ function _lsRemoveLocalSessionEntry(sessionId){
   try {
     localStorage.removeItem(_SS_PREFIX + sessionId);
     if (typeof _ssRemoveFromIndex === 'function') _ssRemoveFromIndex(sessionId);
+    // v9.31: also drop the meta-index entry — this session is confirmed
+    // gone (unshared/deleted by someone else), not merely snapshot-evicted,
+    // so it must disappear from Home's list too, not just lose its cached
+    // content. Without this it would become a new, narrower version of the
+    // exact orphan problem the meta-index was introduced to avoid.
+    if (typeof _ssRemoveMetaEntry === 'function') _ssRemoveMetaEntry(sessionId);
   } catch(e) {}
 }
 
@@ -420,6 +426,11 @@ function _lsMergeHomeMetaEntry(row){
     var entry = { meta: meta, snapshot: existingSnapshot };
     localStorage.setItem(key, JSON.stringify(entry));
     if (!existing && typeof _ssAddToIndex === 'function') _ssAddToIndex(row.id);
+    // v9.31 code-review fix: sessionStoreList() now reads pgt_session_meta
+    // exclusively — without this, a teammate's new/renamed/re-shared session
+    // discovered by this poll would update the full blob and _SS_INDEX but
+    // stay invisible (or stale) on Home until an unrelated full sync ran.
+    if (typeof _ssSetMetaEntry === 'function') _ssSetMetaEntry(row.id, meta);
   } catch(e) {
     console.warn('[live-sync] home meta merge failed:', e);
   }
@@ -505,36 +516,13 @@ async function _lsResumePreFetch(sessionId){
     if (row.is_shared === undefined || row.is_shared === null) return { ok: false, reason: 'error' };
     if (!row.user_id) return { ok: false, reason: 'error' };
 
-    var meta = {
-      id: row.id,
-      name: row.name || 'Session',
-      productName: row.product_name || '',
-      // v9.13.01: real product FK. This query already uses select('*') above,
-      // so row.product_id is available with no query change needed here.
-      productId: row.product_id || null,
-      companyName: row.company_name || '',
-      productType: row.product_type || '',
-      approach: row.approach || '',
-      lastTab: row.last_tab || 'mm',
-      lastStage: row.last_stage || '',
-      // v9.15.02 — same denormalized read as every other field here; three
-      // independent DB-row-to-meta mapping sites in this codebase needed
-      // this identical addition (this one, sessionStoreSyncFromDB() in
-      // session-store.js, and _lsResumePreFetch() below in this file).
-      intakeStatus: row.intake_status || null,
-      counts: row.counts || { caps:0, features:0, stories:0, sprintActive:null },
-      createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-      savedAt: row.saved_at ? new Date(row.saved_at).getTime() : Date.now(),
-      isShared: !!row.is_shared,
-      // v9.08.04 fix: was missing here too — select('*') already pulls this
-      // column, it was just never mapped into the returned meta object.
-      shareMode: row.share_mode === 'edit' ? 'edit' : 'view',
-      userId: row.user_id,
-      lastEditedByName: row.last_edited_by_name || '',
-      activeUserId: row.active_user_id || null,
-      activeAt: row.active_at ? new Date(row.active_at).getTime() : null,
-      activeUserName: row.active_user_name || ''
-    };
+    // v9.31 code-review fix: was its own independent copy of this mapping
+    // (the "three independent DB-row-to-meta mapping sites" the old comment
+    // here referenced) — now calls the shared _ssRowToMeta() helper
+    // (session-store.js) instead. row.user_id is truthy here (the strict
+    // allowlist above already returned early otherwise), so this is
+    // behaviorally identical to the old inline `userId: row.user_id`.
+    var meta = _ssRowToMeta(row);
     return { ok: true, meta: meta, snapshot: row.snapshot || {}, cursorEventId: cursorEventId };
   } catch(e) {
     console.warn('[live-sync] resume pre-fetch failed:', e);
