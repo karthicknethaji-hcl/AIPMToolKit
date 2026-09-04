@@ -350,6 +350,15 @@ button:focus-visible.act-fv,
 .act-modal-close:hover{background:var(--blue-pale);border-color:var(--blue);color:var(--blue);}
 .act-modal-body{padding:16px 18px;overflow-y:auto;}
 
+/* Switch App modal — one card per granted app, mirrors index.html's Switch
+   Company modal-choice shape. */
+.act-switch-app-list{display:flex;flex-direction:column;gap:8px;}
+.act-switch-app-choice{border:1px solid var(--divider);background:var(--white);border-radius:8px;padding:10px 14px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;}
+.act-switch-app-choice:hover{border-color:var(--purple-light);}
+.act-switch-app-choice.current{border-color:var(--purple);background:var(--purple-pale);cursor:default;}
+.act-switch-app-name{font-size:12px;font-weight:700;color:var(--t1);}
+.act-switch-app-check{color:var(--purple);font-size:15px;}
+
 /* Access-denied / loading states (bootstrap, not in the wireframe) */
 .act-gate-wrap{display:flex;align-items:center;justify-content:center;min-height:60vh;padding:24px;}
 .act-gate-card{max-width:420px;text-align:center;}

@@ -43,6 +43,7 @@ async function _outcomesFetchOutcomeRows(start, end) {
   var client = authInit();
   var result = await client.rpc('mt_outcomes_list', {
     p_company_id: actCompanyId,
+    p_app_id: actAppId,
     p_period_start: start.toISOString(),
     p_period_end: end.toISOString()
   });
@@ -57,7 +58,7 @@ async function _outcomesFetchOutcomeRows(start, end) {
 
 async function _outcomesFetchTypes() {
   var client = authInit();
-  var result = await client.rpc('mt_outcome_types_list');
+  var result = await client.rpc('mt_outcome_types_list', { p_app_id: actAppId });
   if (result.error) {
     console.error('[Cost Tower] mt_outcome_types_list failed:', result.error.message);
     actToast('Could not load outcome type catalog.', 'error');
@@ -79,7 +80,7 @@ async function _outcomesFetchCallerModes() {
     var base = isLocal ? 'http://localhost:3001' : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
     var headers = {};
     if (authToken) headers['X-Auth-Token'] = authToken;
-    var res = await fetch(base + '/api/outcome-caller-modes', { method: 'GET', headers: headers });
+    var res = await fetch(base + '/api/outcome-caller-modes?app_id=' + encodeURIComponent(actAppId || ''), { method: 'GET', headers: headers });
     var data = await res.json().catch(function () { return {}; });
     return data.callerModes || {};
   } catch (e) {
