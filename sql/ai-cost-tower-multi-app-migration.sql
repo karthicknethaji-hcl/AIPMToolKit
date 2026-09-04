@@ -187,6 +187,52 @@ $function$;
 -- explicitly here, matching every other internal helper in this codebase.
 REVOKE EXECUTE ON FUNCTION public._cost_tower_can_access(uuid, text) FROM PUBLIC, anon, authenticated;
 
+-- Role-based screen gate (AI Governance): AI Governance (Budget
+-- Configuration, Alerts, Opportunity Matrix) is admin+power-user only --
+-- read-only members can see Overview/Cost Breakdown/Outcome-Based Cost
+-- (gated by _cost_tower_can_access above, no role check) but not this.
+-- A separate helper rather than adding a role check to _cost_tower_can_access
+-- itself, since that one is deliberately shared by every other Cost Tower
+-- RPC and must stay open to every role. Composes _cost_tower_can_access
+-- (membership + app-grant check) rather than duplicating its body, so that
+-- boilerplate has exactly one definition to maintain regardless of how many
+-- screen-level role gates Cost Tower ends up with.
+--
+-- THE CANONICAL LIST -- keep this comment and the CHANGELOG entry in sync,
+-- this is the only place the full set is written down:
+--   Gated by this function (4): mt_ai_alerts_list, mt_ai_budget_upsert,
+--     mt_ai_alert_acknowledge, mt_ai_alert_dismiss.
+--   Deliberately NOT gated, stays on _cost_tower_can_access (any role):
+--     mt_ai_budget_get_active (Overview's own "% of budget used" stat reads
+--     the active budget for every role, independent of this screen gate),
+--     mt_ai_cost_events_list, mt_outcomes_list, mt_outcome_types_list,
+--     mt_outcome_get_or_create_active, mt_company_apps_list.
+-- A new governance-adjacent RPC needs an explicit decision, not a copy of
+-- whichever neighbor happens to be nearest in this file.
+--
+-- Allow-list (role IN (...)), not a readonly exclusion -- fails toward
+-- denying access on a NULL/unexpected role, consistent with this codebase's
+-- documented fail-restrictive convention (see scripts/main.js's currentUserRole
+-- comment), rather than an exclusion-style check that only denies the one
+-- named value.
+CREATE OR REPLACE FUNCTION public._cost_tower_can_manage_governance(p_company_id uuid, p_app_id text)
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+  SELECT _cost_tower_can_access(p_company_id, p_app_id)
+  AND EXISTS (
+    SELECT 1 FROM mt_users_companies uc
+    WHERE uc.company_id = p_company_id
+      AND uc.user_id = current_app_user()
+      AND uc.is_active
+      AND uc.role IN ('admin', 'member')
+  );
+$function$;
+
+REVOKE EXECUTE ON FUNCTION public._cost_tower_can_manage_governance(uuid, text) FROM PUBLIC, anon, authenticated;
+
 -- 9.2 -- mt_ai_alerts_list
 CREATE OR REPLACE FUNCTION public.mt_ai_alerts_list(p_company_id uuid, p_app_id text)
  RETURNS SETOF mt_ai_alerts
@@ -198,7 +244,7 @@ AS $function$
   JOIN mt_ai_budgets b ON b.budget_id = a.budget_id
   WHERE b.company_id = p_company_id
     AND b.app_id = p_app_id
-    AND _cost_tower_can_access(p_company_id, p_app_id)
+    AND _cost_tower_can_manage_governance(p_company_id, p_app_id)
     AND a.status != 'dismissed'
     AND a.period_start >= (date_trunc('month', now() AT TIME ZONE 'UTC') - INTERVAL '1 month')::date
   ORDER BY a.created_at DESC;
@@ -214,6 +260,10 @@ AS $function$
 DECLARE
   v_row mt_ai_budgets;
 BEGIN
+  -- Deliberately _cost_tower_can_access, not _cost_tower_can_manage_governance:
+  -- Overview reads the active budget amount for every role (its own "% of
+  -- budget used" stat), independent of the AI Governance screen. Only
+  -- mt_ai_budget_upsert (actually configuring it) is governance-gated.
   IF NOT _cost_tower_can_access(p_company_id, p_app_id) THEN
     RAISE EXCEPTION 'Not authorized to view budgets for company %', p_company_id;
   END IF;
@@ -241,7 +291,7 @@ DECLARE
   v_caller UUID := current_app_user();
   v_row    mt_ai_budgets;
 BEGIN
-  IF NOT _cost_tower_can_access(p_company_id, p_app_id) THEN
+  IF NOT _cost_tower_can_manage_governance(p_company_id, p_app_id) THEN
     RAISE EXCEPTION 'Not authorized to configure budgets for company %', p_company_id;
   END IF;
 
@@ -388,7 +438,7 @@ BEGIN
   FROM mt_ai_alerts a JOIN mt_ai_budgets b ON b.budget_id = a.budget_id
   WHERE a.alert_id = p_alert_id;
 
-  IF v_company IS NULL OR NOT _cost_tower_can_access(v_company, v_app_id) THEN
+  IF v_company IS NULL OR NOT _cost_tower_can_manage_governance(v_company, v_app_id) THEN
     RAISE EXCEPTION 'Not authorized to acknowledge alert %', p_alert_id;
   END IF;
 
@@ -422,7 +472,7 @@ BEGIN
   FROM mt_ai_alerts a JOIN mt_ai_budgets b ON b.budget_id = a.budget_id
   WHERE a.alert_id = p_alert_id;
 
-  IF v_company IS NULL OR NOT _cost_tower_can_access(v_company, v_app_id) THEN
+  IF v_company IS NULL OR NOT _cost_tower_can_manage_governance(v_company, v_app_id) THEN
     RAISE EXCEPTION 'Not authorized to dismiss alert %', p_alert_id;
   END IF;
 

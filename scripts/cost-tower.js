@@ -118,6 +118,19 @@ function _avatarInitialsLocal(displayName) {
 // ══════════════════════════════════════════════════════════════════════
 
 var actCompanyId = null, actCompanyName = '', actCurrentUser = null;
+// Role-based screen gate: AI Governance (Budget Configuration, Alerts,
+// Opportunity Matrix) is admin+power-user only. Overview/Cost Breakdown/
+// Outcome-Based Cost stay open to every role (unaffected by this).
+var actUserRole = null;
+// Single source of truth for "can this role see/use AI Governance" — every
+// call site below reads this instead of comparing actUserRole directly, so
+// the boundary only has to change in one place (matches the codebase's own
+// existing _spIsAdmin()-style convention documented in settings-page.js,
+// which cost-tower.js can't call directly — separate script graph/tab).
+// Allow-list, not a readonly exclusion: fails toward the restrictive UI on
+// a null/unexpected role, consistent with that same convention, rather than
+// the exclusion-style check's fail-open behavior on an unset role.
+function actIsGovernanceViewer() { return actUserRole === 'admin' || actUserRole === 'member'; }
 
 // ── Multi-app platform extension: active-app state ──
 // Cost Tower is a separate window.open() tab with its own boot-time context
@@ -211,6 +224,7 @@ async function actBoot() {
     return;
   }
 
+  actUserRole = membership.role;
   actCompanyName = (membership.mt_companies && membership.mt_companies.name) || '';
   var logoEl = document.getElementById('act-logo-txt');
   if (logoEl) logoEl.textContent = actCompanyName;
@@ -229,17 +243,33 @@ async function actBoot() {
   // hidden for non-admins, who couldn't reach Team Management anyway.
   var teamSettingsItem = document.getElementById('act-team-settings-item');
   if (teamSettingsItem) teamSettingsItem.style.display = membership.role === 'admin' ? '' : 'none';
+  // AI Governance tab: admin+power-user only, hidden entirely for read-only.
+  // Real enforcement lives server-side (_cost_tower_can_manage_governance on
+  // the budget/alert RPCs) — this is the matching client-side hint, same
+  // two-layer pattern as the control_tower access restriction.
+  var planTab = document.getElementById('act-tab-plan');
+  if (planTab) planTab.style.display = actIsGovernanceViewer() ? '' : 'none';
 
   // Gate stays up through the data-fetch phase too — previously hidden
   // right here, before the Promise.all below even started, leaving the
   // (now-visible) app shell's content area blank for the 2-3s this takes.
   actShowGate('Loading…', 'Loading your cost and usage data…');
 
+  // actLoadBudgetAndAlerts() still runs for every role — Overview's own
+  // "% of budget used" stat needs the active budget regardless of the AI
+  // Governance screen gate, and that function itself skips only the
+  // alerts half for read-only (see there for why). actRenderPlan() and
+  // actLoadLifetimeSpend() (whose only consumer is actRenderPlan()'s own
+  // "Total spent overall" KPI) are both skipped outright for read-only, so
+  // #act-scr-plan stays empty behind its hidden tab and no full-history
+  // scan runs to compute a number nobody without governance access sees.
+  var bootFetches = [actLoadMainContext(), actLoadBudgetAndAlerts(), actLoadProductNames(), actLoadTeamNames()];
+  if (actIsGovernanceViewer()) bootFetches.push(actLoadLifetimeSpend());
   try {
-    await Promise.all([actLoadMainContext(), actLoadBudgetAndAlerts(), actLoadProductNames(), actLoadTeamNames(), actLoadLifetimeSpend()]);
+    await Promise.all(bootFetches);
     await actSetOverviewPeriod('this_month');
     await actSetBreakdownPeriod('this_month');
-    actRenderPlan();
+    if (actIsGovernanceViewer()) actRenderPlan();
     // Outcome-Based Cost (v2, Screen 4) — eager load at boot, same as every
     // other screen. actShowScreen() is a pure visibility toggle in this
     // file (confirmed: no per-screen fetch logic lives there), so this
@@ -294,6 +324,11 @@ function _actApplyScreenNameHeader() {
   if (nameEl) nameEl.textContent = actAppName ? 'AI Control Tower · ' + actAppName : 'AI Control Tower';
 }
 function actShowScreen(name) {
+  // Defense in depth: the AI Governance tab button is already hidden for
+  // read-only members (actBoot()), and #act-scr-plan is never populated for
+  // them (actRenderPlan() is skipped) — this catches any other way 'plan'
+  // could still be requested, rather than showing an empty screen.
+  if (name === 'plan' && !actIsGovernanceViewer()) name = 'overview';
   document.querySelectorAll('.act-screen').forEach(function (s) { s.classList.remove('on'); });
   var scr = document.getElementById('act-scr-' + name);
   if (scr) scr.classList.add('on');
@@ -460,14 +495,22 @@ async function actLoadBudgetAndAlerts() {
     }
     actBudget = (!r1.error && r1.data && r1.data.budget_id) ? r1.data : null;
   } catch (e) { console.error('[Cost Tower] mt_ai_budget_get_active exception:', e); actToast('Could not load budget configuration.', 'error'); actBudget = null; }
-  try {
-    var r2 = await client.rpc('mt_ai_alerts_list', { p_company_id: actCompanyId, p_app_id: actAppId });
-    if (r2.error) {
-      console.error('[Cost Tower] mt_ai_alerts_list failed:', r2.error.message);
-      actToast('Could not load budget alerts.', 'error');
-    }
-    actAlerts = (!r2.error && r2.data) ? r2.data : [];
-  } catch (e) { console.error('[Cost Tower] mt_ai_alerts_list exception:', e); actToast('Could not load budget alerts.', 'error'); actAlerts = []; }
+  // Alerts are AI-Governance-specific (rendered only by actRenderAlertsCard(),
+  // called only from actRenderPlan()) — mt_ai_alerts_list is governance-gated
+  // server-side (_cost_tower_can_manage_governance), so a read-only member's
+  // call would just fail; skip it rather than fetch something never rendered.
+  if (!actIsGovernanceViewer()) {
+    actAlerts = [];
+  } else {
+    try {
+      var r2 = await client.rpc('mt_ai_alerts_list', { p_company_id: actCompanyId, p_app_id: actAppId });
+      if (r2.error) {
+        console.error('[Cost Tower] mt_ai_alerts_list failed:', r2.error.message);
+        actToast('Could not load budget alerts.', 'error');
+      }
+      actAlerts = (!r2.error && r2.data) ? r2.data : [];
+    } catch (e) { console.error('[Cost Tower] mt_ai_alerts_list exception:', e); actToast('Could not load budget alerts.', 'error'); actAlerts = []; }
+  }
 }
 
 // `mt_ai_cost_events_list` returns raw product_id/user_id — resolving them
@@ -1664,7 +1707,11 @@ async function actSaveBudget() {
     actBudget = result.data;
     actToast('Budget configuration saved.', 'success');
     actRenderOverview();
-    actRenderPlan();
+    // Guarded the same as every other actRenderPlan() call site — this
+    // button only exists once actRenderPlan() has already rendered it
+    // (never true for a read-only boot), but matching the same defense-in-
+    // depth pattern used elsewhere in case that ever changes.
+    if (actIsGovernanceViewer()) actRenderPlan();
   } catch (err) {
     console.error('[Cost Tower] budget save failed:', err);
     actToast('Could not save budget configuration.', 'error');
@@ -1694,7 +1741,9 @@ async function _actAlertAction(rpcName, alertId, successMsg, failMsg) {
     var result = await client.rpc(rpcName, { p_alert_id: alertId });
     if (result.error) throw result.error;
     _actPatchAlert(result.data);
-    actRenderPlan();
+    // Same defense-in-depth guard as actSaveBudget() and every other
+    // actRenderPlan() call site.
+    if (actIsGovernanceViewer()) actRenderPlan();
     actToast(successMsg, 'success');
   } catch (err) {
     console.error('[Cost Tower] ' + rpcName + ' failed:', err);
