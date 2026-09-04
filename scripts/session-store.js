@@ -14,6 +14,22 @@
 // ── Constants ──
 const _SS_PREFIX = 'pgt_session_';
 const _SS_INDEX  = 'pgt_session_index'; // ordered list of session IDs
+// v9.31: always-complete, uncapped meta cache — { [sessionId]: meta }.
+// Introduced so sessionStoreList() (Home's session library) never depends
+// on the full { meta, snapshot } blob under _SS_PREFIX, which is what the
+// v9.31 snapshot-only eviction cap (see sessionStoreSyncFromDB) actually
+// prunes. Every id in _SS_INDEX always has a corresponding entry here —
+// this key is never subject to the cap.
+const _SS_META_INDEX = 'pgt_session_meta';
+// v9.31: total local-cache budget for full { meta, snapshot } blobs, in
+// stringified JS-string-length bytes (same unit sessionStoreSave's existing
+// 3500000-byte single-entry guard uses, for consistency). 4MB comfortably
+// holds one entry at that existing per-entry ceiling with ~500KB left over
+// for others, while staying well under the ~5.5MB that caused the original
+// QuotaExceededError incident. See sessionStoreSyncFromDB for how it's
+// enforced — never against _SS_INDEX or _SS_META_INDEX, only the bulky
+// full blobs.
+const _SS_SNAPSHOT_BUDGET_BYTES = 4 * 1024 * 1024;
 // mt_ prefix is permanent — Phase 6 (rename cutover) was evaluated and
 // deliberately decided against: mt_ reads as "multi-tenant," a genuinely
 // self-documenting convention, and the rename carried real cutover risk
@@ -254,6 +270,39 @@ async function _ssUpsertToDB(sessionId, entry) {
   }
 }
 
+// v9.31 code-review fix: single shared row→meta mapping. Replaces what had
+// grown to three independent copies of this same ~20-field mapping
+// (sessionStoreSyncFromDB below, _ssFetchSessionRow, and live-sync.js's
+// _lsResumePreFetch) — per AI_EDITING_RULES.md item 3 ("check for an
+// existing pattern before inventing a new one... silently omitting it is a
+// regression risk, not a simplification"). Pure: takes one raw mt_sessions
+// row, returns the meta object every one of those call sites needs,
+// verbatim, with no side effects.
+function _ssRowToMeta(row) {
+  return {
+    id:          row.id,
+    name:        row.name        || 'Session',
+    productName: row.product_name || '',
+    productId:   row.product_id   || null,
+    companyName: row.company_name || '',
+    productType: row.product_type || '',
+    approach:    row.approach     || '',
+    lastTab:     row.last_tab     || 'mm',
+    lastStage:   row.last_stage   || '',
+    intakeStatus: row.intake_status || null,
+    counts:      row.counts       || { caps: 0, features: 0, stories: 0, sprintActive: null },
+    createdAt:   row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    savedAt:     row.saved_at   ? new Date(row.saved_at).getTime()   : Date.now(),
+    isShared:        !!row.is_shared,
+    shareMode:       row.share_mode === 'edit' ? 'edit' : 'view',
+    lastEditedByName: row.last_edited_by_name || '',
+    activeUserId:    row.active_user_id || null,
+    activeAt:        row.active_at ? new Date(row.active_at).getTime() : null,
+    activeUserName:  row.active_user_name || '',
+    userId:          row.user_id || null
+  };
+}
+
 // ── Public API ──
 
 // Sync all sessions from Supabase into localStorage.
@@ -288,12 +337,24 @@ async function sessionStoreSyncFromDB() {
       staleIds.forEach(function(id){ try { localStorage.removeItem(_SS_PREFIX + id); } catch(e) {} });
     } catch(e) {}
     try { localStorage.setItem(_SS_INDEX, JSON.stringify([])); } catch(e) {}
+    // v9.31 code-review fix: the meta-index mirrors _SS_INDEX's lifecycle
+    // exactly (see the zero-DB-rows branch below, which already does this)
+    // — without this, a fully-removed company membership left every stale
+    // session name in pgt_session_meta forever.
+    try { localStorage.setItem(_SS_META_INDEX, JSON.stringify({})); } catch(e) {}
     return;
   }
   try {
-    const { data, error } = await client
+    // v9.31: { count: 'exact' } returns the true total matching row count
+    // server-side, independent of how many rows actually came back in
+    // `data` (subject to Supabase's implicit default page cap — this query
+    // has no .range()/.limit()). Used below purely as a safety valve: if
+    // the fetch was truncated, this sync must not evict anything, since it
+    // can't tell which locally-cached ids are genuinely gone vs. simply
+    // off-page.
+    const { data, error, count } = await client
       .from(_SS_TABLE)
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('company_id', activeCompanyId)
       .order('saved_at', { ascending: false });
 
@@ -310,64 +371,62 @@ async function sessionStoreSyncFromDB() {
         staleIds2.forEach(function(id){ try { localStorage.removeItem(_SS_PREFIX + id); } catch(e) {} });
       } catch(e) {}
       try { localStorage.setItem(_SS_INDEX, JSON.stringify([])); } catch(e) {}
+      // v9.31: the meta-index mirrors _SS_INDEX's lifecycle exactly — clear
+      // it here too so it doesn't drift from an empty session list.
+      try { localStorage.setItem(_SS_META_INDEX, JSON.stringify({})); } catch(e) {}
       return;
     }
+
+    // v9.31: truncation guard — if the fetch didn't return every matching
+    // row, disable eviction for this entire sync pass (every row still
+    // gets written normally, as if there were no cap at all this cycle).
+    var _syncTruncated = (typeof count === 'number' && count > data.length);
+    if (_syncTruncated) {
+      console.warn('sessionStoreSyncFromDB: result set truncated (count', count, '> fetched', data.length, ') — skipping snapshot eviction this sync');
+    }
+    // v9.31: running total of full-blob bytes written so far this sync,
+    // used to decide which rows fall outside _SS_SNAPSHOT_BUDGET_BYTES.
+    // Rows arrive already sorted saved_at descending (the query's own
+    // .order() above), so this naturally keeps the most-recently-touched
+    // sessions and evicts the oldest first — no separate sort needed.
+    var _runningBudgetBytes = 0;
+    // v9.31 code-review fix: previous index, captured before this sync
+    // mutates anything — used below to (a) prune orphaned meta/blob entries
+    // for ids no longer returned (deleted elsewhere), and (b) union with
+    // the fetched ids on a truncated fetch instead of replacing outright.
+    var _prevIndexIds = _ssGetIndex();
+    // v9.31 code-review fix: batch the meta-index into one read-mutate-
+    // write instead of one full read+stringify PER ROW (was O(n²) across a
+    // sync of n sessions — exactly the scale this release targets).
+    var _metaIdxBatch = _ssGetMetaIndex();
 
     // Write each row into localStorage in { meta, snapshot } shape
     const ids = [];
     data.forEach(function(row) {
-      const meta = {
-        id:          row.id,
-        name:        row.name        || 'Session',
-        productName: row.product_name || '',
-        // v9.13.01: real product FK, read straight off the row — .select('*')
-        // above already returns this column with no query change needed.
-        productId:   row.product_id   || null,
-        companyName: row.company_name || '',
-        productType: row.product_type || '',
-        approach:    row.approach     || '',
-        lastTab:     row.last_tab     || 'mm',
-        lastStage:   row.last_stage   || '',
-        // v9.15.02 — read straight off the row, same denormalized pattern
-        // as every other field here.
-        intakeStatus: row.intake_status || null,
-        counts:      row.counts       || { caps: 0, features: 0, stories: 0, sprintActive: null },
-        createdAt:   row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-        savedAt:     row.saved_at   ? new Date(row.saved_at).getTime()   : Date.now(),
-        // Phase 5: sharing fields, read straight off the row. last_edited_by_name
-        // is a denormalized snapshot (see _ssUpsertToDB) — deliberately not a
-        // live lookup of the editor's CURRENT display name. activeUserId/
-        // activeAt/activeUserName drive the "[Name] is generating now" meta
-        // line state — activeUserName is written directly by
-        // withGenerationLock() (api.js) the moment a lock is acquired, not
-        // by this sync path, since sync only runs on login/tab-load, not
-        // continuously while someone else might be generating.
-        isShared:        !!row.is_shared,
-        // v9.08: read straight off the row, same denormalized-snapshot
-        // pattern as the other Phase 5 sharing fields above.
-        shareMode:       row.share_mode === 'edit' ? 'edit' : 'view',
-        lastEditedByName: row.last_edited_by_name || '',
-        activeUserId:    row.active_user_id || null,
-        activeAt:        row.active_at ? new Date(row.active_at).getTime() : null,
-        activeUserName:  row.active_user_name || '',
-        // Phase 5 (v8.117 fix): the session's owner id, read straight off
-        // row.user_id — see sessionStoreCreate's own comment for the full
-        // rationale on why this was missing and what it enables.
-        userId:          row.user_id || null
-      };
+      const meta = _ssRowToMeta(row); // v9.31 code-review fix — was inlined here, see _ssRowToMeta's own comment
       try {
         // Fix 3 (v8.38): protect against stale Supabase snapshot overwriting
         // a locally-cleared downstream state after DM regeneration.
         // If local snapshot has a newer dmRegenAt, preserve its downstream keys.
         var remoteSnapshot = row.snapshot || {};
+        // v9.31: hoisted out of the inner try below so the eviction decision
+        // further down can consult the same signal the merge already uses —
+        // a session carrying an unsynced edit (local ahead of what the DB
+        // just returned) must never be actively evicted, only exempted from
+        // this pass's budget, or its only surviving copy would be destroyed
+        // with no way back (the DB never got it; the local cache no longer
+        // would either).
+        var _localAheadOfRemote = false;
+        var localRaw = null;
         try {
-          var localRaw = localStorage.getItem(_SS_PREFIX + row.id);
+          localRaw = localStorage.getItem(_SS_PREFIX + row.id);
           if (localRaw) {
             var localEntry = JSON.parse(localRaw);
             var localSnap = (localEntry && localEntry.snapshot) || {};
             var localRegenAt = localSnap.dmRegenAt || 0;
             var remoteRegenAt = remoteSnapshot.dmRegenAt || 0;
             if (localRegenAt > remoteRegenAt) {
+              _localAheadOfRemote = true;
               // Local cleared more recently — preserve local downstream keys.
               // v9.27 code-review fix: piReadinessPlans/raConversations were
               // missing from this merge — same class of gap as the
@@ -384,18 +443,74 @@ async function sessionStoreSyncFromDB() {
             }
           }
         } catch(e) {}
-        localStorage.setItem(_SS_PREFIX + row.id, JSON.stringify({
-          meta,
-          snapshot: remoteSnapshot
-        }));
+
+        // v9.31: _SS_INDEX and the meta-index are always-complete — every
+        // row this fetch returned gets both, unconditionally, regardless of
+        // the snapshot-eviction decision below. This is what keeps every
+        // session visible on Home even once its snapshot has been evicted.
         ids.push(row.id);
+        _metaIdxBatch[row.id] = meta; // batched — see _metaIdxBatch above
+
+        // v9.31: snapshot-only cap. The active session and any session
+        // carrying an unsynced edit are always kept regardless of budget; a
+        // truncated fetch (_syncTruncated) disables eviction entirely this
+        // pass. Everything else within the running budget is kept; anything
+        // past it gets its existing full blob actively REMOVED, not merely
+        // un-written — an already-bloated account must shrink on its next
+        // login, not just stop growing further.
+        var _blobJson = JSON.stringify({ meta, snapshot: remoteSnapshot });
+        var _blobLen = _blobJson.length;
+        var _isActiveSession = (typeof _activeSessionId !== 'undefined' && _activeSessionId === row.id);
+        var _withinBudget = _syncTruncated || ((_runningBudgetBytes + _blobLen) <= _SS_SNAPSHOT_BUDGET_BYTES);
+        if (_isActiveSession || _withinBudget || _localAheadOfRemote) {
+          localStorage.setItem(_SS_PREFIX + row.id, _blobJson);
+          _runningBudgetBytes += _blobLen;
+        } else if (localRaw) {
+          localStorage.removeItem(_SS_PREFIX + row.id);
+        }
       } catch(e) {
         console.warn('sessionStoreSyncFromDB: localStorage write failed for', row.id, e);
       }
     });
 
-    // Rebuild index from DB order (saved_at desc)
-    try { localStorage.setItem(_SS_INDEX, JSON.stringify(ids)); } catch(e) {}
+    // v9.31 code-review fix: prune meta-index (and any surviving full blob)
+    // for ids that were in the previous index but are absent from this
+    // fetch — i.e. genuinely deleted elsewhere. Only when NOT truncated:
+    // on a truncated fetch we can't tell "genuinely gone" from "off-page",
+    // so nothing gets pruned that pass, matching the same reasoning already
+    // used to gate snapshot eviction above. Without this, the meta-index
+    // (and any full blob not yet evicted) would accumulate forever for any
+    // session ever deleted on another device — reintroducing, for the
+    // meta-index, exactly the unbounded-orphan-growth class of bug this
+    // whole feature exists to close for snapshots.
+    if (!_syncTruncated) {
+      var _idsSet = {};
+      ids.forEach(function(id){ _idsSet[id] = true; });
+      _prevIndexIds.forEach(function(staleId){
+        if (_idsSet[staleId]) return;
+        try { localStorage.removeItem(_SS_PREFIX + staleId); } catch(e) {}
+        delete _metaIdxBatch[staleId];
+      });
+    }
+
+    // v9.31 code-review fix: on a truncated fetch, union with the previous
+    // index instead of replacing it outright — the old unconditional
+    // overwrite dropped every session outside this fetch's page from the
+    // index (and therefore from Home) whenever a company's session count
+    // exceeded Supabase's implicit page cap, regardless of the truncation
+    // guard above (which only ever protected snapshot eviction, not this
+    // rebuild). A real session must never disappear from Home just because
+    // this one sync couldn't see all of it.
+    var _finalIds = _syncTruncated
+      ? _prevIndexIds.concat(ids.filter(function(id){ return _prevIndexIds.indexOf(id) === -1; }))
+      : ids;
+
+    // Rebuild index from DB order (saved_at desc) — always every id, per
+    // the always-complete guarantee above.
+    try { localStorage.setItem(_SS_INDEX, JSON.stringify(_finalIds)); } catch(e) {}
+    // v9.31 code-review fix: single batched write for the whole meta-index,
+    // replacing the previous per-row write inside the loop above.
+    try { localStorage.setItem(_SS_META_INDEX, JSON.stringify(_metaIdxBatch)); } catch(e) {}
 
   } catch(e) {
     console.warn('sessionStoreSyncFromDB exception:', e);
@@ -415,9 +530,15 @@ function sessionStoreCreate(sc, opts) {
   const now = Date.now();
   let name = _ssAutoName(productName, now);
   // Ensure name is unique across existing sessions
+  // v9.31: reads the always-complete meta-index instead of iterating full
+  // { meta, snapshot } blobs — stays correct even for a session whose
+  // snapshot has been evicted by the size cap (see sessionStoreSyncFromDB),
+  // since the meta-index entry survives eviction unconditionally.
   const _existingNames=new Set();
-  _ssGetIndex().forEach(function(eid){
-    try{var raw=localStorage.getItem(_SS_PREFIX+eid);if(raw){var entry=JSON.parse(raw);if(entry&&entry.meta&&entry.meta.name)_existingNames.add(entry.meta.name.trim().toLowerCase());}}catch(e){}
+  var _createMetaIdx=_ssGetMetaIndex();
+  Object.keys(_createMetaIdx).forEach(function(eid){
+    var m=_createMetaIdx[eid];
+    if(m&&m.name)_existingNames.add(m.name.trim().toLowerCase());
   });
   if(_existingNames.has(name.trim().toLowerCase())){
     var _n=2;
@@ -476,6 +597,7 @@ function sessionStoreCreate(sc, opts) {
   try {
     localStorage.setItem(_SS_PREFIX + id, JSON.stringify({ meta, snapshot }));
     _ssAddToIndex(id);
+    _ssSetMetaEntry(id, meta); // v9.31 — meta-index mirror, see constants block
   } catch(e) {
     console.warn('sessionStoreCreate localStorage failed:', e);
     return null;
@@ -531,6 +653,7 @@ function sessionStoreSetIntakeStatus(sessionId, status){
     entry.meta=entry.meta||{};
     entry.meta.intakeStatus=status;
     localStorage.setItem(_SS_PREFIX+sessionId, JSON.stringify(entry));
+    _ssSetMetaEntry(sessionId, entry.meta); // v9.31 — keep meta-index in sync
   }catch(e){ console.warn('sessionStoreSetIntakeStatus failed:', e); }
 }
 
@@ -582,7 +705,11 @@ async function sessionStoreSave(sessionId, expectedBlock) {
   let _dbWriteOk = false;
   try {
     const raw = localStorage.getItem(_SS_PREFIX + sessionId);
-    const entry = raw ? JSON.parse(raw) : { meta: {}, snapshot: {} };
+    // v9.31: on a full-blob cache miss, hydrate meta from the always-
+    // complete meta-index instead of blank {} — defense-in-depth for the
+    // active session (never itself subject to eviction, per the cap's own
+    // design) in case that invariant is ever broken by a future change.
+    const entry = raw ? JSON.parse(raw) : { meta: (_ssGetMetaIndex()[sessionId] || {}), snapshot: {} };
 
     // Build snapshot with wireframe compression
     let snapshot = _sessionStoreBuildSnapshot({ persistWireframe: true });
@@ -615,6 +742,7 @@ async function sessionStoreSave(sessionId, expectedBlock) {
 
     // Write to localStorage first — synchronous, instant
     localStorage.setItem(_SS_PREFIX + sessionId, json);
+    _ssSetMetaEntry(sessionId, entry.meta); // v9.31 — meta-index mirror
     _ssShowSaved();
 
     // DB write — now awaited inline (was fire-and-forget pre-v8.123).
@@ -818,6 +946,7 @@ function sessionStoreUpdateLastTab(tab){
     if(entry&&entry.meta){
       entry.meta.lastTab=tab;
       localStorage.setItem(_SS_PREFIX+_activeSessionId,JSON.stringify(entry));
+      _ssSetMetaEntry(_activeSessionId, entry.meta); // v9.31 — keep meta-index in sync
     }
   }catch(e){
     console.warn('sessionStoreUpdateLastTab failed:',e);
@@ -1014,6 +1143,52 @@ function _ssDecompressProtoStoreWireframes(protoStoreObj) {
   });
 }
 
+// ── Single-session resync (v9.31) ──
+// Fetches one session row fresh from Supabase, mapped into { meta, snapshot }
+// via the shared _ssRowToMeta() helper (see its own comment — this used to
+// be a fourth independent copy of that mapping; code-review fixed). Used by
+// sessionStoreRestore() to recover a session whose full blob was evicted
+// by the snapshot-size cap but is still present in the meta-index (i.e.
+// still a real, current session for this company). Deliberately does NOT
+// fetch mt_session_content_events' cursor the way live-sync.js's sibling
+// _lsResumePreFetch does — that's specific to live-sync's "new content"
+// banner, not needed for a plain cache-miss resync; the strict is_shared/
+// user_id allowlist below IS shared with that sibling, though, since both
+// are single-row live fetches of the same table and deserve the same
+// hard-fail discipline.
+async function _ssFetchSessionRow(sessionId) {
+  try {
+    const client = _ssGetClient();
+    if (!client) return { ok: false, reason: 'error' };
+    const activeCompanyId = (function(){
+      try { return localStorage.getItem(_PGT_ACTIVE_COMPANY_KEY) || null; } catch(e) { return null; }
+    })();
+    if (!activeCompanyId) return { ok: false, reason: 'error' };
+
+    const { data, error } = await client
+      .from(_SS_TABLE)
+      .select('*')
+      .eq('id', sessionId)
+      .eq('company_id', activeCompanyId)
+      .limit(1);
+    if (error) return { ok: false, reason: 'error' };
+    if (!data || data.length === 0) return { ok: false, reason: 'no-access' };
+    const row = data[0];
+
+    // v9.31 code-review fix: strict allowlist, matching _lsResumePreFetch's
+    // identical checks on the identical table — hard-fail rather than
+    // default a legacy/malformed row's ownership fields to blank, which
+    // could otherwise expose the owner-only 3-dot menu (home.js's owner
+    // check treats userId:null as "no owner recorded") to any viewer.
+    if (row.is_shared === undefined || row.is_shared === null) return { ok: false, reason: 'error' };
+    if (!row.user_id) return { ok: false, reason: 'error' };
+
+    return { ok: true, meta: _ssRowToMeta(row), snapshot: row.snapshot || {} };
+  } catch(e) {
+    return { ok: false, reason: 'error' };
+  }
+}
+
 async function sessionStoreRestore(sessionId) {
   // v9.12.02 fix: re-entrancy guard for the SAME session only. Root cause
   // of the "occupancy toast never shown" bug — a duplicate invocation for
@@ -1034,10 +1209,42 @@ async function sessionStoreRestore(sessionId) {
     return;
   }
   const _restoreSeq = ++_ssRestoreSeq;
-  const localEntry = sessionStoreLoad(sessionId);
+  let localEntry = sessionStoreLoad(sessionId);
+
+  // v9.31: two-way cache-miss branch. A missing local entry no longer
+  // automatically means "corrupted" — it's the expected, recoverable state
+  // for a session whose snapshot was evicted by the size cap (see
+  // sessionStoreSyncFromDB), and the always-complete meta-index is what
+  // distinguishes that from a session genuinely unknown to this company.
   if (!localEntry || !localEntry.snapshot) {
-    showToast('Could not load session. Data may be corrupted.', 'warn');
-    return;
+    const _knownMeta = _ssGetMetaIndex()[sessionId];
+    if (!_knownMeta) {
+      // Absent from the meta-index too — never synced, or genuinely gone.
+      // No live fetch attempted; nothing locally suggests this id is real.
+      showToast('Could not load session. Data may be corrupted.', 'warn');
+      return;
+    }
+    const _resynced = await _ssFetchSessionRow(sessionId);
+    // Re-check after this await — a second restore started while this one
+    // was in flight wins; this one must not clobber it, same reasoning as
+    // every other await point in this function.
+    if (_restoreSeq !== _ssRestoreSeq) { return; }
+    if (_resynced && _resynced.ok) {
+      localEntry = { meta: _resynced.meta, snapshot: _resynced.snapshot };
+      try { localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(localEntry)); } catch(e) {}
+      _ssSetMetaEntry(sessionId, _resynced.meta);
+    } else if (_resynced && _resynced.reason === 'no-access') {
+      // Clean, error-free empty result — genuinely gone (deleted/RLS-
+      // excluded) despite the meta-index still holding a stale copy from
+      // before. Distinct message from a network failure, per the review.
+      showToast('This session no longer exists.', 'warn');
+      return;
+    } else {
+      // Network/thrown failure — distinct from genuinely-gone, since the
+      // right user action differs (retry vs. give up).
+      showToast('Could not reach the server to load this session. Check your connection and try again.', 'warn');
+      return;
+    }
   }
 
   _ssRestoring = true;  // prevent switchTab from overwriting lastTab during restore
@@ -1102,6 +1309,11 @@ async function sessionStoreRestore(sessionId) {
           // without this write, that later re-read would silently see stale
           // cached data instead of what was just fetched.
           try { localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry)); } catch(e) {}
+          // v9.31 code-review fix: mirror the freshly-fetched meta into the
+          // meta-index too — without this, Home's list (which now reads
+          // only the meta-index) would keep showing the pre-resume stale
+          // name/shareMode even immediately after a successful refresh.
+          _ssSetMetaEntry(sessionId, _fresh.meta);
         } else if (_fresh && _fresh.reason === 'no-access') {
           // Fix (v8.127): confirmed no access (a clean, error-free query that
           // simply returned nothing — RLS has excluded this row) must NOT
@@ -1363,6 +1575,7 @@ function sessionStoreDelete(sessionId) {
   try {
     localStorage.removeItem(_SS_PREFIX + sessionId);
     _ssRemoveFromIndex(sessionId);
+    _ssRemoveMetaEntry(sessionId); // v9.31
     if (_activeSessionId === sessionId) _activeSessionId = null;
   } catch(e) {
     console.warn('sessionStoreDelete localStorage failed:', e);
@@ -1407,13 +1620,32 @@ function sessionStoreRename(sessionId, newName) {
 
   const trimmed = (newName || '').trim();
 
-  // Update localStorage first
+  // Update local caches first. v9.31 fix: the full { meta, snapshot } blob
+  // may have been evicted by the size cap (sessionStoreSyncFromDB) even
+  // though the session is still real and listed on Home — this block used
+  // to be `if (!raw) return`, which exited the WHOLE function in that case
+  // and silently skipped the mt_session_rename RPC below too, not just the
+  // local cache write. The meta-index (always complete, never evicted) is
+  // now the write target guaranteed to exist; the full blob is mirrored
+  // only when it happens to still be present.
   try {
+    var _metaIdx = _ssGetMetaIndex();
+    var _existingMeta = _metaIdx[sessionId];
+    // v9.31 code-review fix: matches homeSessionToggleShare's identical
+    // guard — without this, a sessionId absent from the meta-index (a
+    // stale Home card, or a race with a concurrent delete) fell back to a
+    // bare {}, writing a phantom, malformed meta-index entry and still
+    // firing mt_session_rename against a possibly nonexistent session.
+    if (!_existingMeta) return;
+    var _resolvedName = trimmed || _existingMeta.name;
+    _ssSetMetaEntry(sessionId, Object.assign({}, _existingMeta, { name: _resolvedName }));
+
     const raw = localStorage.getItem(_SS_PREFIX + sessionId);
-    if (!raw) return;
-    const entry = JSON.parse(raw);
-    entry.meta.name = trimmed || entry.meta.name;
-    localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry));
+    if (raw) {
+      const entry = JSON.parse(raw);
+      entry.meta.name = trimmed || entry.meta.name;
+      localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry));
+    }
   } catch(e) {
     console.warn('sessionStoreRename localStorage failed:', e);
   }
@@ -1472,31 +1704,55 @@ function homeSessionToggleShare(sessionId){
   // localStorage updated correctly and the toast fired.
   let _nextShareMode = null;
   try {
-    const raw = localStorage.getItem(_SS_PREFIX + sessionId);
-    if (!raw) return;
-    const entry = JSON.parse(raw);
-    _nextShared = !entry.meta.isShared;
-    entry.meta.isShared = _nextShared;
+    // v9.31 fix: source of truth is now the always-complete meta-index, not
+    // the full { meta, snapshot } blob — that blob may have been evicted by
+    // the size cap even though the session is still real and listed. This
+    // used to be `if (!raw) return`, which exited the WHOLE function on a
+    // missing blob and silently skipped the mt_session_set_shared RPC below
+    // too, not just the local write — identical bug shape to
+    // sessionStoreRename, fixed the same way.
+    var _metaIdx = _ssGetMetaIndex();
+    var _existingMeta = _metaIdx[sessionId];
+    if (!_existingMeta) return; // genuinely unknown to this company's cache — nothing to toggle
+
+    _nextShared = !_existingMeta.isShared;
+    var _newMeta = Object.assign({}, _existingMeta, { isShared: _nextShared });
     // v9.08: re-derive share_mode from the company default every time a
     // session transitions private→shared — not just the first time it's
     // ever shared. Without this, unsharing then re-sharing a session
     // would silently keep whatever share_mode it had from a previous
     // share cycle instead of reflecting the current company policy.
     if (_nextShared) {
-      entry.meta.shareMode = (typeof appSettings !== 'undefined' && appSettings.defaultShareMode === 'edit') ? 'edit' : 'view';
+      _newMeta.shareMode = (typeof appSettings !== 'undefined' && appSettings.defaultShareMode === 'edit') ? 'edit' : 'view';
     }
-    _nextShareMode = entry.meta.shareMode || 'view';
-    localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry));
+    _nextShareMode = _newMeta.shareMode || 'view';
+    _ssSetMetaEntry(sessionId, _newMeta);
+
+    // Mirror into the full blob too, if it happens to still exist locally.
+    const raw = localStorage.getItem(_SS_PREFIX + sessionId);
+    if (raw) {
+      const entry = JSON.parse(raw);
+      entry.meta.isShared = _nextShared;
+      if (_nextShared) entry.meta.shareMode = _newMeta.shareMode;
+      localStorage.setItem(_SS_PREFIX + sessionId, JSON.stringify(entry));
+    }
+
     // Keep the live "is the ACTIVE session shared" flag in sync if this
     // toggle is happening on the session currently open — otherwise
     // withGenerationLock() would read a stale value until next restore.
     if (typeof _activeSessionId !== 'undefined' && _activeSessionId === sessionId) {
       _activeSessionIsShared = _nextShared;
-      if (_nextShared) _activeSessionShareMode = entry.meta.shareMode;
+      if (_nextShared) _activeSessionShareMode = _newMeta.shareMode;
     }
   } catch(e) {
+    // v9.31 code-review fix: no `return` here anymore — matches
+    // sessionStoreRename's equivalent catch. A corrupted-but-present full
+    // blob throwing during the "mirror into full blob" step used to skip
+    // the mt_session_set_shared RPC below entirely, even though the
+    // meta-index write above it had already succeeded — the same class of
+    // "silently does nothing server-side" bug this release fixes for the
+    // missing-blob case, just triggered by corruption instead.
     console.warn('homeSessionToggleShare localStorage failed:', e);
-    return;
   }
 
   if (typeof showToast === 'function') {
@@ -1546,16 +1802,18 @@ function homeSessionToggleShare(sessionId){
 
 // Return array of session metadata sorted by savedAt desc (default)
 function sessionStoreList() {
+  // v9.31: reads the always-complete meta-index instead of N full
+  // { meta, snapshot } blobs — one localStorage read instead of up to N.
+  // Home's session library must show every session the last sync knew
+  // about, regardless of whether that session's snapshot survived the
+  // size cap (see sessionStoreSyncFromDB) — the meta-index is never
+  // subject to that cap, so this list is unaffected by it.
   const index = _ssGetIndex();
+  const metaIdx = _ssGetMetaIndex();
   const list = [];
   index.forEach(function(id) {
-    try {
-      const raw = localStorage.getItem(_SS_PREFIX + id);
-      if (raw) {
-        const entry = JSON.parse(raw);
-        if (entry && entry.meta) list.push(entry.meta);
-      }
-    } catch(e) {}
+    var m = metaIdx[id];
+    if (m) list.push(m);
   });
   // Sort by savedAt descending
   list.sort(function(a, b) { return (b.savedAt || 0) - (a.savedAt || 0); });
@@ -2067,6 +2325,29 @@ function _ssAddToIndex(id) {
 function _ssRemoveFromIndex(id) {
   const index = _ssGetIndex().filter(function(i) { return i !== id; });
   try { localStorage.setItem(_SS_INDEX, JSON.stringify(index)); } catch(e) {}
+}
+
+// v9.31: meta-index helpers — same shape/naming as the id-index helpers
+// above, applied to the always-complete { [id]: meta } dict. This is what
+// sessionStoreList() reads from directly, and what every meta-mutating
+// function (rename, share-toggle, intake-status, last-tab) must write
+// through too, independent of whether that session's full { meta, snapshot }
+// blob under _SS_PREFIX still exists locally.
+function _ssGetMetaIndex() {
+  try {
+    const raw = localStorage.getItem(_SS_META_INDEX);
+    return raw ? JSON.parse(raw) : {};
+  } catch(e) { return {}; }
+}
+function _ssSetMetaEntry(id, meta) {
+  const idx = _ssGetMetaIndex();
+  idx[id] = meta;
+  try { localStorage.setItem(_SS_META_INDEX, JSON.stringify(idx)); } catch(e) {}
+}
+function _ssRemoveMetaEntry(id) {
+  const idx = _ssGetMetaIndex();
+  delete idx[id];
+  try { localStorage.setItem(_SS_META_INDEX, JSON.stringify(idx)); } catch(e) {}
 }
 
 // Auto-name: "ProductName · DD Mon"

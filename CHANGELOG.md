@@ -1,5 +1,14 @@
 # Changelog — Product Studio
 
+## v9.31 - 2026-09-04: Session local-cache restructuring — meta/snapshot split, snapshot-size cap, resync-on-miss
+
+Root cause: `pgt_session_*` entries in `localStorage` (one per session, `scripts/session-store.js`) accumulated indefinitely with no cap — 89 real, legitimately-created, never-deleted sessions in one company/profile hit that origin's storage quota (~5.5MB), causing Supabase's session-init write to fail silently on login and bounce the user straight back to the login screen with no visible error. Shipped as a feature-level version (not a `.NN` patch) because it restructures the local cache's shape across ten call sites in two files, not a scoped bug fix in one function.
+
+- Added - Session cache now splits lightweight metadata (name, savedAt, counts, etc.) from each session's bulky content payload into its own always-complete index. Home's session list reads only that lightweight index now, so every session stays visible there regardless of whether its heavier content is currently cached locally — including one just shared, renamed, or re-shared by a teammate, which previously stayed invisible or stale on Home until an unrelated full sync happened to run.
+- Added - Local session content is capped at a 4MB total budget; once an account exceeds it, the least-recently-touched sessions' content is actively evicted, oldest first, so an already-oversized account shrinks on its very next login instead of merely having further growth capped. The currently open session, and any session with an edit not yet confirmed saved to the database, are never evicted. A session deleted on another device, or a company with more sessions than a single fetch can return, is now handled correctly rather than either lingering forever locally or dropping real sessions from view.
+- Added - Opening a session whose local content was evicted (or otherwise missing) now quietly re-fetches it from the database instead of failing with "Data may be corrupted" — that message is now reserved for a session that's genuinely gone; a distinct message appears only if the live re-fetch itself fails.
+- Fixed - Renaming a session, or toggling it between Shared and Private, silently did nothing at all — not just locally, but never even reaching the server — whenever that session's local content cache was missing or corrupted. Both actions now work correctly regardless of local cache state, with the two now behaving consistently with each other.
+
 ## v9.30.07 - 2026-09-03: AI Cost Control Tower: multi-app platform extraction, Team Management Access tier
 
 Note: bundling schema, RPC, and UI work under one patch rather than the one-bullet-per-patch convention, matching the disclosed precedent already established for this branch (see v9.30.01) — this whole platform-extraction project ships as one patch rather than several thinner ones with interdependent migration ordering.
