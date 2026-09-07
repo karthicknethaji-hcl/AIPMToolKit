@@ -382,14 +382,12 @@ function actOpenSwitchAppModal() {
   // this page's other modals (Custom Date Range, Supporting Calls, outcome
   // detail) — reused here rather than building new chrome, but this one
   // choice-list content needs to match index.html's "Choose a company"
-  // modal instead (top-aligned, narrow). Applied as inline overrides, not
-  // a change to the shared class, so every other modal on this page keeps
-  // its own default size/position; actCloseModal() clears these so they
-  // never leak into the next modal opened.
-  var box = document.getElementById('act-modal-box');
-  box.style.top = '40px';
-  box.style.transform = 'translateX(-50%)';
-  box.style.width = '340px';
+  // modal instead (top-aligned, narrow). Toggled via a CSS modifier class
+  // (styles/26-cost-tower.css's .act-modal-compact), not inline styles, so
+  // every other modal on this page keeps its own default size/position and
+  // there's no risk of clearing 2 of 3 inline properties on close while
+  // missing the third; actCloseModal() removes the class unconditionally.
+  document.getElementById('act-modal-box').classList.add('act-modal-compact');
   actShowModal();
 }
 function actSelectApp(appId) {
@@ -1083,7 +1081,12 @@ function actRenderMainBreakdown() {
     if (group === 'feature') insight = actEsc(top.key) + ' accounts for ' + share.toFixed(0) + '% of spend this period.';
     else if (group === 'product') insight = actEsc(top.key === '__unassigned__' ? 'Unassigned spend' : top.key === '__cross_product__' ? 'Cross-Product (Shared) spend' : actProductNameOf(top.key)) + ' leads at ' + actFmtUSD(top.cost) + ' (' + share.toFixed(0) + '% of spend) this period.';
     else if (group === 'model') insight = actEsc(top.key) + ' drives ' + share.toFixed(0) + '% of spend this period.';
-    else if (group === 'user') insight = actEsc(actUserNameOf(top.key === '__unknown_user__' ? null : top.key)) + ' accounts for ' + share.toFixed(0) + '% of spend this period. This is an audit signal, not a leaderboard.';
+    // '__unknown_user__' is not a real person — every /v1-ingested row with
+    // no user_id merged together (see actComputeWhatIfData's identical
+    // exclusion) — so it gets its own sentence rather than being named via
+    // actUserNameOf() as if it were one real top user.
+    else if (group === 'user' && top.key === '__unknown_user__') insight = 'Unknown accounts for ' + share.toFixed(0) + '% of spend this period — usage recorded with no individual user attached (e.g. via the OpenAPI Ingestion Layer), not one real top user.';
+    else if (group === 'user') insight = actEsc(actUserNameOf(top.key)) + ' accounts for ' + share.toFixed(0) + '% of spend this period. This is an audit signal, not a leaderboard.';
     else if (group === 'prompt') insight = actEsc(top.key) + ' is the highest-cost prompt version cut this period.';
   }
 
@@ -1459,7 +1462,15 @@ function actComputeWhatIfData(rows) {
   var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
   var productCosts = Object.keys(productGroups).filter(function (k) { return k !== '__unassigned__' && k !== '__cross_product__'; }).map(function (k) { return productGroups[k].cost; });
   var userGroups = actGroupSum(rows, function (r) { return r.user_id || '__unknown__'; });
-  var userCosts = Object.keys(userGroups).map(function (k) { return userGroups[k].cost; });
+  // '__unknown__' bucket excluded from the percentile inputs — it's not one
+  // user, it's every /v1-ingested row with no user_id merged together
+  // (mt_ai_usage_events.user_id is nullable for the OpenAPI Ingestion Layer;
+  // previously unreachable when the column was NOT NULL). Treating that
+  // merged total as a single per-user data point would skew uLow/uHigh
+  // toward whatever this synthetic bucket's total happens to be, rather
+  // than reflecting the real per-user distribution this projection means
+  // to estimate.
+  var userCosts = Object.keys(userGroups).filter(function (k) { return k !== '__unknown__'; }).map(function (k) { return userGroups[k].cost; });
   var enoughProducts = productCosts.length >= 2, enoughUsers = userCosts.length >= 2;
   return {
     pLow: enoughProducts ? actPercentile(productCosts, 25) : null,
@@ -1573,12 +1584,10 @@ function actCloseModal() {
   document.getElementById('act-modal-overlay').classList.remove('open');
   var box = document.getElementById('act-modal-box');
   box.classList.remove('open');
-  // Clear actOpenSwitchAppModal()'s inline top/width overrides so the next
+  // Remove actOpenSwitchAppModal()'s size/position modifier so the next
   // modal opened (Custom Date Range, Supporting Calls, etc.) falls back to
-  // its own default 600px/vertically-centered CSS, not this one's leftovers.
-  box.style.top = '';
-  box.style.transform = '';
-  box.style.width = '';
+  // its own default 600px/vertically-centered CSS, not this one's leftover.
+  box.classList.remove('act-modal-compact');
   document.removeEventListener('keydown', _actModalEscHandler, true);
   if (_actModalFocusCleanup) { _actModalFocusCleanup(); _actModalFocusCleanup = null; }
 }

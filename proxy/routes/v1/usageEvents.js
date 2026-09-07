@@ -12,6 +12,7 @@ const { updateUnitsGenerated } = require('../../lib/costTower/unitsGenerated');
 const STATUS_VALUES = ['success', 'error', 'timeout'];
 const REQUIRED_FIELDS = ['client_call_id', 'user_role_at_call', 'caller', 'requested_model', 'status', 'request_started_at'];
 const BATCH_CAP = 500;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function _validateItem(item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) {
@@ -28,24 +29,82 @@ function _validateItem(item) {
   if (Number.isNaN(Date.parse(item.request_started_at))) {
     return 'request_started_at must be a valid ISO 8601 timestamp.';
   }
+  // Validated here, not left for the DB to reject, because the batch
+  // ownership pre-fetch (_fetchOwnedOutcomeIds) runs ONE .in() query across
+  // every item's outcome_id — a single malformed value would fail that
+  // whole query (invalid input syntax for type uuid), incorrectly marking
+  // every OTHER item's legitimate outcome_id as unowned too. Catching the
+  // bad shape per-item before it ever reaches that shared query keeps one
+  // caller mistake from collaterally rejecting the rest of the batch.
+  if (item.outcome_id != null && !UUID_RE.test(String(item.outcome_id))) {
+    return 'outcome_id must be a valid UUID.';
+  }
   return null;
 }
 
-// last_activity_at auto-bump (Section 5) — ownership-checked, silent skip
-// on no match. A mismatched outcome_id is more likely a caller-side bug
-// than an attack, and erroring would leak whether a given UUID exists at
-// all (same reasoning as the PATCH /v1/outcomes/{id} 404 below).
-async function _bumpOutcomeActivity(supabaseAdmin, companyId, appId, outcomeId) {
-  try {
-    await supabaseAdmin
-      .from('mt_outcomes')
-      .update({ last_activity_at: new Date().toISOString() })
-      .eq('outcome_id', outcomeId)
-      .eq('company_id', companyId)
-      .eq('app_id', appId);
-  } catch (e) {
-    console.error('[V1 USAGE-EVENTS] last_activity_at bump failed:', e.message);
+// last_activity_at auto-bump (Section 5) — ownership already verified by
+// the caller before this runs (see _fetchOwnedOutcomeIds), so this is a
+// plain scoped update, not a re-check. Fire-and-forget, never awaited by
+// the request path — same discipline as apiKeyAuth.js's
+// _touchCredentialLastUsedOpportunistic for the identical "just a
+// timestamp, best-effort" shape of write. A mismatched outcome_id was
+// already rejected earlier in the request, so silent failure here only
+// ever means a genuine best-effort miss, never a masked ownership gap.
+function _bumpOutcomeActivity(supabaseAdmin, companyId, appId, outcomeId) {
+  supabaseAdmin
+    .from('mt_outcomes')
+    .update({ last_activity_at: new Date().toISOString() })
+    .eq('outcome_id', outcomeId)
+    .eq('company_id', companyId)
+    .eq('app_id', appId)
+    .then(function (result) {
+      if (result && result.error) console.error('[V1 USAGE-EVENTS] last_activity_at bump failed:', result.error.message);
+    }, function (e) {
+      console.error('[V1 USAGE-EVENTS] last_activity_at bump exception:', e.message);
+    });
+}
+
+// Bounded-concurrency map — a batch of up to BATCH_CAP items each doing
+// independent DB round trips (findings: code review, batch efficiency)
+// must not run fully sequentially (up to 500x latency for no correctness
+// reason, per this file's own "independent records, not a transaction"
+// comment below) nor fully unbounded (500 simultaneous connections would
+// overwhelm Supabase's pooler). limit caps how many items are ever
+// in-flight at once; order of the returned array always matches input order
+// regardless of which item resolves first.
+async function _mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
   }
+  const workers = [];
+  for (let w = 0; w < Math.min(limit, items.length); w++) workers.push(worker());
+  await Promise.all(workers);
+  return results;
+}
+
+// One query for every distinct outcome_id referenced anywhere in the
+// batch, instead of one ownership-check query per item — a batch where
+// many items share a single outcome_id (a realistic pattern: many usage
+// events tied to one tracked outcome) previously re-ran the identical
+// SELECT once per item instead of once per distinct id.
+async function _fetchOwnedOutcomeIds(supabaseAdmin, companyId, appId, outcomeIds) {
+  if (outcomeIds.length === 0) return new Set();
+  const { data, error } = await supabaseAdmin
+    .from('mt_outcomes')
+    .select('outcome_id')
+    .eq('company_id', companyId)
+    .eq('app_id', appId)
+    .in('outcome_id', outcomeIds);
+  if (error) {
+    console.error('[V1 USAGE-EVENTS] outcome ownership check failed:', error.message);
+    return new Set(); // fail closed — every outcome_id in this batch is treated as unowned
+  }
+  return new Set((data || []).map(function (r) { return r.outcome_id; }));
 }
 
 function _buildRow(item, companyId, appId) {
@@ -87,37 +146,20 @@ function _buildRow(item, companyId, appId) {
   };
 }
 
-// Ownership check before insert — without this, a caller-supplied
-// outcome_id from a DIFFERENT (company_id, app_id) would still satisfy the
-// plain FK on mt_ai_usage_events.outcome_id (existence only, not
-// ownership) and persist a permanent cross-tenant reference. Mirrors the
-// same ownership check PATCH /v1/outcomes/{id} already does before acting.
-async function _verifyOutcomeOwnership(supabaseAdmin, companyId, appId, outcomeId) {
-  const { data, error } = await supabaseAdmin
-    .from('mt_outcomes')
-    .select('outcome_id')
-    .eq('outcome_id', outcomeId)
-    .eq('company_id', companyId)
-    .eq('app_id', appId)
-    .maybeSingle();
-  if (error) {
-    console.error('[V1 USAGE-EVENTS] outcome ownership check failed:', error.message);
-    return false;
-  }
-  return !!data;
-}
-
-async function _processItem(supabaseAdmin, item, companyId, appId) {
+// ownedOutcomeIds is pre-fetched once per batch (see _fetchOwnedOutcomeIds)
+// rather than re-checked per item — without this check at all, a
+// caller-supplied outcome_id from a DIFFERENT (company_id, app_id) would
+// still satisfy the plain FK on mt_ai_usage_events.outcome_id (existence
+// only, not ownership) and persist a permanent cross-tenant reference.
+// Mirrors the same ownership guarantee PATCH /v1/outcomes/{id} enforces.
+async function _processItem(supabaseAdmin, item, companyId, appId, ownedOutcomeIds) {
   const validationError = _validateItem(item);
   if (validationError) {
     return { error: { type: 'invalid_request', message: validationError } };
   }
 
-  if (item.outcome_id != null) {
-    const owned = await _verifyOutcomeOwnership(supabaseAdmin, companyId, appId, item.outcome_id);
-    if (!owned) {
-      return { error: { type: 'invalid_request', message: 'outcome_id does not exist or does not belong to this credential.' } };
-    }
+  if (item.outcome_id != null && !ownedOutcomeIds.has(item.outcome_id)) {
+    return { error: { type: 'invalid_request', message: 'outcome_id does not exist or does not belong to this credential.' } };
   }
 
   const row = _buildRow(item, companyId, appId);
@@ -140,14 +182,7 @@ async function _processItem(supabaseAdmin, item, companyId, appId) {
     return { error: { type: 'server_error', message: 'Could not record usage event.' } };
   }
 
-  // Bump fires on both a fresh insert and a deduplicated replay — a retried
-  // call that happens to be the one carrying outcome_id shouldn't lose the
-  // bump just because it was a duplicate delivery.
-  if (row.outcome_id) {
-    await _bumpOutcomeActivity(supabaseAdmin, companyId, appId, row.outcome_id);
-  }
-
-  return { id: result.id, deduplicated: result.deduplicated };
+  return { id: result.id, deduplicated: result.deduplicated, outcomeId: row.outcome_id };
 }
 
 module.exports = function usageEventsRouterFactory(supabaseAdmin) {
@@ -171,14 +206,41 @@ module.exports = function usageEventsRouterFactory(supabaseAdmin) {
       return res.status(400).json({ error: { type: 'invalid_request', message: 'Batch must contain at least one item.' } });
     }
 
+    // One ownership check for every distinct outcome_id in the whole batch,
+    // not one per item — a batch where many items share a single outcome_id
+    // (a realistic pattern) previously re-ran the identical query per item.
+    // Only syntactically-valid UUIDs are collected here (matches
+    // _validateItem's own check) — a malformed value is rejected per-item
+    // before it ever reaches this shared query, which would otherwise fail
+    // as a whole and mark every other item's legitimate outcome_id unowned.
+    const distinctOutcomeIds = Array.from(new Set(
+      items.filter(function (it) { return it && it.outcome_id != null && UUID_RE.test(String(it.outcome_id)); }).map(function (it) { return it.outcome_id; })
+    ));
+    const ownedOutcomeIds = await _fetchOwnedOutcomeIds(supabaseAdmin, req.companyId, req.appId, distinctOutcomeIds);
+
     // A single malformed item never discards the rest of the batch — these
     // are independent cost/telemetry records, not a transaction (Section 6
-    // batch semantics). Each item is processed independently, in order.
-    const results = [];
-    for (let i = 0; i < items.length; i++) {
-      const outcome = await _processItem(supabaseAdmin, items[i], req.companyId, req.appId);
-      results.push(outcome.error ? { index: i, error: outcome.error } : { index: i, id: outcome.id, deduplicated: outcome.deduplicated });
-    }
+    // batch semantics), so there is no correctness reason to process them
+    // one at a time: bounded concurrency turns up to BATCH_CAP sequential
+    // round-trip chains into a small, fixed number of concurrent ones.
+    // `index` (not resolution order) is what maps a result back to its
+    // request position, so out-of-order completion is never observable.
+    const outcomes = await _mapWithConcurrency(items, 20, function (item) {
+      return _processItem(supabaseAdmin, item, req.companyId, req.appId, ownedOutcomeIds);
+    });
+    const results = outcomes.map(function (outcome, i) {
+      return outcome.error ? { index: i, error: outcome.error } : { index: i, id: outcome.id, deduplicated: outcome.deduplicated };
+    });
+
+    // Bump once per distinct outcome_id actually written, not once per
+    // item — fires on both a fresh insert and a deduplicated replay (a
+    // retried call carrying outcome_id shouldn't lose the bump just
+    // because it was a duplicate delivery), fire-and-forget so it never
+    // adds to this response's latency.
+    const outcomeIdsToBump = new Set(outcomes.filter(function (o) { return !o.error && o.outcomeId; }).map(function (o) { return o.outcomeId; }));
+    outcomeIdsToBump.forEach(function (outcomeId) {
+      _bumpOutcomeActivity(supabaseAdmin, req.companyId, req.appId, outcomeId);
+    });
 
     if (!isBatch) {
       const only = results[0];

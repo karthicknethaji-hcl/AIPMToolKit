@@ -1,4 +1,19 @@
 -- AI Cost Control Tower: OpenAPI Ingestion Layer — search_path fix
+--
+-- SUPERSEDED — kept only as the historical record of the exact statements
+-- run against pgt-dev/pgt-prod on 2026-09-07. The fix below has since been
+-- folded directly into sql/ai-cost-tower-openapi-ingestion-credential-functions.sql
+-- itself (that file's CREATE OR REPLACE is idempotent, so a fresh
+-- environment now gets the corrected definition straight from the
+-- original file with no separate patch step required). Also corrected
+-- there, not repeated here: search_path lists 'extensions' before
+-- 'public' (this file had it the other way around, the less-safe
+-- direction for a SECURITY DEFINER function), both pgcrypto calls are
+-- fully schema-qualified, and 'pg_temp' is included to match this
+-- project's convention for every other SECURITY DEFINER function.
+-- Do not re-run this file — run the original file instead if you need to
+-- (re-)apply these functions.
+--
 -- Bug found when actually calling admin_issue_company_app_credential for
 -- the first time (Section 3, credential issuance): both credential
 -- functions failed at runtime with

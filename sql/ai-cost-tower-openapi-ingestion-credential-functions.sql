@@ -8,6 +8,26 @@
 -- consuming app — not part of the platform build itself). Preconditions
 -- (pgcrypto enabled, credential_hash typed text) already confirmed clean
 -- in both environments per Section 9, not re-checked here.
+--
+-- Code-review fix, applied directly here rather than left in a separate
+-- patch file: both functions originally shipped with SET search_path TO
+-- 'public' alone. pgcrypto lives in Supabase's `extensions` schema, not
+-- `public`, so gen_random_bytes/digest were never actually reachable —
+-- confirmed by a real runtime failure the first time either function was
+-- actually called ("function gen_random_bytes(integer) does not exist").
+-- Fixed two ways, not just one: `extensions` is listed AHEAD of `public`
+-- in search_path (a SECURITY DEFINER function resolving unqualified names
+-- through a schema lower-privileged roles could write to, searched before
+-- the trusted extension schema, is the classic search-path-shadowing risk
+-- against SECURITY DEFINER functions — same class as CVE-2018-1058), and
+-- the two pgcrypto calls are also fully schema-qualified
+-- (extensions.gen_random_bytes/extensions.digest) so correctness never
+-- actually depends on search_path order at all, only defense-in-depth
+-- does. `pg_temp` added to match every other SECURITY DEFINER function's
+-- search_path convention elsewhere in this project's sql/ files.
+-- This file's CREATE OR REPLACE is idempotent — re-running it against an
+-- environment that already has the old (buggy) definition safely converges
+-- to this corrected one, exactly as if it had been correct from the start.
 
 -- ═══════════════════════════════════════════════════════════════════
 -- admin_issue_company_app_credential — only succeeds if no credential
@@ -21,15 +41,15 @@ CREATE OR REPLACE FUNCTION admin_issue_company_app_credential(p_company_id uuid,
 RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'public'
+SET search_path TO 'extensions', 'public', 'pg_temp'
 AS $function$
 DECLARE
   v_plaintext text;
   v_hash text;
   v_confirmed uuid;
 BEGIN
-  v_plaintext := 'ct_' || encode(gen_random_bytes(32), 'hex');
-  v_hash := encode(digest(v_plaintext, 'sha256'), 'hex');
+  v_plaintext := 'ct_' || encode(extensions.gen_random_bytes(32), 'hex');
+  v_hash := encode(extensions.digest(v_plaintext, 'sha256'), 'hex');
 
   INSERT INTO mt_company_apps (company_id, app_id, is_active, granted_at, credential_hash, credential_created_at)
   VALUES (p_company_id, p_app_id, true, now(), v_hash, now())
@@ -62,15 +82,15 @@ CREATE OR REPLACE FUNCTION admin_rotate_company_app_credential(p_company_id uuid
 RETURNS text
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO 'public'
+SET search_path TO 'extensions', 'public', 'pg_temp'
 AS $function$
 DECLARE
   v_plaintext text;
 BEGIN
-  v_plaintext := 'ct_' || encode(gen_random_bytes(32), 'hex');
+  v_plaintext := 'ct_' || encode(extensions.gen_random_bytes(32), 'hex');
 
   UPDATE mt_company_apps
-  SET credential_hash = encode(digest(v_plaintext, 'sha256'), 'hex'),
+  SET credential_hash = encode(extensions.digest(v_plaintext, 'sha256'), 'hex'),
       credential_created_at = now()
   WHERE company_id = p_company_id AND app_id = p_app_id;
 
