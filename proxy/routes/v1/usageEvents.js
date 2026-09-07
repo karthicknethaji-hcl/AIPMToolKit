@@ -87,10 +87,37 @@ function _buildRow(item, companyId, appId) {
   };
 }
 
+// Ownership check before insert — without this, a caller-supplied
+// outcome_id from a DIFFERENT (company_id, app_id) would still satisfy the
+// plain FK on mt_ai_usage_events.outcome_id (existence only, not
+// ownership) and persist a permanent cross-tenant reference. Mirrors the
+// same ownership check PATCH /v1/outcomes/{id} already does before acting.
+async function _verifyOutcomeOwnership(supabaseAdmin, companyId, appId, outcomeId) {
+  const { data, error } = await supabaseAdmin
+    .from('mt_outcomes')
+    .select('outcome_id')
+    .eq('outcome_id', outcomeId)
+    .eq('company_id', companyId)
+    .eq('app_id', appId)
+    .maybeSingle();
+  if (error) {
+    console.error('[V1 USAGE-EVENTS] outcome ownership check failed:', error.message);
+    return false;
+  }
+  return !!data;
+}
+
 async function _processItem(supabaseAdmin, item, companyId, appId) {
   const validationError = _validateItem(item);
   if (validationError) {
     return { error: { type: 'invalid_request', message: validationError } };
+  }
+
+  if (item.outcome_id != null) {
+    const owned = await _verifyOutcomeOwnership(supabaseAdmin, companyId, appId, item.outcome_id);
+    if (!owned) {
+      return { error: { type: 'invalid_request', message: 'outcome_id does not exist or does not belong to this credential.' } };
+    }
   }
 
   const row = _buildRow(item, companyId, appId);
@@ -102,6 +129,13 @@ async function _processItem(supabaseAdmin, item, companyId, appId) {
   });
 
   if (result.error) {
+    // 23503 = foreign_key_violation — same translation outcomes.js already
+    // does for its own FK (e.g. a bad outcome_type_id); without this, a
+    // permanent client input error (a stale/bad reference) surfaced as an
+    // undifferentiated 500 instead of a 400.
+    if (result.error.code === '23503') {
+      return { error: { type: 'invalid_request', message: 'One of the referenced ids (e.g. outcome_id) does not exist.' } };
+    }
     console.error('[V1 USAGE-EVENTS] insert failed:', result.error.message);
     return { error: { type: 'server_error', message: 'Could not record usage event.' } };
   }
@@ -205,7 +239,14 @@ module.exports = function usageEventsRouterFactory(supabaseAdmin) {
       try {
         const decoded = JSON.parse(Buffer.from(String(req.query.cursor), 'base64').toString('utf8'));
         if (!Array.isArray(decoded) || decoded.length !== 2 || Number.isNaN(Date.parse(decoded[0]))) throw new Error('shape');
-        cursorTimestamp = decoded[0];
+        // Re-serialize through Date rather than trusting the decoded string
+        // verbatim, and restrict cursorId to a safe charset — both values
+        // get spliced into a raw PostgREST filter string below, and neither
+        // was previously validated for filter metacharacters (comma/parens),
+        // which Date.parse's own lenient formats (e.g. its own toString())
+        // can contain.
+        if (!/^[a-zA-Z0-9-]+$/.test(String(decoded[1]))) throw new Error('id');
+        cursorTimestamp = new Date(decoded[0]).toISOString();
         cursorId = decoded[1];
       } catch (e) {
         return res.status(400).json({ error: { type: 'invalid_request', message: 'Malformed cursor.' } });

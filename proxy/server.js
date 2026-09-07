@@ -687,7 +687,11 @@ const corsOptions = {
   // CORS config object for one route — this only affects what the BROWSER's
   // own preflight is told is allowed, not an authorization boundary
   // (requireAuthStrict + the RA RPCs' own checks are that boundary).
-  methods: ['GET', 'POST', 'OPTIONS'],
+  // 'PATCH' added for the /v1 ingestion API's two report-back endpoints
+  // (PATCH /v1/outcomes/:id, PATCH /v1/usage-events/.../units-generated) —
+  // without it, a browser-based consumer's preflight would fail and block
+  // both calls before they're ever sent.
+  methods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Token'],
   optionsSuccessStatus: 204
 };
@@ -2561,7 +2565,30 @@ app.post('/api/team/revoke', async (req, res) => {
 // (400/401/404/500), NOT this file's own always-200-error-in-body
 // convention — that convention is explicitly scoped to Product Studio's own
 // frontend-to-proxy calls only (Section 2), untouched everywhere above.
+// The limiter/404/error-handler below all return real status codes (429,
+// 404, 400) rather than reusing the 200-always shape every other limiter
+// and catch-all in this file uses, to stay consistent with that contract.
 //
+// Code-review fix: this ingestion surface previously had no rate limiter at
+// all, unlike every other route family in this file — same shared
+// RATE_LIMIT_MAX/RATE_LIMIT_WINDOW_MIN constants, mounted ahead of auth so
+// an over-limit caller is rejected before a credential lookup is spent on it.
+const v1IngestionLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MIN * 60 * 1000,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: {
+        type: 'rate_limit_error',
+        message: `Too many requests — limit is ${RATE_LIMIT_MAX} per ${RATE_LIMIT_WINDOW_MIN === 1 ? 'minute' : RATE_LIMIT_WINDOW_MIN + ' minutes'}. Please wait and try again.`
+      }
+    });
+  }
+});
+app.use('/v1', v1IngestionLimiter);
+
 // apiKeyAuth is mounted once, ahead of all four routers below, not paired
 // with each individually — Express falls through an unmatched router to the
 // next app.use() registration at the same path, so interleaving auth into
@@ -2570,10 +2597,29 @@ app.post('/api/team/revoke', async (req, res) => {
 // effort is spent parsing a potentially large, untrusted batch body.
 app.use('/v1', apiKeyAuth(supabaseAdmin));
 app.use('/v1', express.json({ limit: '2mb' }));
+// Code-review fix: express.json() throws (via next(err)) on malformed JSON
+// or a payload over the 2mb limit; with no error-handling middleware here,
+// that fell through to Express's own default HTML error response instead
+// of this API's documented {error:{type,message}} envelope. A 4-argument
+// handler placed immediately after express.json() catches exactly that.
+app.use('/v1', function (err, req, res, next) {
+  if (err) {
+    return res.status(400).json({ error: { type: 'invalid_request', message: 'Malformed JSON body or payload too large.' } });
+  }
+  next();
+});
 app.use('/v1', usageEventsRouter(supabaseAdmin));
 app.use('/v1', outcomesRouter(supabaseAdmin));
 app.use('/v1', outcomeTypesRouter(supabaseAdmin));
 app.use('/v1', companyAppsRouter(supabaseAdmin));
+// Code-review fix: an unmatched /v1 path/method previously fell through to
+// the file's global 404 catch-all below, which returns HTTP 200 — directly
+// contradicting this API's own documented status-code contract. Scoped
+// here so nothing above this file's original behavior changes for any
+// other route.
+app.use('/v1', function (req, res) {
+  res.status(404).json({ error: { type: 'not_found', message: 'Route not found: ' + req.method + ' ' + req.path } });
+});
 
 // ── AI Cost Control Tower: OpenAPI Ingestion Layer docs (Section 8) ──────────
 // Unauthenticated static Redoc page — the API key is the auth boundary for
