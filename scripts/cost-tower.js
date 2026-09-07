@@ -378,6 +378,18 @@ function actOpenSwitchAppModal() {
       '</div>';
   }).join('');
   document.getElementById('act-modal-body').innerHTML = '<div class="act-switch-app-list">' + cardsHtml + '</div>';
+  // #act-modal-box's shared CSS (600px, vertically centered) is sized for
+  // this page's other modals (Custom Date Range, Supporting Calls, outcome
+  // detail) — reused here rather than building new chrome, but this one
+  // choice-list content needs to match index.html's "Choose a company"
+  // modal instead (top-aligned, narrow). Applied as inline overrides, not
+  // a change to the shared class, so every other modal on this page keeps
+  // its own default size/position; actCloseModal() clears these so they
+  // never leak into the next modal opened.
+  var box = document.getElementById('act-modal-box');
+  box.style.top = '40px';
+  box.style.transform = 'translateX(-50%)';
+  box.style.width = '340px';
   actShowModal();
 }
 function actSelectApp(appId) {
@@ -1559,7 +1571,14 @@ function actShowModal() {
 }
 function actCloseModal() {
   document.getElementById('act-modal-overlay').classList.remove('open');
-  document.getElementById('act-modal-box').classList.remove('open');
+  var box = document.getElementById('act-modal-box');
+  box.classList.remove('open');
+  // Clear actOpenSwitchAppModal()'s inline top/width overrides so the next
+  // modal opened (Custom Date Range, Supporting Calls, etc.) falls back to
+  // its own default 600px/vertically-centered CSS, not this one's leftovers.
+  box.style.top = '';
+  box.style.transform = '';
+  box.style.width = '';
   document.removeEventListener('keydown', _actModalEscHandler, true);
   if (_actModalFocusCleanup) { _actModalFocusCleanup(); _actModalFocusCleanup = null; }
 }
