@@ -310,6 +310,21 @@ function actAvatarClose() {
   if (overlay) overlay.classList.remove('open');
 }
 
+// OpenAPI Ingestion Layer discovery link (spec §7.2) — pure navigation to
+// the standalone, unauthenticated Redoc page the proxy serves at /docs.
+// No registration or credential-issuing action lives behind this; it's
+// the same proxy origin every callAPI()/fetch() call in this page already
+// targets, just opened in a new tab rather than fetched.
+function actOpenApiDocs() {
+  actAvatarClose();
+  var host = window.location.hostname;
+  var isLocal = host === '' || host === 'localhost' || host === '127.0.0.1';
+  var proxyOrigin = isLocal
+    ? 'http://localhost:3001'
+    : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
+  window.open(proxyOrigin + '/docs', '_blank');
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // Tab switching
 // ══════════════════════════════════════════════════════════════════════

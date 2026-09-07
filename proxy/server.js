@@ -37,12 +37,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express   = require('express');
+const path      = require('path');
 const cors      = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt       = require('jsonwebtoken');
 const jwksRsa   = require('jwks-rsa');
 const { createClient } = require('@supabase/supabase-js');
 const { getAdapter, isKnownModel } = require('./providerAdapters');
+const apiKeyAuth        = require('./middleware/apiKeyAuth');
+const usageEventsRouter = require('./routes/v1/usageEvents');
+const outcomesRouter    = require('./routes/v1/outcomes');
+const outcomeTypesRouter = require('./routes/v1/outcomeTypes');
+const companyAppsRouter = require('./routes/v1/companyApps');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -2548,6 +2554,57 @@ app.post('/api/team/revoke', async (req, res) => {
     return res.status(200).json({ error: { type: 'proxy_error', message: 'Could not revoke invite. Please try again.' } });
   }
 });
+
+// ── AI Cost Control Tower: OpenAPI Ingestion Layer (/v1) ─────────────────────
+// Consumer-tier ingestion API for other internal HCLTech apps (Section 6 of
+// ai-cost-tower-openapi-ingestion-spec.md). Standard HTTP status codes
+// (400/401/404/500), NOT this file's own always-200-error-in-body
+// convention — that convention is explicitly scoped to Product Studio's own
+// frontend-to-proxy calls only (Section 2), untouched everywhere above.
+//
+// apiKeyAuth is mounted once, ahead of all four routers below, not paired
+// with each individually — Express falls through an unmatched router to the
+// next app.use() registration at the same path, so interleaving auth into
+// each mount would re-run it up to four times per request (finding #21).
+// Runs before express.json() so an invalid credential is rejected before any
+// effort is spent parsing a potentially large, untrusted batch body.
+app.use('/v1', apiKeyAuth(supabaseAdmin));
+app.use('/v1', express.json({ limit: '2mb' }));
+app.use('/v1', usageEventsRouter(supabaseAdmin));
+app.use('/v1', outcomesRouter(supabaseAdmin));
+app.use('/v1', outcomeTypesRouter(supabaseAdmin));
+app.use('/v1', companyAppsRouter(supabaseAdmin));
+
+// ── AI Cost Control Tower: OpenAPI Ingestion Layer docs (Section 8) ──────────
+// Unauthenticated static Redoc page — the API key is the auth boundary for
+// the actual data, not this reference page.
+//
+// /docs (no trailing slash, what ai-cost-tower.html's actOpenApiDocs()
+// actually opens, Section 7.2) redirects to /docs/ rather than serving
+// docs.html directly at the bare path. This matters for more than taste:
+// docs.html's own <redoc spec-url="openapi.yaml"> is a RELATIVE reference
+// (matching the spec's literal example), and a relative URL resolves
+// against its page's own address by dropping that address's last path
+// segment. Served at bare /docs, "openapi.yaml" would resolve to
+// /openapi.yaml (wrong — 404). Served at /docs/, it correctly resolves to
+// /docs/openapi.yaml. An earlier version of this file used an absolute
+// spec-url instead to sidestep that, but that only worked through this
+// one specific route — opening docs.html directly from disk (or serving
+// proxy/openapi/ from any other root) 404'd on the spec fetch and Redoc
+// rendered nothing, a real blank-page bug caught after the fact. The
+// redirect + relative-path combination is correct in both places at once.
+// Deliberately NOT app.get('/docs', ...) — Express's default non-strict
+// routing treats '/docs' and '/docs/' as the same route, which turned an
+// earlier version of this redirect into an infinite loop (it matched its
+// own redirect target). Mounting with app.use('/docs', ...) instead strips
+// the '/docs' prefix before this middleware sees req.path, so the two
+// cases are genuinely distinguishable: req.path is '' for a request to the
+// bare /docs, and '/' for a request to /docs/.
+app.use('/docs', function (req, res, next) {
+  if (req.path === '') return res.redirect(301, req.originalUrl + '/');
+  next();
+});
+app.use('/docs', express.static(path.join(__dirname, 'openapi'), { index: 'docs.html' }));
 
 // ── 404 catch-all ─────────────────────────────────────────────────────────────
 app.use((req, res) => {

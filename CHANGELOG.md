@@ -1,5 +1,12 @@
 # Changelog — Product Studio
 
+## v9.32 - 2026-09-07: AI Cost Control Tower: OpenAPI Ingestion Layer
+
+- Added - Any internal HCLTech application can now register (operator-run, SQL/RPC only) and write its own AI usage/outcome events into the shared Cost Control Tower tables via a new consumer-tier `/v1` API — usage-event ingestion with batch support and idempotent retries, an outcome lifecycle (`POST`/`PATCH /v1/outcomes`), per-app outcome-type registration, and a scoped read-back of a caller's own submitted events. Authenticated by a per-`(company_id, app_id)` API key, resolved server-side — never a Supabase Auth session, which a machine credential never has.
+- Added - A standalone, unauthenticated API reference at `/docs` (Redoc, vendored locally rather than CDN-loaded — see Fixed below), documenting the full `/v1` contract.
+- Added - `ai-cost-tower.html`'s avatar menu gains an "API Documentation" link, opening `/docs` in a new tab.
+- Fixed - `redoc.standalone.js` failed to load from `cdn.jsdelivr.net` on this network (confirmed via direct connection failure, not just a hunch) — same class of external-request interference already on file for this codebase. Vendored the identical bundle into the repo instead of depending on the CDN.
+
 ## v9.31 - 2026-09-04: Session local-cache restructuring — meta/snapshot split, snapshot-size cap, resync-on-miss
 
 Root cause: `pgt_session_*` entries in `localStorage` (one per session, `scripts/session-store.js`) accumulated indefinitely with no cap — 89 real, legitimately-created, never-deleted sessions in one company/profile hit that origin's storage quota (~5.5MB), causing Supabase's session-init write to fail silently on login and bounce the user straight back to the login screen with no visible error. Shipped as a feature-level version (not a `.NN` patch) because it restructures the local cache's shape across ten call sites in two files, not a scoped bug fix in one function.
