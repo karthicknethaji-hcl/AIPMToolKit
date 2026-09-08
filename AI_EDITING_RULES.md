@@ -548,11 +548,26 @@ Product-Studio-vX.XX(.XX)/
 ├── netlify/functions/
 │   └── anthropic-proxy.js            (production API route — lives ONLY here, never duplicated into scripts/)
 │
-└── proxy/                            (separate Render.com deployable — never merge into frontend root)
+└── proxy/                            (separate Render.com/Azure App Service deployable — never merge into frontend root)
     ├── server.js                     (Express proxy backend — lives ONLY here, never duplicated into scripts/; requires npm install, cannot run standalone like local-server.js)
     ├── providerAdapters.js           (canonical adapter module, v9.14 — imported by BOTH proxy/server.js and netlify/functions/anthropic-proxy.js, never duplicated into either)
     ├── package.json                  (proxy-specific dependency list — see exact content below, never copy root package.json here)
-    └── README.md
+    ├── README.md
+    ├── routes/v1/                    (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer, consumer-tier /v1 API)
+    │   ├── usageEvents.js
+    │   ├── outcomes.js
+    │   ├── outcomeTypes.js
+    │   └── companyApps.js
+    ├── middleware/
+    │   └── apiKeyAuth.js             (v9.32 — Bearer API key → (company_id, app_id), never a Supabase Auth session)
+    ├── lib/costTower/
+    │   ├── idempotency.js            (v9.32)
+    │   └── unitsGenerated.js         (v9.32)
+    └── openapi/                      (v9.32 — served at /docs, unauthenticated)
+        ├── openapi.yaml
+        ├── docs.html
+        ├── redoc.standalone.js       (vendored — cdn.jsdelivr.net is unreachable on this network, do not switch back to a CDN script tag)
+        └── redoc.standalone.js.LICENSE.txt
 ```
 
 ### CRITICAL: `proxy/package.json` content (must match exactly)
@@ -626,6 +641,10 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 **`proxy/`:**
 - [ ] `server.js`, `providerAdapters.js`, `package.json` (proxy-specific content above), `README.md` all present
 - [ ] `proxy/server.js` present ONLY here (not also in `scripts/`)
+- [ ] `routes/v1/usageEvents.js`, `outcomes.js`, `outcomeTypes.js`, `companyApps.js` all present (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer; `proxy/server.js` `require()`s all four and fails to start if any is missing)
+- [ ] `middleware/apiKeyAuth.js` present (v9.32)
+- [ ] `lib/costTower/idempotency.js`, `unitsGenerated.js` both present (v9.32)
+- [ ] `openapi/openapi.yaml`, `docs.html`, `redoc.standalone.js`, `redoc.standalone.js.LICENSE.txt` all present (v9.32 — `/docs` serves a blank page with no error if `redoc.standalone.js` is missing, since it's a vendored file, not CDN-loaded)
 
 **Exclusions — confirm none of these exist anywhere in the tree:**
 - [ ] NO `env.js`
