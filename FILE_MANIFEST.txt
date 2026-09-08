@@ -19,6 +19,9 @@ login.html
 netlify.toml
 package.json                  ← Netlify Functions dependencies; must live at site root, not nested under netlify/functions/
 
+## ai-cost-tower/
+api-docs.html                  ← v9.32; branded entry point for the OpenAPI Ingestion Layer's published API reference — client-side redirects to the correct proxy's /docs/ per environment (loads ../scripts/env.js for PROXY_URL), rather than linking the raw onrender.com/azurewebsites.net hostname directly. Deliberately not a netlify.toml server-side redirect — see the file's own header comment for why that doesn't work under this project's single-netlify.toml, no-build-step, git-less deploy model. Opened by ai-cost-tower.html's avatar-menu "API Documentation" item via scripts/cost-tower.js's actOpenApiDocs().
+
 ## scripts/
 api.js
 auth.js
@@ -109,6 +112,11 @@ ai-cost-tower-alert-dismiss.sql    ← v9.28.02; adds dismissed_by/dismissed_at 
 ai-cost-tower-outcomes-v2-migration.sql ← v9.29; AI Control Tower v2, Outcome-Based Cost — mt_outcome_types (11-row catalog), mt_outcomes, two new mt_ai_usage_events columns (outcome_id, units_generated), mt_outcomes_list/mt_outcome_types_list read RPCs, and three proxy-only write RPCs (mt_outcome_get_or_create_active, mt_outcome_attach_support, mt_outcome_mark_completed — all REVOKEd from authenticated). mt_outcome_get_or_create_active's reuse branch already includes the COALESCE product_id backfill from the addendum below. NOT run by Claude — Nethaji applies to Supabase manually. Confirmed applied to pgt-dev via live request-to-database testing; not yet run against prod. Flagged missing from this manifest during v9.29.01's code review — was previously committed nowhere, only kept in a local Downloads folder.
 ai-cost-tower-outcomes-v2-product-id-backfill-fix.sql ← v9.29.01; adds an opportunistic COALESCE(product_id, p_product_id) backfill to mt_outcome_get_or_create_active's reuse branch, so an outcome row created with a NULL product_id (found live: requirement-agent.js's session_type mislabeling was skipping the proxy's real product_id lookup) self-heals on its next touch instead of staying NULL forever. NOT run by Claude — Nethaji applies to Supabase manually. Already applied to pgt-dev (self-heal confirmed on real data); the fix is already baked into ai-cost-tower-outcomes-v2-migration.sql above, so this file is kept only as the historical record of that incremental dev step, not something to run again against prod.
 ai-cost-tower-prototype-outcome-type.sql ← v9.31; adds a twelfth outcome type ('prototype', yield_ratio) to mt_outcome_types, attributing Prototype Canvas's wireframe+brief calls. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Not yet applied anywhere as of this entry.
+ai-cost-tower-openapi-ingestion-migration.sql ← v9.32; OpenAPI Ingestion Layer Phase 1 — mt_ai_usage_events/mt_outcomes enum widening, dedup + UNIQUE(company_id,app_id,client_call_id) idempotency constraint, mt_outcomes.client_outcome_id column + UNIQUE constraint. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Confirmed applied to both.
+ai-cost-tower-openapi-ingestion-credential-functions.sql ← v9.32; OpenAPI Ingestion Layer Phase 2 — admin_issue_company_app_credential/admin_rotate_company_app_credential SECURITY DEFINER functions + REVOKE EXECUTE. Corrected in place after a live-testing find: search_path now lists 'extensions' before 'public' (was the less-safe order for a SECURITY DEFINER function) plus 'pg_temp', and both pgcrypto calls are schema-qualified. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Confirmed applied to both (corrected version).
+ai-cost-tower-openapi-ingestion-credential-functions-search-path-fix.sql ← v9.32; SUPERSEDED — the search_path bug this file fixed (pgcrypto installed in Supabase's `extensions` schema, not `public`) has since been folded directly into ai-cost-tower-openapi-ingestion-credential-functions.sql above. Kept only as the historical record of the exact statements first run against pgt-dev/pgt-prod; do not re-run.
+ai-cost-tower-openapi-ingestion-outcome-types-tenant-fix.sql ← v9.32; adds a nullable company_id column to mt_outcome_types, closing a cross-tenant read/collision gap the new POST/GET /v1/outcome-types route exposed for the first time (the table has no company scoping otherwise, by original design, since Product Studio's own catalog is global). NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Confirmed applied to both.
+ai-cost-tower-openapi-ingestion-user-id-nullable-fix.sql ← v9.32; drops the NOT NULL constraint on mt_ai_usage_events.user_id — found via live testing, POST /v1/usage-events failed on any call omitting user_id even though it's documented as optional, since every prior caller of this table always had a real authenticated user. NOT run by Claude — Nethaji applies to Supabase manually, dev then prod. Confirmed applied to both.
 
 ## netlify/functions/
 anthropic-proxy.js            ← lives only here; never duplicated into scripts/
@@ -118,3 +126,22 @@ README.md
 package.json                  ← proxy-specific dependency list, distinct content from root package.json — see AI_EDITING_RULES.md for exact contents
 server.js                     ← lives only here; never duplicated into scripts/; requires npm install, cannot run standalone
 providerAdapters.js           ← v9.14; canonical, single copy — imported by BOTH server.js and netlify/functions/anthropic-proxy.js (relative require across the two trees), never hand-duplicated into either
+
+## proxy/routes/v1/            (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer, consumer-tier /v1 API)
+usageEvents.js                 ← POST/PATCH/GET /v1/usage-events — batch ingest (bounded concurrency), units-generated report-back, scoped read-back with application-computed calculated_cost
+outcomes.js                    ← POST/PATCH /v1/outcomes — plain INSERT (never mt_outcome_get_or_create_active), ownership-checked completion
+outcomeTypes.js                ← POST/GET /v1/outcome-types — per-app-and-company taxonomy registration, idempotent upsert with 409 on a genuine conflict
+companyApps.js                 ← GET /v1/company-apps/me — credential self-check, direct query (never mt_company_apps_list, which assumes a human Supabase Auth session)
+
+## proxy/middleware/            (v9.32)
+apiKeyAuth.js                  ← resolves a Bearer API key to (company_id, app_id) via mt_company_apps.credential_hash; the one auth path in this app that never touches a Supabase Auth session
+
+## proxy/lib/costTower/         (v9.32)
+idempotency.js                 ← shared insertIdempotent() helper — upsert + ignoreDuplicates, with the follow-up SELECT on an empty (conflicted) result
+unitsGenerated.js              ← scoped update helper for the units-generated report-back endpoint
+
+## proxy/openapi/               (v9.32 — served at /docs, unauthenticated static route)
+openapi.yaml                   ← OpenAPI 3.0.3 spec for the full /v1 contract; lints clean via @redocly/cli
+docs.html                      ← standalone Redoc page, references redoc.standalone.js and openapi.yaml by relative path (page must be served at /docs/, not the bare /docs — see server.js's redirect)
+redoc.standalone.js            ← vendored locally, not CDN-loaded — cdn.jsdelivr.net is unreachable on this network (confirmed via direct connection failure); pulled via `npm pack redoc` instead
+redoc.standalone.js.LICENSE.txt ← attribution for the vendored bundle above

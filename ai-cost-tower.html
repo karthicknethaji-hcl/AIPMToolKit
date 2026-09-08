@@ -50,6 +50,17 @@
         <button class="hdr-avatar-profile" id="act-team-settings-item" onclick="window.location.href='index.html?screen=team'" style="display:none;">
           <i class="ti ti-users-group" aria-hidden="true"></i> Team Settings
         </button>
+        <!-- Pure discovery link to the OpenAPI Ingestion Layer's published
+             reference (spec §7.2) -- deliberately NOT display:none like this
+             dropdown's other two items above. Those are hidden-by-default
+             and revealed conditionally by role/state; this is a single
+             static link with no role logic and no new state, so it stays
+             visible to every role by design. Don't "fix" this to match the
+             other two items' convention -- that would hide API docs from
+             everyone. -->
+        <button class="hdr-avatar-profile" id="act-api-docs-item" onclick="actOpenApiDocs()">
+          <i class="ti ti-api" aria-hidden="true"></i> API Documentation
+        </button>
         <div class="hdr-avatar-divider"></div>
         <button class="hdr-avatar-signout" onclick="authSignOut()">
           <i class="ti ti-logout" aria-hidden="true"></i> Sign Out

@@ -344,6 +344,13 @@ button:focus-visible.act-fv,
 .act-modal-overlay.open{display:block;}
 .act-modal-box{display:none;flex-direction:column;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--white);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,0.24);z-index:101;width:600px;max-width:92vw;max-height:80vh;overflow:hidden;}
 .act-modal-box.open{display:flex;}
+/* Switch App modal (Choose an app) — matches index.html's narrower,
+   top-aligned "Choose a company" modal instead of this shared shell's own
+   default (600px, vertically centered), sized for other content on this
+   page like the Custom Date Range picker. Toggled via classList in
+   actOpenSwitchAppModal()/actCloseModal(), not inline styles, so it can
+   never partially apply/clear one property while leaving another stale. */
+.act-modal-box.act-modal-compact{top:40px;transform:translateX(-50%);width:340px;}
 .act-modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--divider);flex-shrink:0;}
 .act-modal-title{font-size:13px;font-weight:800;color:var(--t1);}
 .act-modal-close{background:none;border:1px solid var(--divider);border-radius:4px;width:24px;height:24px;color:var(--t3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
