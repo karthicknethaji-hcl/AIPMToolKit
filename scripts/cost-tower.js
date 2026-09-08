@@ -310,19 +310,19 @@ function actAvatarClose() {
   if (overlay) overlay.classList.remove('open');
 }
 
-// OpenAPI Ingestion Layer discovery link (spec §7.2) — pure navigation to
-// the standalone, unauthenticated Redoc page the proxy serves at /docs.
-// No registration or credential-issuing action lives behind this; it's
-// the same proxy origin every callAPI()/fetch() call in this page already
-// targets, just opened in a new tab rather than fetched.
+// OpenAPI Ingestion Layer discovery link (spec §7.2) — opens this app's own
+// branded /ai-cost-tower/api-docs.html instead of the raw proxy hostname
+// directly, so the link a person actually clicks/bookmarks reads as part of
+// this app rather than exposing an onrender.com/azurewebsites.net URL. That
+// page immediately client-side-redirects to the correct proxy's /docs/ —
+// see its own header comment for why this couldn't be a netlify.toml
+// server-side redirect instead (this project's single netlify.toml deploys
+// identically to both the dev and prod Netlify sites, with no per-site
+// override mechanism available under a no-build-step, git-less deploy).
+// No registration or credential-issuing action lives behind either page.
 function actOpenApiDocs() {
   actAvatarClose();
-  var host = window.location.hostname;
-  var isLocal = host === '' || host === 'localhost' || host === '127.0.0.1';
-  var proxyOrigin = isLocal
-    ? 'http://localhost:3001'
-    : ((typeof PROXY_URL !== 'undefined' && PROXY_URL) ? PROXY_URL.replace(/\/api\/anthropic\/?$/, '') : 'https://product-diagnostics-proxy.onrender.com');
-  window.open(proxyOrigin + '/docs', '_blank');
+  window.open('/ai-cost-tower/api-docs.html', '_blank');
 }
 
 // ══════════════════════════════════════════════════════════════════════

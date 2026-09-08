@@ -471,6 +471,9 @@ Product-Studio-vX.XX(.XX)/
 ├── PROJECT_MAP.md
 ├── package.json                      (Netlify Functions dependencies — root only, NOT copied from/to proxy/)
 │
+├── ai-cost-tower/                    (v9.32)
+│   └── api-docs.html                 (branded redirect to the correct proxy's /docs/ per environment — see the file's own header comment for why this is a client-side redirect, not a netlify.toml rule)
+│
 ├── scripts/                          (ALL frontend .js files, and ONLY frontend .js files)
 │   ├── config.js
 │   ├── cost-tower.js                 (v9.28, AI Control Tower — standalone, loaded only by ai-cost-tower.html)
@@ -619,6 +622,9 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 **Root level:**
 - [ ] `index.html`, `login.html`, `netlify.toml`, `favicon.ico` (real `.ico`, not `.txt`), `package.json` present
 - [ ] NO `.js` or `.css` files at root
+
+**`ai-cost-tower/`:**
+- [ ] `api-docs.html` present (v9.32 — without it, the avatar menu's "API Documentation" link 404s)
 
 **`scripts/`:**
 - [ ] Every `.js` file in `FILE_MANIFEST.txt`'s `scripts/` list is present, including `local-server.js`

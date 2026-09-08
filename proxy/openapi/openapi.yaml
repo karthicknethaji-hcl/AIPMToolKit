@@ -47,9 +47,15 @@ info:
 
 servers:
   - url: https://product-diagnostics-proxy.onrender.com
-    description: Render (primary)
+    description: Production
+  - url: https://pgt-proxy-dev.onrender.com
+    description: Development — test integrations here first, against pgt-dev
+  # Environment unconfirmed — this project's other two hosts are clearly
+  # named/labeled per environment (pgt-dev vs pgt-prod), but nothing
+  # confirms which Supabase project this Azure App Service is actually
+  # configured against. Update this description once confirmed.
   - url: https://aipmtoolkit-proxy-hfgjehfyejc9d4hd.centralus-01.azurewebsites.net
-    description: Azure App Service
+    description: Azure App Service (environment not yet confirmed — verify before relying on this for either dev or prod testing)
 
 security:
   - bearerAuth: []

@@ -19,6 +19,9 @@ login.html
 netlify.toml
 package.json                  ← Netlify Functions dependencies; must live at site root, not nested under netlify/functions/
 
+## ai-cost-tower/
+api-docs.html                  ← v9.32; branded entry point for the OpenAPI Ingestion Layer's published API reference — client-side redirects to the correct proxy's /docs/ per environment (loads ../scripts/env.js for PROXY_URL), rather than linking the raw onrender.com/azurewebsites.net hostname directly. Deliberately not a netlify.toml server-side redirect — see the file's own header comment for why that doesn't work under this project's single-netlify.toml, no-build-step, git-less deploy model. Opened by ai-cost-tower.html's avatar-menu "API Documentation" item via scripts/cost-tower.js's actOpenApiDocs().
+
 ## scripts/
 api.js
 auth.js
