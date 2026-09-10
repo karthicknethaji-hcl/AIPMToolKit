@@ -16,6 +16,22 @@
 
 const { insertIdempotent } = require('./idempotency');
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Code-review fix — Postgres always canonicalizes a uuid-typed column to
+// lowercase on read-back, regardless of the case it was inserted with, but
+// a caller's fresh request body keeps whatever case it happened to send.
+// A plain !== would then spuriously flag a legitimate retry (identical
+// value, different case) as a mismatch. Only normalizes values that are
+// actually UUID-shaped — a non-UUID compareColumn (e.g. agent_name) stays
+// case-sensitive, since that's real, meaningful text, not an opaque id.
+function _valuesEqual(a, b) {
+  if (typeof a === 'string' && typeof b === 'string' && UUID_RE.test(a) && UUID_RE.test(b)) {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}
+
 async function insertIdempotentStrict(supabaseAdmin, { table, conflictColumns, row, idColumn, compareColumns }) {
   const base = await insertIdempotent(supabaseAdmin, { table, conflictColumns, row, idColumn });
   if (base.error || !base.deduplicated) return base; // fresh insert, or a real error — nothing to compare
@@ -31,7 +47,7 @@ async function insertIdempotentStrict(supabaseAdmin, { table, conflictColumns, r
 
   if (error) return { error: error };
 
-  const mismatch = compareColumns.some(function(col) { return existing[col] !== row[col]; });
+  const mismatch = compareColumns.some(function(col) { return !_valuesEqual(existing[col], row[col]); });
   if (mismatch) {
     return { error: { code: 'IDEMPOTENCY_CONFLICT', message: 'Replay with the same idempotency key but different ' + compareColumns.join('/') + '.' } };
   }

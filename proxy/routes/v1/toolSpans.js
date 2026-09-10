@@ -32,6 +32,13 @@ module.exports = function toolSpansRouterFactory(supabaseAdmin) {
     if (STATUS_VALUES.indexOf(body.status) === -1) {
       return res.status(400).json({ error: { type: 'invalid_request', message: 'status must be one of: ' + STATUS_VALUES.join(', ') } });
     }
+    // Same reasoning as the status check above — mt_ai_spans' own
+    // attempt_number CHECK (>= 1) is SQLSTATE 23514, the same code this
+    // handler maps to 409 for genuine idempotency conflicts. Validated here
+    // first so a bad value gets 400, not a misleading 409.
+    if (body.attempt_number != null && (!Number.isInteger(body.attempt_number) || body.attempt_number < 1)) {
+      return res.status(400).json({ error: { type: 'invalid_request', message: 'attempt_number must be an integer >= 1.' } });
+    }
 
     const { data, error } = await supabaseAdmin.rpc('mt_ai_record_tool_span', {
       p_company_id: req.companyId, p_app_id: req.appId,

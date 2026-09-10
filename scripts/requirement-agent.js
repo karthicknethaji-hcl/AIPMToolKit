@@ -1229,7 +1229,12 @@ function _raSplitStreamResponse(raw){
 // object _raPersist()/sessionStoreSave() already saves in full), so no new
 // persistence code is needed for it to survive a refresh.
 function _raEnsureTraceCtx(conv){
-  if(!conv.aiClientTraceId) conv.aiClientTraceId = crypto.randomUUID();
+  // Code-review fix — crypto.randomUUID is unavailable in some contexts
+  // (the same concern api.js's _generateFallbackUuid() already exists for);
+  // both call sites below invoke this before their own try{}, so an
+  // unguarded throw here would skip their finally{ _raSetBusy(false); }
+  // and leave Requirement Agent permanently stuck busy.
+  if(!conv.aiClientTraceId) conv.aiClientTraceId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_generateFallbackUuid();
   return {client_trace_id: conv.aiClientTraceId, agent_name: 'requirement-agent'};
 }
 function _raUsageExtraFields(traceCtx){
@@ -1615,6 +1620,17 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     // call, producing a spurious authorization error the surrounding catch
     // would just silently degrade to "no retrieved context."
     var _raRetrievalSessionId=(typeof _activeSessionId!=='undefined')?_activeSessionId:null;
+    // Code-review fix — _raUsageExtraFields() otherwise re-reads the live
+    // _activeSessionId global AFTER the retrieval awaits below, which can
+    // differ from the session this trace was created/continued under if
+    // the PM switches sessions mid-turn (the same race this file already
+    // guards against for the retrieval calls above). A mismatch makes the
+    // RPC's identity check reject the whole usage-event write, silently
+    // losing that call's cost/telemetry row. Pinning session_id onto
+    // _raTraceCtx here — before any await — makes _raUsageExtraFields()'s
+    // Object.assign(defaults, traceCtx) pick up this same captured value
+    // instead of re-reading the global.
+    _raTraceCtx.session_id=_raRetrievalSessionId;
     try{
       if(_raRagEnabled()&&_raRetrievalSessionId&&typeof _pgtRpc==='function'){
         // v14 code-review fix (efficiency) — _raDocsExistCache (populated by

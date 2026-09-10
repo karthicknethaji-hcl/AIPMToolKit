@@ -45,6 +45,7 @@ const jwksRsa   = require('jwks-rsa');
 const { createClient } = require('@supabase/supabase-js');
 const { getAdapter, isKnownModel } = require('./providerAdapters');
 const apiKeyAuth        = require('./middleware/apiKeyAuth');
+const { buildUsageEventRpcParams } = require('./lib/costTower/usageEventRpcParams');
 const usageEventsRouter = require('./routes/v1/usageEvents');
 const outcomesRouter    = require('./routes/v1/outcomes');
 const outcomeTypesRouter = require('./routes/v1/outcomeTypes');
@@ -182,42 +183,10 @@ const supabaseAdmin = (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY)
 async function _insertAiUsageEvent(fields) {
   if (!supabaseAdmin) return; // telemetry is best-effort; never block on missing config
   try {
-    const { error } = await supabaseAdmin.rpc('mt_ai_record_usage_event_with_span', {
-      p_company_id: fields.company_id,
-      p_app_id: INGESTION_APP_ID,
-      p_client_call_id: fields.client_call_id,
-      p_provider: fields.provider,
-      p_product_id: fields.product_id,
-      p_session_id: fields.session_id,
-      p_session_type: fields.session_type,
-      p_user_id: fields.user_id,
-      p_user_role_at_call: fields.user_role_at_call,
-      p_caller: fields.caller,
-      p_prompt_version: fields.prompt_version,
-      p_requested_model: fields.requested_model,
-      p_response_model: fields.response_model,
-      p_settings_mode: fields.settings_mode,
-      p_settings_model: fields.settings_model,
-      p_selection_rule: fields.selection_rule,
-      p_input_tokens: fields.input_tokens,
-      p_output_tokens: fields.output_tokens,
-      p_cache_creation_5m_tokens: fields.cache_creation_5m_tokens,
-      p_cache_creation_1h_tokens: fields.cache_creation_1h_tokens,
-      p_cache_read_tokens: fields.cache_read_tokens,
-      p_provider_usage_raw: fields.provider_usage_raw,
-      p_status: fields.status,
-      p_provider_http_status: fields.provider_http_status,
-      p_error_type: fields.error_type,
-      p_failure_phase: fields.failure_phase,
-      p_request_started_at: fields.request_started_at,
-      p_duration_ms: fields.duration_ms,
-      p_request_bytes: fields.request_bytes,
-      p_response_bytes: fields.response_bytes,
-      p_outcome_id: fields.outcome_id,
-      p_units_generated: fields.units_generated,
-      p_client_trace_id: fields.client_trace_id || null,
-      p_agent_name: fields.agent_name || null
-    });
+    const { error } = await supabaseAdmin.rpc(
+      'mt_ai_record_usage_event_with_span',
+      buildUsageEventRpcParams(Object.assign({ app_id: INGESTION_APP_ID }, fields))
+    );
     // An ERRCODE 23514 here means a replayed client_call_id/client_trace_id
     // with genuinely different identity fields — extremely unlikely, but
     // exactly the kind of telemetry-layer problem this function's own

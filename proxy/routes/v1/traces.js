@@ -26,6 +26,27 @@ module.exports = function tracesRouterFactory(supabaseAdmin) {
       }
     }
 
+    // outcome_id ownership check — mt_ai_traces.outcome_id is only a plain
+    // existence FK (not tenant-scoped), so without this a caller could
+    // attach another company/app's outcome_id and persist a permanent
+    // cross-tenant reference. Mirrors usageEvents.js's _fetchOwnedOutcomeIds.
+    if (body.outcome_id != null) {
+      const { data: owned, error: ownedError } = await supabaseAdmin
+        .from('mt_outcomes')
+        .select('outcome_id')
+        .eq('outcome_id', body.outcome_id)
+        .eq('company_id', req.companyId)
+        .eq('app_id', req.appId)
+        .maybeSingle();
+      if (ownedError) {
+        console.error('[V1 TRACES] outcome ownership check failed:', ownedError.message);
+        return res.status(500).json({ error: { type: 'server_error', message: 'Could not create trace.' } });
+      }
+      if (!owned) {
+        return res.status(400).json({ error: { type: 'invalid_request', message: 'outcome_id does not exist or does not belong to this credential.' } });
+      }
+    }
+
     const row = {
       company_id: req.companyId, app_id: req.appId,
       agent_name: body.agent_name, client_trace_id: body.client_trace_id,

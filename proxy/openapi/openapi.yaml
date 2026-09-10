@@ -117,6 +117,17 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            Single-item request only: client_call_id or client_trace_id
+            already recorded with different identity fields (a genuine
+            replay conflict, not a duplicate submission of identical data —
+            those are silently deduplicated). Never returned for a batch
+            request, whose per-item conflicts appear inside the 200 response
+            body's `results` array instead.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
     get:
       operationId: listUsageEvents
       tags: [usage-events]

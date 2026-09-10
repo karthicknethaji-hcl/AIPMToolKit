@@ -7,6 +7,7 @@
 
 const express = require('express');
 const { updateUnitsGenerated } = require('../../lib/costTower/unitsGenerated');
+const { buildUsageEventRpcParams } = require('../../lib/costTower/usageEventRpcParams');
 
 const STATUS_VALUES = ['success', 'error', 'timeout'];
 const REQUIRED_FIELDS = ['client_call_id', 'user_role_at_call', 'caller', 'requested_model', 'status', 'request_started_at'];
@@ -138,47 +139,53 @@ async function _processItem(supabaseAdmin, item, companyId, appId, ownedOutcomeI
     return { error: { type: 'invalid_request', message: 'outcome_id does not exist or does not belong to this credential.' } };
   }
 
-  const { data, error } = await supabaseAdmin.rpc('mt_ai_record_usage_event_with_span', {
-    p_company_id: companyId,
-    p_app_id: appId,
-    p_client_call_id: item.client_call_id,
-    p_provider: item.provider || 'anthropic',
-    p_product_id: item.product_id != null ? item.product_id : null,
-    p_session_id: item.session_id != null ? item.session_id : null,
-    p_session_type: null,
-    p_user_id: item.user_id != null ? item.user_id : null,
-    p_user_role_at_call: item.user_role_at_call,
-    p_caller: item.caller,
-    p_prompt_version: null,
-    p_requested_model: item.requested_model,
-    p_response_model: item.response_model != null ? item.response_model : null,
+  // Normalize this item's own field names/defaults into the shared shape
+  // buildUsageEventRpcParams() expects, then let it own the field->p_*
+  // mapping — code-review fix, closing the drift risk between this and
+  // server.js's independent copy of the same ~34-key mapping (this RPC's
+  // parameter list already went out of sync with calling code once, see
+  // ai-cost-tower-trace-layer-migration.sql's Step 4 reconciliation note).
+  const { data, error } = await supabaseAdmin.rpc('mt_ai_record_usage_event_with_span', buildUsageEventRpcParams({
+    company_id: companyId,
+    app_id: appId,
+    client_call_id: item.client_call_id,
+    provider: item.provider || 'anthropic',
+    product_id: item.product_id != null ? item.product_id : null,
+    session_id: item.session_id != null ? item.session_id : null,
+    session_type: null,
+    user_id: item.user_id != null ? item.user_id : null,
+    user_role_at_call: item.user_role_at_call,
+    caller: item.caller,
+    prompt_version: null,
+    requested_model: item.requested_model,
+    response_model: item.response_model != null ? item.response_model : null,
     // settings_mode/selection_rule default to 'external' when omitted — this
     // route is the consumer-tier ingestion surface, never Product Studio's
     // own /api/anthropic path, so defaulting unconditionally (rather than
     // conditioning on appId !== 'product-studio') matches every real caller
     // this endpoint will ever see.
-    p_settings_mode: item.settings_mode || 'external',
-    p_settings_model: null,
-    p_selection_rule: item.selection_rule || 'external',
-    p_input_tokens: item.input_tokens != null ? item.input_tokens : null,
-    p_output_tokens: item.output_tokens != null ? item.output_tokens : null,
-    p_cache_creation_5m_tokens: item.cache_creation_5m_tokens != null ? item.cache_creation_5m_tokens : null,
-    p_cache_creation_1h_tokens: item.cache_creation_1h_tokens != null ? item.cache_creation_1h_tokens : null,
-    p_cache_read_tokens: item.cache_read_tokens != null ? item.cache_read_tokens : null,
-    p_provider_usage_raw: item.provider_usage_raw != null ? item.provider_usage_raw : null,
-    p_status: item.status,
-    p_provider_http_status: item.provider_http_status != null ? item.provider_http_status : null,
-    p_error_type: item.error_type != null ? item.error_type : null,
-    p_failure_phase: item.failure_phase != null ? item.failure_phase : null,
-    p_request_started_at: item.request_started_at,
-    p_duration_ms: item.duration_ms != null ? item.duration_ms : null,
-    p_request_bytes: item.request_bytes != null ? item.request_bytes : null,
-    p_response_bytes: item.response_bytes != null ? item.response_bytes : null,
-    p_outcome_id: item.outcome_id != null ? item.outcome_id : null,
-    p_units_generated: item.units_generated != null ? item.units_generated : null,
-    p_client_trace_id: item.client_trace_id != null ? item.client_trace_id : null,
-    p_agent_name: item.agent_name != null ? item.agent_name : null
-  });
+    settings_mode: item.settings_mode || 'external',
+    settings_model: null,
+    selection_rule: item.selection_rule || 'external',
+    input_tokens: item.input_tokens != null ? item.input_tokens : null,
+    output_tokens: item.output_tokens != null ? item.output_tokens : null,
+    cache_creation_5m_tokens: item.cache_creation_5m_tokens != null ? item.cache_creation_5m_tokens : null,
+    cache_creation_1h_tokens: item.cache_creation_1h_tokens != null ? item.cache_creation_1h_tokens : null,
+    cache_read_tokens: item.cache_read_tokens != null ? item.cache_read_tokens : null,
+    provider_usage_raw: item.provider_usage_raw != null ? item.provider_usage_raw : null,
+    status: item.status,
+    provider_http_status: item.provider_http_status != null ? item.provider_http_status : null,
+    error_type: item.error_type != null ? item.error_type : null,
+    failure_phase: item.failure_phase != null ? item.failure_phase : null,
+    request_started_at: item.request_started_at,
+    duration_ms: item.duration_ms != null ? item.duration_ms : null,
+    request_bytes: item.request_bytes != null ? item.request_bytes : null,
+    response_bytes: item.response_bytes != null ? item.response_bytes : null,
+    outcome_id: item.outcome_id != null ? item.outcome_id : null,
+    units_generated: item.units_generated != null ? item.units_generated : null,
+    client_trace_id: item.client_trace_id != null ? item.client_trace_id : null,
+    agent_name: item.agent_name != null ? item.agent_name : null
+  }));
 
   if (error) {
     // 23514 = check_violation, raised by the RPC itself for a replayed

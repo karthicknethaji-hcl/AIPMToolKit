@@ -300,7 +300,6 @@ DECLARE
   v_next_seq INTEGER;
   v_span_id  UUID;
   v_existing_trace_agent   TEXT;
-  v_existing_trace_session UUID;
 BEGIN
   INSERT INTO mt_ai_traces (company_id, app_id, agent_name, client_trace_id)
   VALUES (p_company_id, p_app_id, p_agent_name, p_client_trace_id)
@@ -308,8 +307,8 @@ BEGIN
   RETURNING mt_ai_traces.trace_id INTO v_trace_id;
 
   IF v_trace_id IS NULL THEN
-    SELECT mt_ai_traces.trace_id, mt_ai_traces.agent_name, mt_ai_traces.session_id
-      INTO v_trace_id, v_existing_trace_agent, v_existing_trace_session
+    SELECT mt_ai_traces.trace_id, mt_ai_traces.agent_name
+      INTO v_trace_id, v_existing_trace_agent
       FROM mt_ai_traces
       WHERE company_id = p_company_id AND app_id = p_app_id
         AND client_trace_id = p_client_trace_id
@@ -323,8 +322,13 @@ BEGIN
     PERFORM 1 FROM mt_ai_traces WHERE mt_ai_traces.trace_id = v_trace_id FOR UPDATE;
   END IF;
 
+  -- Bug fix (found via code review, same class already found live in the
+  -- sibling mt_ai_record_usage_event_with_span()): this function's own
+  -- RETURNS TABLE declares span_id/trace_id as OUT parameters, so the bare
+  -- column references below are ambiguous against mt_ai_spans' own columns
+  -- of the same name — table-qualified to match.
   IF p_parent_span_id IS NOT NULL THEN
-    PERFORM 1 FROM mt_ai_spans WHERE span_id = p_parent_span_id AND trace_id = v_trace_id;
+    PERFORM 1 FROM mt_ai_spans WHERE mt_ai_spans.span_id = p_parent_span_id AND mt_ai_spans.trace_id = v_trace_id;
     IF NOT FOUND THEN
       RAISE EXCEPTION 'parent_span_id does not belong to this trace'
         USING ERRCODE = '23514';
