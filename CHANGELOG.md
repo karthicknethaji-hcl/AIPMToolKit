@@ -1,5 +1,9 @@
 # Changelog — Product Studio
 
+## v9.33.01 - 2026-09-10: AI Trace Layer: Payload Capture Infrastructure (D.7 items 1-3)
+
+- Added - Closes the credential-scope and app-level-toggle gates a future `/v1/trace-payloads` route requires before `payloads:write` can ever be granted to a real credential (four new `mt_company_apps` columns — `scope_usage_write`/`scope_traces_write` reserved and non-enforced this release, `scope_payloads_write`/`payload_capture_enabled` default-deny — plus `requirePayloadCaptureWrite.js`, a single composed check requiring both to pass), and fixes a live bypass found while verifying the invariant that model-visible content only ever enters through that future gated route: `/v1/usage-events`'s `provider_usage_raw` field accepted arbitrary JSON with no validation, letting a caller smuggle prompt/response text into it under any key name — `_validateItem()` now allowlists its exact keys and types per declared provider (Anthropic/OpenAI/Gemini, each traced to that provider's own extraction code), rejecting anything else rather than silently stripping it. `/v1/traces` and `/v1/tool-spans` needed no change, confirmed by direct code read to already write only fixed named fields.
+
 ## v9.33 - 2026-09-10: AI Cost Control Tower: AI Trace Layer
 
 - Added - Requirement Agent's calls now correlate into one trace per conversation (`mt_ai_traces`) and one ordered span per call (`mt_ai_spans`, `llm_call` or `tool_call`), via a single shared database function both Product Studio's own generation path and the external `/v1` API write through — so the two ingestion surfaces can't drift on trace consistency or idempotency. New `POST`/`PATCH`/`GET /v1/traces`, `GET /v1/traces/{id}/spans`, and `POST /v1/tool-spans`; existing `/v1/usage-events` gains optional `client_trace_id`/`agent_name` on write and `trace_id` on read-back.
