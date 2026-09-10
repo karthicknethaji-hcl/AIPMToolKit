@@ -1222,7 +1222,17 @@ function _raSplitStreamResponse(raw){
 // raRunOpeningTurn()/_raRunTurn()) - previously copy-pasted at each site,
 // which risked the streaming and non-streaming paths silently diverging in
 // what they report for usage tracking if only one copy got updated.
-function _raUsageExtraFields(){
+// AI Trace Layer — assigns a client-generated trace id to a conversation
+// once, on first use, and reuses it for every subsequent call belonging to
+// that same conversation (spec Invariant 2: client_trace_id is the only
+// trace-continuation key). Property lives directly on conv (an ordinary
+// object _raPersist()/sessionStoreSave() already saves in full), so no new
+// persistence code is needed for it to survive a refresh.
+function _raEnsureTraceCtx(conv){
+  if(!conv.aiClientTraceId) conv.aiClientTraceId = crypto.randomUUID();
+  return {client_trace_id: conv.aiClientTraceId, agent_name: 'requirement-agent'};
+}
+function _raUsageExtraFields(traceCtx){
   // Outcome-Based Cost (AI Cost Control Tower v2), Phase 3 fix — session_type
   // was incorrectly hardcoded to 'ChatCanvas' here, a value that means
   // exactly one thing elsewhere in this app: "session_id points at
@@ -1236,10 +1246,10 @@ function _raUsageExtraFields(){
   // had product_id populated, mt_ai_usage_events.product_id came back null
   // anyway. Removed entirely — the proxy's own mt_sessions lookup is
   // authoritative once this stops short-circuiting it.
-  return {session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null)};
+  return Object.assign({session_id:(typeof _activeSessionId!=='undefined'?_activeSessionId:null),product_id:(typeof productContext!=='undefined'&&productContext?productContext.id:null)}, traceCtx||{});
 }
-async function _raCallModel(sys,usr,signal){
-  var extra=_raUsageExtraFields();
+async function _raCallModel(sys,usr,signal,traceCtx){
+  var extra=_raUsageExtraFields(traceCtx);
   // v-next: lowered back from 8000 - that cap was raised for the OLD
   // return-the-FULL-document-every-turn design, where a large capability
   // set easily produced ~13.7k characters. Now that turns return
@@ -1353,6 +1363,7 @@ async function raRunOpeningTurn(conv){
   // raRunFinalizeSequence() below.
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is drafting the opening summary. Leaving now discards it, you\'ll need to start over.'):null;
   var _streaming=_raStreamingEnabled();
+  var _raTraceCtx=_raEnsureTraceCtx(conv);
   try{
     var _raDocRes1=(typeof buildDocContext==='function')?buildDocContext('ra'):{text:'',truncated:false};
     var _raDocCtx1=_raDocRes1.text;
@@ -1361,7 +1372,7 @@ async function raRunOpeningTurn(conv){
     var raw,parsed;
     if(_streaming){
       var _bubbleEl=null;
-      var extra=_raUsageExtraFields();
+      var extra=_raUsageExtraFields(_raTraceCtx);
       raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
         _raHideTyping();
         if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();
@@ -1374,7 +1385,7 @@ async function raRunOpeningTurn(conv){
       _raStreamBubbleRemove();
       parsed=_raSplitStreamResponse(raw);
     }else{
-      raw=await _raCallModel(built.sys,built.usr,_signal);
+      raw=await _raCallModel(built.sys,built.usr,_signal,_raTraceCtx);
       parsed=_raParseJSON(raw);
     }
     _raHideTyping();
@@ -1586,6 +1597,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
   _raShowTyping();
   var _signal=(typeof startAiGen==='function')?startAiGen('Requirement Agent is updating the draft. Leaving now discards this update, you\'ll need to resend your message.'):null;
   var _streaming=_raStreamingEnabled();
+  var _raTraceCtx=_raEnsureTraceCtx(conv);
   try{
     // v14 (D5/D6/D8) — existence-only gate first: skip the embed+search
     // round trip entirely when this conversation has no active documents.
@@ -1655,7 +1667,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
     var raw,parsed;
     if(_streaming){
       var _bubbleEl=null;
-      var extra=_raUsageExtraFields();
+      var extra=_raUsageExtraFields(_raTraceCtx);
       raw=await callAPIStream(built.sys,built.usr,4000,_signal,null,'requirement-agent',null,extra,function(delta){
         _raHideTyping();
         if(!_bubbleEl)_bubbleEl=_raStreamBubbleShow();
@@ -1668,7 +1680,7 @@ async function _raRunTurn(conv,userMessage,uploadedDocText,uploadedDocName){
       _raStreamBubbleRemove();
       parsed=_raSplitStreamResponse(raw);
     }else{
-      raw=await _raCallModel(built.sys,built.usr,_signal);
+      raw=await _raCallModel(built.sys,built.usr,_signal,_raTraceCtx);
       parsed=_raParseJSON(raw);
     }
     _raHideTyping();
@@ -1967,7 +1979,7 @@ async function raHandleUpload(inputEl){
     // the plain "Indexed X..." confirmation below (today's original copy)
     // is used as-is, with no chips and no later pop-in for the same reason.
     var truncNote=wasTruncated?' Only the first '+RA_MAX_UPLOAD_WORDS.toLocaleString()+' words were indexed - for a longer document, consider uploading just the most relevant section.':'';
-    var gistResult=await _raGetDocGist(file.name,text);
+    var gistResult=await _raGetDocGist(conv,file.name,text);
     _raHideIndexing();
     _raSetBusy(false);
     // v9.30.05 code-review fix — restores the guard the old, separate
@@ -2009,7 +2021,7 @@ async function raHandleUpload(inputEl){
 // distinguish timeout / call failure / unusable response so the NEXT
 // silent fallback is actually diagnosable instead of a repeat guessing game.
 var RA_GIST_TIMEOUT_MS=20000;
-async function _raGetDocGist(fileName,text){
+async function _raGetDocGist(conv,fileName,text){
   try{
     if(typeof buildRequirementAgentDocGistPrompt!=='function'||typeof _raCallModel!=='function')return null;
     // v9.30.05 code-review fix (efficiency) — cheap length pre-check before
@@ -2052,7 +2064,7 @@ async function _raGetDocGist(fileName,text){
       timer=setTimeout(function(){timedOut=true;controller.abort();resolve(null);},RA_GIST_TIMEOUT_MS);
     });
     var raw=await Promise.race([
-      _raCallModel(built.sys,built.usr,controller.signal).catch(function(err){
+      _raCallModel(built.sys,built.usr,controller.signal,_raEnsureTraceCtx(conv)).catch(function(err){
         // Our own timeout firing first is what triggers this AbortError in
         // the first place (controller.abort() above) — the dedicated
         // "timed out" log below already covers that case, so logging it
