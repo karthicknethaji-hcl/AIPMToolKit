@@ -560,12 +560,16 @@ Product-Studio-vX.XX(.XX)/
     │   ├── usageEvents.js
     │   ├── outcomes.js
     │   ├── outcomeTypes.js
-    │   └── companyApps.js
+    │   ├── companyApps.js
+    │   ├── traces.js                 (v9.33 — AI Trace Layer: POST/PATCH/GET /v1/traces, GET /v1/traces/{id}/spans)
+    │   └── toolSpans.js              (v9.33 — AI Trace Layer: POST /v1/tool-spans)
     ├── middleware/
     │   └── apiKeyAuth.js             (v9.32 — Bearer API key → (company_id, app_id), never a Supabase Auth session)
     ├── lib/costTower/
     │   ├── idempotency.js            (v9.32)
-    │   └── unitsGenerated.js         (v9.32)
+    │   ├── unitsGenerated.js         (v9.32)
+    │   ├── idempotencyStrict.js      (v9.33 — AI Trace Layer: insertIdempotentStrict(), used by routes/v1/traces.js)
+    │   └── usageEventRpcParams.js    (v9.33 — AI Trace Layer: shared mt_ai_record_usage_event_with_span RPC parameter mapping, used by proxy/server.js and routes/v1/usageEvents.js)
     └── openapi/                      (v9.32 — served at /docs, unauthenticated)
         ├── openapi.yaml
         ├── docs.html
@@ -648,8 +652,10 @@ Dependencies are extracted from `server.js`'s actual `require()` statements. Nod
 - [ ] `server.js`, `providerAdapters.js`, `package.json` (proxy-specific content above), `README.md` all present
 - [ ] `proxy/server.js` present ONLY here (not also in `scripts/`)
 - [ ] `routes/v1/usageEvents.js`, `outcomes.js`, `outcomeTypes.js`, `companyApps.js` all present (v9.32 — AI Cost Control Tower OpenAPI Ingestion Layer; `proxy/server.js` `require()`s all four and fails to start if any is missing)
+- [ ] `routes/v1/traces.js`, `toolSpans.js` both present (v9.33 — AI Trace Layer; `proxy/server.js` `require()`s both and fails to start if either is missing)
 - [ ] `middleware/apiKeyAuth.js` present (v9.32)
 - [ ] `lib/costTower/idempotency.js`, `unitsGenerated.js` both present (v9.32)
+- [ ] `lib/costTower/idempotencyStrict.js`, `usageEventRpcParams.js` both present (v9.33 — AI Trace Layer; `routes/v1/traces.js` and `proxy/server.js`/`routes/v1/usageEvents.js` respectively fail to start without them)
 - [ ] `openapi/openapi.yaml`, `docs.html`, `redoc.standalone.js`, `redoc.standalone.js.LICENSE.txt` all present (v9.32 — `/docs` serves a blank page with no error if `redoc.standalone.js` is missing, since it's a vendored file, not CDN-loaded)
 
 **Exclusions — confirm none of these exist anywhere in the tree:**

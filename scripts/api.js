@@ -831,6 +831,20 @@ function hideDDLoad(){
   document.getElementById('dd-ls').classList.remove('on');
 }
 
+// AI Trace Layer — shared fallback for both callAPI() and callAPIStream()
+// below, used only when crypto.randomUUID is unavailable. Replaces the old
+// Date.now()+Math.random() fallback (not a valid UUID) — mt_ai_usage_events.
+// client_call_id is uuid, NOT NULL (confirmed live against both pgt-dev and
+// pgt-prod), so a non-UUID value here would fail that column's type
+// constraint on insert. Minimal RFC-4122-shaped UUID v4 generator, no
+// external dependency.
+function _generateFallbackUuid(){
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+    var r=Math.random()*16|0, v=c==='x'?r:(r&0x3|0x8);
+    return v.toString(16);
+  });
+}
+
 // extraFields (v9.15, optional 8th param): {session_id, product_id, session_type}.
 // Guided Launch passes session_type:'ChatCanvas' so mt_ai_usage_events can
 // distinguish its chat-turn costs from Discovery Map generation costs, even
@@ -897,7 +911,7 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
   // its own via extraFields.client_call_id — this function has no return-shape
   // change to expose one otherwise (it returns a bare string). Every other
   // caller omits this field and gets the same auto-generated id as before.
-  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
+  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_generateFallbackUuid();
 
   const body = JSON.stringify({
     model:_decision.model,
@@ -912,6 +926,12 @@ async function callAPI(sys,usr,maxTok,signal,modelOverride,caller,modelOverrideS
     session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
     session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
     client_call_id:_clientCallId,
+    // AI Trace Layer — client_trace_id is the only trace-continuation key
+    // (Invariant 2); agent_name is required server-side whenever it's
+    // present. Every caller that doesn't supply these gets null for both,
+    // same as every other optional extraFields entry.
+    client_trace_id:(extraFields&&extraFields.client_trace_id!=null)?extraFields.client_trace_id:null,
+    agent_name:(extraFields&&extraFields.agent_name!=null)?extraFields.agent_name:null,
     settings_mode:_decision.settingsMode,
     settings_model:_decision.settingsModel,
     selection_rule:_decision.selectionRule,
@@ -981,7 +1001,11 @@ async function callAPIStream(sys,usr,maxTok,signal,modelOverride,caller,modelOve
   if(authToken) headers['X-Auth-Token'] = authToken;
 
   const _decision = resolveModelDecision(modelOverride, caller, modelOverrideSource);
-  const _clientCallId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():(Date.now()+'-'+Math.random().toString(36).slice(2));
+  // AI Trace Layer build-gate #5 — this previously always generated its own
+  // id, ignoring any extraFields.client_call_id override the caller
+  // supplied, unlike callAPI()'s own check just above. Now matches that
+  // pattern exactly.
+  const _clientCallId=(extraFields&&extraFields.client_call_id)?extraFields.client_call_id:(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_generateFallbackUuid();
 
   const body = JSON.stringify({
     model:_decision.model,
@@ -994,6 +1018,8 @@ async function callAPIStream(sys,usr,maxTok,signal,modelOverride,caller,modelOve
     session_id:(extraFields&&extraFields.session_id!=null)?extraFields.session_id:((typeof _activeSessionId!=='undefined')?_activeSessionId:null),
     session_type:(extraFields&&extraFields.session_type)?extraFields.session_type:null,
     client_call_id:_clientCallId,
+    client_trace_id:(extraFields&&extraFields.client_trace_id!=null)?extraFields.client_trace_id:null,
+    agent_name:(extraFields&&extraFields.agent_name!=null)?extraFields.agent_name:null,
     settings_mode:_decision.settingsMode,
     settings_model:_decision.settingsModel,
     selection_rule:_decision.selectionRule,

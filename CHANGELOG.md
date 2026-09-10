@@ -1,5 +1,11 @@
 # Changelog — Product Studio
 
+## v9.33 - 2026-09-10: AI Cost Control Tower: AI Trace Layer
+
+- Added - Requirement Agent's calls now correlate into one trace per conversation (`mt_ai_traces`) and one ordered span per call (`mt_ai_spans`, `llm_call` or `tool_call`), via a single shared database function both Product Studio's own generation path and the external `/v1` API write through — so the two ingestion surfaces can't drift on trace consistency or idempotency. New `POST`/`PATCH`/`GET /v1/traces`, `GET /v1/traces/{id}/spans`, and `POST /v1/tool-spans`; existing `/v1/usage-events` gains optional `client_trace_id`/`agent_name` on write and `trace_id` on read-back.
+- Fixed - `callAPI()`/`callAPIStream()`'s `crypto.randomUUID` fallback (reached only when that API is unavailable) generated a non-UUID value that would fail `mt_ai_usage_events.client_call_id`'s `uuid, NOT NULL` constraint — a pre-existing defect, now load-bearing for trace continuity. `callAPIStream()` also ignored a caller-supplied `client_call_id` override, unlike `callAPI()`.
+- Fixed - Two bugs found only via live testing against `pgt-dev`, not caught by design review: the new database function was initially missing 12 of `mt_ai_usage_events`'s real, actively-written columns (would have silently dropped cache-cost, error-diagnostic, and Yield-attribution data), and a PL/pgSQL column-ambiguity bug broke every `client_call_id` replay — the exact scenario that column's idempotency guarantee exists for.
+
 ## v9.32 - 2026-09-07: AI Cost Control Tower: OpenAPI Ingestion Layer
 
 - Added - Any internal HCLTech application can now register (operator-run, SQL/RPC only) and write its own AI usage/outcome events into the shared Cost Control Tower tables via a new consumer-tier `/v1` API — usage-event ingestion with batch support and idempotent retries, an outcome lifecycle (`POST`/`PATCH /v1/outcomes`), per-app outcome-type registration, and a scoped read-back of a caller's own submitted events. Authenticated by a per-`(company_id, app_id)` API key, resolved server-side — never a Supabase Auth session, which a machine credential never has.
