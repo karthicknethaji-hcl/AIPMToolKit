@@ -1325,6 +1325,14 @@ function actRenderDataQuality(rows) {
 var EXPLORER_ROW_CAP = 300;
 var actExplorerSourceRows = [];
 
+// AI Trace Layer — Prompt & Response Payload Viewer (v9.34). Maps
+// usage_event_id -> its full row object so the delegated click listener
+// below can retrieve rowContext without closing over a per-render local
+// variable (actExplorerRowHtml's `r` no longer exists once its returned
+// string is injected via innerHTML). Reset every re-render inside
+// actApplyExplorerFilter() so entries don't accumulate across a session.
+var actExplorerPayloadRowById = Object.create(null);
+
 // Hybrid model display (build-review decision): show the model that
 // actually produced the response (what was billed) as the primary value —
 // only when it differs from what was requested does a small badge reveal
@@ -1339,7 +1347,58 @@ function actExplorerModelCell(r) {
 }
 
 function actExplorerRowHtml(r) {
-  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actExplorerModelCell(r) + '</td><td>' + actEsc(r.prompt_version || '—') + '</td><td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
+  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actExplorerModelCell(r) + '</td>' + actExplorerPromptCell(r) + '<td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
+}
+
+// Prompt column's inspect affordance (AI Trace Layer, v9.34). Replaces the
+// prompt_version fallback this cell used to show — prompt_version is
+// unpopulated in production today, and Nethaji decided the icon is a
+// natural evolution of this column's intent rather than a shared cell.
+// Active only for a caller who passes the governance check AND whose row
+// carries a non-null usage_event_id (server-side NULL-masked for
+// non-governance roles in mt_ai_cost_events_list, §5.1 of the payload-
+// viewer spec) — the icon itself is a UX-layer hint only; the RPC behind
+// it enforces access independently. Icon is active whenever the row is
+// identifiable at all, not only when a payload is confirmed present — the
+// modal (not this cell) resolves the actual payload state after the click,
+// since the table's own data can't cheaply distinguish those cases without
+// an extra round-trip per row.
+function actExplorerPromptCell(r) {
+  if (!actIsGovernanceViewer() || !r.usage_event_id) return '<td>—</td>';
+  actExplorerPayloadRowById[String(r.usage_event_id)] = r;
+  return '<td><button type="button" class="act-payload-btn" data-usage-event-id="' +
+    actEsc(String(r.usage_event_id)) +
+    '" aria-label="Inspect prompt and response">↗</button></td>';
+}
+
+// One delegated listener on the (already-existing) tbody, bound once per
+// freshly-created <tbody> element — not one inline handler per row (`r` is
+// a per-render local variable that no longer exists once actExplorerRowHtml's
+// returned string is injected via innerHTML, so an inline onclick
+// referencing it would throw ReferenceError on click).
+function actBindExplorerPayloadClicks() {
+  var body = document.getElementById('act-explorer-body');
+  if (!body || body._payloadClickBound) return;
+  body._payloadClickBound = true;
+  body.addEventListener('click', function (event) {
+    var target = event.target;
+    // event.target can be a text node (nodeType !== 1) when the click lands
+    // on the button's inner glyph rather than the button element itself —
+    // text nodes have no .closest(), so walk up to the nearest element node
+    // first.
+    if (target && target.nodeType !== 1) target = target.parentElement;
+    var btn = target && target.closest ? target.closest('.act-payload-btn') : null;
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    var id = btn.getAttribute('data-usage-event-id');
+    var row = actExplorerPayloadRowById[id];
+    if (!row) {
+      actToast('Could not find payload row context.', 'error');
+      return;
+    }
+    actOpenPayloadModal(id, row);
+  });
 }
 
 // Inline per-column filters, applied client-side over the full period's
@@ -1370,8 +1429,28 @@ function actApplyExplorerFilter() {
   }).sort(function (a, b) { return new Date(b.request_started_at) - new Date(a.request_started_at); });
 
   var shown = filtered.slice(0, EXPLORER_ROW_CAP);
+
+  // Reset the payload row-lookup map before repopulating it via
+  // actExplorerRowHtml -> actExplorerPromptCell — without this, entries
+  // from every prior filter/date-range change accumulate indefinitely
+  // across a long session. Not a security issue (the RPC behind the modal
+  // enforces access independently of anything client-side) — state
+  // hygiene only, but cheap to get right.
+  actExplorerPayloadRowById = Object.create(null);
+
+  // Also invalidate any payload fetch still in flight for a row that no
+  // longer appears in this filtered view — without this, a slow response
+  // for a row clicked before the filter changed could still pop the
+  // payload modal open afterward, for a row the viewer has since moved
+  // away from, even though no modal was open at the time to have masked
+  // its arrival.
+  actUiInvalidationSeq++;
+
   var body = document.getElementById('act-explorer-body');
-  if (body) body.innerHTML = shown.map(actExplorerRowHtml).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--t4);padding:16px;">No calls match these filters.</td></tr>';
+  if (body) {
+    body.innerHTML = shown.map(actExplorerRowHtml).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--t4);padding:16px;">No calls match these filters.</td></tr>';
+    actBindExplorerPayloadClicks();
+  }
   var countEl = document.getElementById('act-explorer-count');
   if (countEl) countEl.textContent = 'Showing ' + actFmtNum(shown.length) + ' of ' + actFmtNum(filtered.length) + ' matching calls (' + actFmtNum(actExplorerSourceRows.length) + ' total this period).';
 }
@@ -1559,6 +1638,18 @@ var _actModalFocusCleanup = null;
 function _actModalEscHandler(ev) {
   if (ev.key === 'Escape') actCloseModal();
 }
+// General-purpose "invalidate any pending async UI update" counter — not
+// owned by any one feature. Any code that fetches data and later mutates
+// the DOM based on the response should capture this value before
+// awaiting and compare after, abandoning a stale response if it no
+// longer matches. actShowModal()/actCloseModal() bump it below (any
+// modal open/close invalidates a pending fetch elsewhere), and
+// actApplyExplorerFilter() bumps it too (a filter/date-range change
+// invalidates a payload fetch for a row the viewer has since filtered
+// away from). Currently consumed by actOpenPayloadModal; a future
+// second async-then-render feature should reuse this counter rather
+// than invent its own.
+var actUiInvalidationSeq = 0;
 function _actTrapFocus(container) {
   var focusable = container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
   if (!focusable.length) return null;
@@ -1573,6 +1664,7 @@ function _actTrapFocus(container) {
   return function () { container.removeEventListener('keydown', handleTab); };
 }
 function actShowModal() {
+  actUiInvalidationSeq++; // any modal opening invalidates a still-in-flight async fetch — see below
   document.getElementById('act-modal-overlay').classList.add('open');
   var box = document.getElementById('act-modal-box');
   box.classList.add('open');
@@ -1581,6 +1673,7 @@ function actShowModal() {
   _actModalFocusCleanup = _actTrapFocus(box);
 }
 function actCloseModal() {
+  actUiInvalidationSeq++; // ditto — closing the shared modal also invalidates it
   document.getElementById('act-modal-overlay').classList.remove('open');
   var box = document.getElementById('act-modal-box');
   box.classList.remove('open');
@@ -1590,6 +1683,197 @@ function actCloseModal() {
   box.classList.remove('act-modal-compact');
   document.removeEventListener('keydown', _actModalEscHandler, true);
   if (_actModalFocusCleanup) { _actModalFocusCleanup(); _actModalFocusCleanup = null; }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// AI Trace Layer — Prompt & Response Payload Viewer (v9.34). Reuses the
+// shared #act-modal-overlay/#act-modal-box (actShowModal/actCloseModal
+// above) rather than building separate modal chrome — same pattern as
+// actOpenSwitchAppModal/actOpenCustomRangeModal/actOpenOppModal, all of
+// which already populate #act-modal-title/#act-modal-body and call
+// actShowModal(). Reached from Request Explorer's delegated click listener
+// (actBindExplorerPayloadClicks, above actExplorerRowHtml).
+// ══════════════════════════════════════════════════════════════════════
+
+// actUiInvalidationSeq (declared above, alongside actShowModal/actCloseModal)
+// is bumped by those two functions and by actApplyExplorerFilter() too —
+// this guard invalidates a still-in-flight payload fetch whenever the user
+// closes this modal, opens ANY other modal (Custom Date Range, Supporting
+// Calls, a second payload lookup), or changes a Request Explorer filter/
+// date field before the RPC resolves — not only a second payload click.
+var MAX_PAYLOAD_PREVIEW_BYTES = 500000;
+var MAX_PAYLOAD_PREVIEW_CHARS = 500000;
+
+// Pre-fetch size gate — runs before any RPC call or JSON.stringify. Uses
+// rowContext's own request_bytes/response_bytes (already part of
+// mt_ai_cost_events_list's return shape) as a cheap proxy for serialized
+// payload size, so an oversized payload never reaches JSON.stringify at
+// all, rather than being stringified and then checked.
+function actPayloadPreviewTooLarge(rowContext) {
+  var reqBytes = Number((rowContext && rowContext.request_bytes) || 0);
+  var resBytes = Number((rowContext && rowContext.response_bytes) || 0);
+  return (reqBytes + resBytes) > MAX_PAYLOAD_PREVIEW_BYTES;
+}
+
+// Secondary guard only — the primary guard is actPayloadPreviewTooLarge()
+// above. This one still calls JSON.stringify, so it does not by itself
+// prevent a freeze; it exists only for the residual case where
+// request_bytes/response_bytes undersell the actual serialized size.
+function actStringifyPayloadForPreview(value) {
+  var text;
+  try { text = JSON.stringify(value, null, 2); }
+  catch (e) { return '[Unable to render payload JSON]'; }
+  if (text.length <= MAX_PAYLOAD_PREVIEW_CHARS) return text;
+  return text.slice(0, MAX_PAYLOAD_PREVIEW_CHARS) +
+    '\n\n… Payload preview truncated. Full payload is larger than the safe browser-rendering limit.';
+}
+
+function actPayloadGateStripHtml() {
+  return '<div class="act-payload-gate-strip">🔒 Visible to Admin and Power User — raw call content, distinct from the rest of this table’s metadata-level access.</div>';
+}
+
+async function actOpenPayloadModal(usageEventId, rowContext) {
+  var seq = ++actUiInvalidationSeq;
+
+  // Gate before the RPC call and before any JSON handling — an oversized
+  // payload is rejected here without ever being fetched or stringified.
+  if (actPayloadPreviewTooLarge(rowContext)) {
+    actRenderPayloadTooLargeModal();
+    return;
+  }
+
+  var result;
+  try {
+    var client = authInit();
+    // supabase-js RPC calls return { data, error } — they do not throw for
+    // a normal SQL exception. Deliberately not using .single()/.maybeSingle():
+    // both would collapse the "no payload row" state (a normal, common,
+    // non-error outcome) into the same code path as a genuine
+    // authorization/network failure. Wrapped in try/catch (matching
+    // actLoadBudgetAndAlerts/actLoadProductNames elsewhere in this file)
+    // since this is reached directly from a click handler with no outer
+    // try/catch of its own — an actual thrown exception (network drop,
+    // client-library error), not just a populated `error`, must still
+    // surface a toast instead of an unhandled rejection.
+    result = await client.rpc('mt_ai_trace_payload_get', {
+      p_company_id: actCompanyId,
+      p_app_id: actAppId,
+      p_usage_event_id: usageEventId
+    });
+  } catch (e) {
+    console.error('[Cost Tower] mt_ai_trace_payload_get exception:', e);
+    if (seq === actUiInvalidationSeq) actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  // Race guard: if the user closed this modal, opened a different one,
+  // changed a Request Explorer filter, or clicked a different row while
+  // this request was in flight, actUiInvalidationSeq has since changed —
+  // abandon this stale response rather than overwrite whatever state is
+  // now current.
+  if (seq !== actUiInvalidationSeq) return;
+
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_trace_payload_get failed:', result.error.message);
+    actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  var data = result.data;
+  // Unexpected-shape guard: do not silently coerce a non-array response
+  // into an empty array — that would misreport an integration bug as the
+  // ordinary "no payload captured" product state.
+  if (!Array.isArray(data)) {
+    console.error('[Cost Tower] Unexpected mt_ai_trace_payload_get response shape:', data);
+    actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  if (data.length === 0) {
+    // Zero rows with no error is the normal, expected "no payload
+    // captured" outcome — not an error, must not toast.
+    actRenderNoPayloadModal();
+    return;
+  }
+
+  if (data.length > 1) {
+    // Should be structurally impossible — mt_ai_trace_payloads.usage_event_id
+    // is UNIQUE — but a defensive check costs nothing and a silent
+    // "pick the first row" would hide a real data problem if this
+    // invariant is ever violated by a future schema change.
+    actToast('Unexpected duplicate payload records for this call.', 'error');
+    return;
+  }
+
+  var payload = data[0];
+  if (payload.request_payload == null && payload.response_payload == null) {
+    actRenderEmptyPayloadRecordModal(payload);
+    return;
+  }
+
+  actRenderPayloadModal(payload, rowContext);
+}
+
+function actRenderNoPayloadModal() {
+  document.getElementById('act-modal-title').textContent = 'No Payload Captured';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 14px;">No payload was captured for this call — either this feature isn’t yet on the AI Trace Layer, or the call predates payload capture being enabled, or capture was gated off for this app at the time.</div>' +
+    actPayloadGateStripHtml();
+  actShowModal();
+}
+
+function actRenderEmptyPayloadRecordModal(payload) {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 6px;">A payload record exists for this call, but it doesn’t contain any prompt or response content.</div>' +
+    '<div class="act-payload-id-note">Payload ID: ' + actEsc(payload.payload_id) + '</div>' +
+    '<div style="margin-top:14px;">' + actPayloadGateStripHtml() + '</div>';
+  actShowModal();
+}
+
+function actRenderPayloadTooLargeModal() {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 14px;">This call’s payload is too large to preview safely in the browser (over ' + actFmtNum(MAX_PAYLOAD_PREVIEW_BYTES) + ' bytes combined). It was not fetched.</div>' +
+    actPayloadGateStripHtml();
+  actShowModal();
+}
+
+// Found-with-content states (payload found with both/either side present,
+// optionally past its retention window). Mandatory rendering rule: the
+// request_payload/response_payload content itself is assigned via
+// textContent, never innerHTML — this content originates from end-user
+// and model text, is untrusted, and interpolating it into innerHTML would
+// be an avoidable stored-XSS vector inside this modal. Everything else in
+// this modal (labels, notes, gate strip) may continue to use this file's
+// existing innerHTML-based construction pattern.
+function actRenderPayloadModal(payload, rowContext) {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  var hasReq = payload.request_payload != null;
+  var hasRes = payload.response_payload != null;
+  var reqBadge = (hasReq && rowContext && rowContext.input_tokens != null)
+    ? ' <span class="act-payload-block-badge">' + actFmtNum(rowContext.input_tokens) + ' tokens</span>'
+    : '';
+  var expiredNote = payload.is_expired
+    ? '<div class="act-payload-expired-note">This payload passed its 90-day retention window on ' +
+        actEsc(new Date(payload.expires_at).toLocaleDateString()) +
+        ' — it’s still viewable because the cleanup process hasn’t run yet, not because it’s meant to be kept long-term.</div>'
+    : '';
+
+  document.getElementById('act-modal-body').innerHTML =
+    expiredNote +
+    '<div class="act-payload-block-label">Request' + reqBadge + '</div>' +
+    (hasReq ? '<pre class="act-payload-box" id="act-payload-request-box"></pre>'
+            : '<div class="act-cell-muted" style="margin:0 0 16px;">No request payload captured for this call.</div>') +
+    '<div class="act-payload-block-label">Response</div>' +
+    (hasRes ? '<pre class="act-payload-box" id="act-payload-response-box"></pre>'
+            : '<div class="act-cell-muted" style="margin:0;">No response payload captured for this call.</div>') +
+    actPayloadGateStripHtml();
+
+  if (hasReq) document.getElementById('act-payload-request-box').textContent = actStringifyPayloadForPreview(payload.request_payload);
+  if (hasRes) document.getElementById('act-payload-response-box').textContent = actStringifyPayloadForPreview(payload.response_payload);
+
+  actShowModal();
 }
 
 function actRenderOpportunityMatrix(rows) {

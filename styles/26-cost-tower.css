@@ -366,6 +366,29 @@ button:focus-visible.act-fv,
 .act-switch-app-name{font-size:12px;font-weight:700;color:var(--t1);}
 .act-switch-app-check{color:var(--purple);font-size:15px;}
 
+/* Request Explorer — Prompt & Response Payload Viewer (v9.34). Icon lives
+   in the Prompt column's <td>; modal content renders into the shared
+   #act-modal-body above (actOpenPayloadModal and friends, cost-tower.js). */
+.act-payload-btn{width:22px;height:22px;border-radius:6px;border:1px solid var(--purple-light);background:var(--purple-pale);color:var(--purple);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:12px;line-height:1;padding:0;}
+.act-payload-btn:hover{background:var(--purple);color:var(--white);}
+.act-payload-block-label{font-size:9.5px;font-weight:800;color:var(--label);text-transform:uppercase;letter-spacing:.4px;margin:0 0 6px;display:flex;align-items:center;gap:8px;}
+.act-payload-block-badge{background:var(--card);color:var(--t3);border-radius:20px;padding:1px 8px;font-weight:700;text-transform:none;letter-spacing:0;font-size:9.5px;}
+.act-payload-box{background:var(--card);border:1px solid var(--divider);border-radius:8px;padding:11px 13px;font-family:monospace;font-size:10.5px;color:var(--t2);line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:0 0 16px;max-height:260px;overflow-y:auto;}
+.act-payload-box:last-of-type{margin-bottom:0;}
+.act-payload-expired-note{font-size:10.5px;color:var(--t3);background:var(--card);border-radius:6px;padding:8px 10px;margin-bottom:14px;line-height:1.5;}
+.act-payload-id-note{font-size:9.5px;color:var(--t4);}
+/* Bleeds to the shared modal box's edges (its body has 16px 18px padding)
+   and sticks to the bottom of #act-modal-body's own scroll area — matching
+   the approved prototype's fixed footer, which this shared modal has no
+   separate slot for. position:sticky (not fixed/absolute, which would
+   escape the modal entirely) keeps it pinned within #act-modal-body even
+   when the Request/Response boxes above it are tall enough to scroll —
+   verified: with sticky, this row renders pinned at the bottom of the
+   visible body on first paint, not only after scrolling down to it.
+   Copy corrected to this spec's actual access tier (Admin and Power
+   User), not the prototype's stale "Admin only" text. */
+.act-payload-gate-strip{position:sticky;bottom:-16px;background:var(--purple-pale);border-top:1px solid var(--purple-light);margin:16px -18px -16px;padding:9px 18px;font-size:10px;color:var(--purple-deep);}
+
 /* Access-denied / loading states (bootstrap, not in the wireframe) */
 .act-gate-wrap{display:flex;align-items:center;justify-content:center;min-height:60vh;padding:24px;}
 .act-gate-card{max-width:420px;text-align:center;}
