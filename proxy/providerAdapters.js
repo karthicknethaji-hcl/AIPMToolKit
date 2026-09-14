@@ -7,16 +7,26 @@
 // PROJECT_MAP.md's existing warning about these two runtimes drifting apart
 // on shared logic (previously about auth; the same risk applies here).
 //
-// NOTE ON PACKAGING: this file lives outside netlify/functions/. Netlify's
-// default JS function bundler (esbuild) traces `require()` calls by
-// filesystem path, not by "functions" folder boundary, so a relative
-// require from netlify/functions/anthropic-proxy.js up into proxy/ is
-// expected to bundle correctly at deploy time — but this has NOT been
-// directly confirmed against a live Netlify deploy. Verify on first deploy
-// after this ships; if it doesn't bundle, the fallback is a build step that
-// copies this file into netlify/functions/ at zip-time (matching the
-// no-duplicate-file rule's own suggested resolution), not a hand-maintained
-// second copy.
+// NOTE ON PACKAGING: this file lives outside netlify/functions/. A live
+// deploy confirmed Netlify's Function bundler does NOT trace a relative
+// require that crosses the netlify/functions/ directory boundary — the
+// hopeful assumption once written here was wrong ("Cannot find module
+// '../../proxy/providerAdapters'"). Fixed via the predicted fallback:
+// netlify.toml's [build] command copies this file into
+// netlify/functions/providerAdapters.js (gitignored — a build-time copy,
+// not a hand-maintained second copy) before Functions bundling runs, and
+// anthropic-proxy.js requires './providerAdapters' from there instead of
+// reaching back into this directory.
+//
+// CAVEAT — this site is deployed via manual zip drag-and-drop into
+// Netlify's UI, not a git-connected build, so netlify.toml's [build]
+// command above never actually runs for a real deploy of this app (it
+// only applies if this site is ever switched to git-connected builds).
+// Whoever builds the deploy zip must manually copy this file's CURRENT
+// contents to netlify/functions/providerAdapters.js and include it in the
+// zip every time this file changes — there's no automated step doing that
+// copy today. Forgetting it re-introduces the exact "Cannot find module"
+// failure above, silently, since nothing checks for it at zip-build time.
 //
 // One adapter per provider. Each exposes:
 //   buildUpstreamRequest(normalizedBody) -> { url, method, headers, body }

@@ -22,14 +22,19 @@ const jwt = require('jsonwebtoken');
 const jwksRsa = require('jwks-rsa');
 const { createClient } = require('@supabase/supabase-js');
 // v9.14: shares the same adapter module server.js uses, rather than hand-
-// duplicating request-building/response-parsing logic — see
-// proxy/providerAdapters.js's packaging note re: Netlify's esbuild bundler
-// tracing this relative require correctly (verify on first deploy). This
-// function itself stays Anthropic-only and unrelated to appSettings.provider
-// — it's the separate, always-Anthropic path for Home's AI Recommendations
-// (see scripts/api.js's comment on why that call bypasses callAPI()), not
-// the multi-provider /api/anthropic path server.js now handles.
-const { getAdapter } = require('../../proxy/providerAdapters');
+// duplicating request-building/response-parsing logic. Required from
+// './providerAdapters', NOT '../../proxy/providerAdapters' — a live
+// deploy confirmed Netlify's Function bundler does not trace a relative
+// require crossing the netlify/functions/ directory boundary ("Cannot
+// find module '../../proxy/providerAdapters'"), so netlify.toml's build
+// command copies the canonical proxy/providerAdapters.js in here at
+// build time (gitignored copy, not a hand-maintained duplicate) before
+// this require ever resolves. This function itself stays Anthropic-only
+// and unrelated to appSettings.provider — it's the separate, always-
+// Anthropic path for Home's AI Recommendations (see scripts/api.js's
+// comment on why that call bypasses callAPI()), not the multi-provider
+// /api/anthropic path server.js now handles.
+const { getAdapter } = require('./providerAdapters');
 const anthropicAdapter = getAdapter('anthropic');
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();

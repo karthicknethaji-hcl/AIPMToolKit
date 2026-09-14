@@ -19,7 +19,9 @@ var PRICING_MATCH_LAUNCH_GATE_PCT = 99; // spec Section 5.7, Section 11 item 11
 
 var TIER_ORDER = { economical: 0, balanced: 1, frontier: 2 };
 var TIER_LABEL = { economical: 'Economical', balanced: 'Balanced', frontier: 'Frontier' };
-var TIER_BELOW = { balanced: 'economical', frontier: 'balanced' }; // no entry for 'economical' — nothing cheaper
+// TIER_BELOW (tier-below-current lookup) removed in the v9.37 period-
+// aggregation migration — Type 1's tier-below logic now lives in SQL
+// (mt_ai_cost_opportunities' `candidate` CTE, migration file Part E).
 
 // Real values confirmed against resolveModelDecision() (scripts/api.js)
 // during build-review — spec Section 5.2, Section 11 item 8.
@@ -470,33 +472,489 @@ function actResolvePeriodRange(type, customStart, customEnd) {
   return { range: range, prior: prior };
 }
 
+// v9.37 period-aggregation migration (sql/ai-cost-tower-period-aggregation-
+// migration.sql) — mt_ai_cost_events_list is now paginated (p_limit/
+// p_offset, default ORDER BY request_started_at DESC) rather than an
+// unbounded fetch. Request Explorer's flat table is the only remaining
+// caller that needs individual rows; every KPI/total below reads one of
+// the new aggregate RPCs instead. Returns {rows, totalCount} — totalCount
+// comes from the RPC's own total_row_count window column (the true count
+// over the whole period, not just this page).
 var _actRowCache = {};
-async function actFetchRows(start, end) {
-  var key = start.toISOString() + '|' + end.toISOString();
+async function actFetchRows(start, end, limit, offset) {
+  limit = limit || 50; offset = offset || 0;
+  var key = start.toISOString() + '|' + end.toISOString() + '|' + limit + '|' + offset;
   if (_actRowCache[key]) return _actRowCache[key];
   var client = authInit();
   var result = await client.rpc('mt_ai_cost_events_list', {
     p_company_id: actCompanyId,
     p_app_id: actAppId,
     p_period_start: start.toISOString(),
-    p_period_end: end.toISOString()
+    p_period_end: end.toISOString(),
+    p_limit: limit,
+    p_offset: offset
   });
   if (result.error) {
     console.error('[Cost Tower] mt_ai_cost_events_list failed:', result.error.message);
     actToast('Could not load cost data for this period.', 'error');
-    return [];
+    return { rows: [], totalCount: 0 };
   }
-  _actRowCache[key] = result.data || [];
-  return _actRowCache[key];
+  var data = result.data || [];
+  var out = { rows: data, totalCount: data.length ? Number(data[0].total_row_count) : 0 };
+  _actRowCache[key] = out;
+  return out;
 }
 
-var actMain = { rows: [], prevRows: [], start: null, end: null, now: null };
+// Scalar period totals (Overview's At-a-Glance, Cache Usage, Data
+// Quality's 4 KPI tiles, Governance's MTD/lifetime figures, Outcome-Based
+// Cost's TOTAL_AI_SPEND_PERIOD) — one row, always, immune to any row cap
+// regardless of call volume. See migration file Part B for field-by-field
+// provenance.
+var _actCostSummaryCache = {};
+async function actFetchCostSummary(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actCostSummaryCache[key]) return _actCostSummaryCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_summary', {
+    p_company_id: actCompanyId, p_app_id: actAppId,
+    p_period_start: start.toISOString(), p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_summary failed:', result.error.message);
+    actToast('Could not load cost summary for this period.', 'error');
+    return null;
+  }
+  var row = (result.data && result.data[0]) || null;
+  _actCostSummaryCache[key] = row;
+  return row;
+}
+
+// Server-grouped breakdown — one row per distinct value of p_group_by
+// ('feature'|'product'|'model'|'user'|'prompt_version'|'selection_rule'|
+// 'tier'|'user_role'|'unpriced_drill'|'outcome_type'), never per event —
+// see migration file Part C. Cache key includes group_by since the same
+// start|end window is fetched under multiple groupings by different
+// widgets on the same screen.
+var _actCostGroupedCache = {};
+async function actFetchCostGrouped(start, end, groupBy) {
+  var key = start.toISOString() + '|' + end.toISOString() + '|' + groupBy;
+  if (_actCostGroupedCache[key]) return _actCostGroupedCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_grouped', {
+    p_company_id: actCompanyId, p_app_id: actAppId,
+    p_period_start: start.toISOString(), p_period_end: end.toISOString(),
+    p_group_by: groupBy
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_grouped(' + groupBy + ') failed:', result.error.message);
+    actToast('Could not load cost breakdown for this period.', 'error');
+    return [];
+  }
+  _actCostGroupedCache[key] = result.data || [];
+  return _actCostGroupedCache[key];
+}
+
+// Top-N calls by duration/size/cost, optionally per-partition (Longest/
+// Largest's "By Call" mode when partitionBy is null; Outcome-Based Cost's
+// per-type/per-caller sample calls when it isn't) — see migration file
+// Part D. This replaces client-side max-finding over a row set that could
+// silently be missing the actual longest/largest call under truncation.
+var _actTopCallsCache = {};
+async function actFetchTopCalls(start, end, orderBy, limit, partitionBy) {
+  var key = start.toISOString() + '|' + end.toISOString() + '|' + orderBy + '|' + limit + '|' + (partitionBy || '');
+  if (_actTopCallsCache[key]) return _actTopCallsCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_top_calls', {
+    p_company_id: actCompanyId, p_app_id: actAppId,
+    p_period_start: start.toISOString(), p_period_end: end.toISOString(),
+    p_order_by: orderBy, p_limit: limit, p_partition_by: partitionBy || null
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_top_calls failed:', result.error.message);
+    actToast('Could not load top calls for this period.', 'error');
+    return [];
+  }
+  _actTopCallsCache[key] = result.data || [];
+  return _actTopCallsCache[key];
+}
+
+// Needs Attention / Governance's Top Optimization Opportunities Type 1
+// (intake routing) and Type 2 (prompt-version regression) — see migration
+// file Part E. Type 3 (unassigned attribution) is deliberately NOT
+// returned here; it's folded client-side from actFetchCostGrouped's
+// 'feature' mode (actComputeType3Client below), same as today.
+var _actOpportunitiesCache = {};
+async function actFetchOpportunities(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actOpportunitiesCache[key]) return _actOpportunitiesCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_opportunities', {
+    p_company_id: actCompanyId, p_app_id: actAppId,
+    p_period_start: start.toISOString(), p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_opportunities failed:', result.error.message);
+    actToast('Could not load optimization opportunities for this period.', 'error');
+    return [];
+  }
+  _actOpportunitiesCache[key] = result.data || [];
+  return _actOpportunitiesCache[key];
+}
+
+// Lazy, on-demand only (Type 1's "View Supporting Calls" modal) — not
+// cached, since it's a single click-triggered fetch, not something every
+// period-change re-requests.
+async function actFetchOpportunitySupportingCalls(start, end, feature, limit) {
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_opportunity_supporting_calls', {
+    p_company_id: actCompanyId, p_app_id: actAppId,
+    p_period_start: start.toISOString(), p_period_end: end.toISOString(),
+    p_feature: feature, p_limit: limit || 5
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_opportunity_supporting_calls failed:', result.error.message);
+    actToast('Could not load supporting calls.', 'error');
+    return [];
+  }
+  return result.data || [];
+}
+
+// AI Trace Layer — remaining widgets (By Trace toggle, By Conversation
+// ranking, Failure Cost's 2 new KPIs, Trace Explorer card). Separate
+// fetch/cache pair, not a reuse of actFetchRows above — actFetchRows's
+// cache key is start|end only, no RPC-name component, so sharing it with
+// a second RPC would collide cache entries between the two. Governance-
+// gated server-side (_cost_tower_can_manage_governance, same tier as the
+// payload viewer's mt_ai_trace_payload_get) — callers should skip this
+// fetch outright for a non-governance viewer rather than let it fail.
+var _actTraceDetailCache = {};
+async function actFetchTraceDetail(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actTraceDetailCache[key]) return _actTraceDetailCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_trace_detail_list', {
+    p_company_id: actCompanyId,
+    p_app_id: actAppId,
+    p_period_start: start.toISOString(),
+    p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_trace_detail_list failed:', result.error.message);
+    actToast('Could not load trace detail for this period.', 'error');
+    return [];
+  }
+  _actTraceDetailCache[key] = result.data || [];
+  return _actTraceDetailCache[key];
+}
+
+// Groups mt_ai_trace_detail_list's span-level rows (one row per span,
+// sharing trace_id/agent_name/etc. across every span of the same trace)
+// into one summary object per trace — the frontend does this grouping,
+// not the RPC, per §2's design. Computes each trace's total duration/
+// cost/bytes and a status classification in one pass, so every consumer
+// (Request Explorer's By Trace toggle, Longest/Largest's By Conversation
+// ranking, Failure Cost's 2 new KPIs, Trace Explorer) reads the same
+// already-computed fields instead of re-deriving them independently.
+function actBuildTraceSummaries(detailRows) {
+  var byTrace = Object.create(null);
+  var order = [];
+  detailRows.forEach(function (r) {
+    if (!byTrace[r.trace_id]) {
+      byTrace[r.trace_id] = {
+        trace_id: r.trace_id, agent_name: r.agent_name, client_trace_id: r.client_trace_id,
+        trace_started_at: r.trace_started_at, trace_completed_at: r.trace_completed_at,
+        outcome_id: r.outcome_id, spans: []
+      };
+      order.push(r.trace_id);
+    }
+    byTrace[r.trace_id].spans.push(r);
+  });
+  return order.map(function (id) {
+    var t = byTrace[id];
+    t.spans.sort(function (a, b) { return (a.sequence_order || 0) - (b.sequence_order || 0); });
+    var totalDuration = 0, totalCost = 0, totalBytes = 0, hasEarlierFailure = false;
+    t.spans.forEach(function (s, idx) {
+      totalDuration += Number(s.span_duration_ms || 0);
+      if (s.calculated_cost != null) totalCost += Number(s.calculated_cost);
+      totalBytes += Number(s.request_bytes || 0) + Number(s.response_bytes || 0);
+      // Matches actFailedRows' own failure definition (status 'error' OR
+      // 'timeout') — code-review fix: this previously only checked 'error',
+      // undercounting a trace-level failure relative to the existing
+      // per-call Failure Cost KPIs, which already treat both as failed.
+      if (idx < t.spans.length - 1 && (s.span_status === 'error' || s.span_status === 'timeout')) hasEarlierFailure = true;
+    });
+    var lastStatus = t.spans[t.spans.length - 1].span_status;
+    // Decision 2 (spec §0): abandoned = last span status='error', no
+    // successful span after it — single-span-error traces count too, no
+    // carve-out (§9 item 6). 'recovered' = worded as adjacency ("a later
+    // span succeeded"), not confirmed retry-recovery — this schema can't
+    // prove genuine retry semantics (§5). Code-review fix: 'recovered' now
+    // requires the last span to have actually succeeded — previously this
+    // fell through to 'recovered' whenever hasEarlierFailure was true and
+    // lastStatus merely wasn't 'error' (e.g. lastStatus === 'timeout'),
+    // which is not "a later span succeeded." A trace whose last span timed
+    // out lands in 'other', not 'completed' or 'recovered'.
+    var statusKind = lastStatus === 'error' ? 'abandoned'
+      : (lastStatus === 'success' ? (hasEarlierFailure ? 'recovered' : 'completed') : 'other');
+    t.totalDurationMs = totalDuration;
+    t.totalCost = totalCost;
+    t.totalBytes = totalBytes;
+    t.spanCount = t.spans.length;
+    t.statusKind = statusKind;
+    t.lastStatus = lastStatus;
+    return t;
+  });
+}
+
+// Populated once per trace-detail fetch (actSetBreakdownPeriod), not
+// per-render — every consumer (Request Explorer's By Trace rows, Trace
+// Explorer card) shares this one map rather than each rebuilding it from
+// whatever subset it happens to render, which would stomp on the others'
+// entries when their renders are interleaved on the same screen.
+var actTraceSpanRowById = Object.create(null);
+function actIndexTraceSpans(traceSummaries) {
+  actTraceSpanRowById = Object.create(null);
+  traceSummaries.forEach(function (t) {
+    t.spans.forEach(function (s) {
+      if (s.usage_event_id) actTraceSpanRowById[String(s.usage_event_id)] = s;
+    });
+  });
+}
+
+function actTraceStatusPillHtml(t) {
+  if (t.statusKind === 'abandoned') return '<span class="act-tag-status bad">abandoned</span>';
+  if (t.statusKind === 'recovered') return '<span class="act-tag-status warn">1 error span</span>';
+  if (t.statusKind === 'completed') return '<span class="act-tag-status ok">completed</span>';
+  return '<span class="act-tag-status warn">' + actEsc(t.lastStatus || 'unknown') + '</span>';
+}
+
+// Shared trace→span expandable rows, used by both Request Explorer's By
+// Trace toggle (Item 1) and the Trace Explorer card (Item 5) — the
+// expand/collapse and payload-icon wiring exists in exactly one place,
+// not duplicated per consumer, per the spec's explicit reuse instruction.
+function actTraceGroupRowsHtml(traces) {
+  if (!traces.length) return '';
+  return traces.map(function (t) {
+    var spansHtml = t.spans.map(function (s) {
+      var canOpenPayload = actIsGovernanceViewer() && s.span_type === 'llm_call' && s.usage_event_id;
+      var payloadBtn = canOpenPayload
+        ? '<button type="button" class="act-payload-btn act-trace-span-payload-btn" data-usage-event-id="' + actEsc(String(s.usage_event_id)) + '" aria-label="Inspect prompt and response">↗</button>'
+        : '';
+      return '<div class="act-trace-span-row"><span class="act-trace-span-seq">' + s.sequence_order + '</span>' +
+        '<span class="act-trace-span-type ' + (s.span_type === 'llm_call' ? 'llm' : 'tool') + '">' + (s.span_type === 'llm_call' ? 'llm_call' : actEsc(s.tool_name || 'tool_call')) + '</span>' +
+        '<span class="act-trace-span-dur">' + (s.span_duration_ms != null ? (s.span_duration_ms / 1000).toFixed(1) + 's' : '—') + '</span>' +
+        '<span class="act-trace-span-cost">' + (s.calculated_cost != null ? actFmtUSD(s.calculated_cost) : '—') + '</span>' +
+        '<span class="act-trace-span-status"><span class="act-tag-status ' + (s.span_status === 'success' ? 'ok' : (s.span_status === 'error' ? 'bad' : 'warn')) + '">' + actEsc(s.span_status) + '</span>' + payloadBtn + '</span></div>';
+    }).join('');
+    return '<div class="act-trace-group" data-trace-id="' + actEsc(t.trace_id) + '">' +
+      '<div class="act-trace-row" data-trace-toggle="' + actEsc(t.trace_id) + '">' +
+      '<span class="act-trace-toggle-icon">&#9656;</span>' +
+      '<span class="act-trace-agent">' + actEsc(t.agent_name) + '</span>' +
+      '<span class="act-trace-meta">' + t.spanCount + ' call' + (t.spanCount === 1 ? '' : 's') + ' · ' + (t.totalDurationMs / 1000).toFixed(1) + 's</span>' +
+      '<span class="act-trace-cost">' + actFmtUSD(t.totalCost) + '</span>' +
+      actTraceStatusPillHtml(t) +
+      '</div>' +
+      '<div class="act-trace-span-list" style="display:none;">' + spansHtml + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// One delegated listener per container (idempotency flag, same pattern as
+// actBindExplorerPayloadClicks) — handles both the expand/collapse toggle
+// and the payload-inspect icon inside any span row.
+function actBindTraceGroupClicks(containerEl) {
+  if (!containerEl || containerEl._traceClickBound) return;
+  containerEl._traceClickBound = true;
+  containerEl.addEventListener('click', function (event) {
+    var target = event.target;
+    if (target && target.nodeType !== 1) target = target.parentElement;
+    var payloadBtn = target && target.closest ? target.closest('.act-trace-span-payload-btn') : null;
+    if (payloadBtn) {
+      event.preventDefault(); event.stopPropagation();
+      var id = payloadBtn.getAttribute('data-usage-event-id');
+      var span = actTraceSpanRowById[id];
+      if (!span) { actToast('Could not find payload row context.', 'error'); return; }
+      actOpenPayloadModal(id, span);
+      return;
+    }
+    var toggleRow = target && target.closest ? target.closest('[data-trace-toggle]') : null;
+    if (!toggleRow) return;
+    var group = toggleRow.closest('.act-trace-group');
+    var list = group && group.querySelector('.act-trace-span-list');
+    var icon = toggleRow.querySelector('.act-trace-toggle-icon');
+    if (!list) return;
+    var isOpen = list.style.display !== 'none';
+    list.style.display = isOpen ? 'none' : 'block';
+    if (icon) icon.innerHTML = isOpen ? '&#9656;' : '&#9662;';
+  });
+}
+
+// Item 6 — Cost by Agent. Independent of the trace-detail RPC/fetch above
+// (span-level detail is irrelevant to a per-agent rollup) and gated on the
+// more open _cost_tower_can_access, not the governance gate — fetched
+// unconditionally for every role.
+var _actCostByAgentCache = {};
+async function actFetchCostByAgent(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actCostByAgentCache[key]) return _actCostByAgentCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_by_agent', {
+    p_company_id: actCompanyId,
+    p_app_id: actAppId,
+    p_period_start: start.toISOString(),
+    p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_by_agent failed:', result.error.message);
+    actToast('Could not load cost by agent for this period.', 'error');
+    return [];
+  }
+  _actCostByAgentCache[key] = result.data || [];
+  return _actCostByAgentCache[key];
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Client-side folding over server-grouped rows (mt_ai_cost_grouped).
+// mt_ai_cost_grouped('feature') returns one row per (caller, product_id)
+// pair — bounded by distinct-caller count, never by event count. Every
+// fold below collapses that already-small result through the SAME label
+// logic actFeatureOf()/actIsCrossProductCaller() always used (summing
+// across sub-groups is associative, so folding after aggregation is
+// exact, not an approximation — unlike Type 1's percentile logic, which
+// is why that one had to move server-side instead, see
+// mt_ai_cost_opportunities). Field names match actGroupSum()'s old shape
+// (cost/calls/failed/inputTok/outputTok) on purpose — actTopBy() below
+// works unchanged on either.
+// ══════════════════════════════════════════════════════════════════════
+
+function actFoldGrouped(groupedRows, keyFn) {
+  var map = {};
+  (groupedRows || []).forEach(function (g) {
+    var k = keyFn(g);
+    if (!map[k]) map[k] = { key: k, calls: 0, cost: 0, failed: 0, failedCost: 0, inputTok: 0, outputTok: 0, unitsSum: 0, unitsResolved: 0, sampleTier: null, sampleUserRole: null, firstSeen: null, lastSeen: null };
+    var m = map[k];
+    m.calls += Number(g.calls || 0);
+    m.cost += Number(g.cost || 0);
+    m.failed += Number(g.failed_calls || 0);
+    m.failedCost += Number(g.failed_cost || 0);
+    m.inputTok += Number(g.input_tokens || 0);
+    m.outputTok += Number(g.output_tokens || 0);
+    m.unitsSum += Number(g.units_generated_sum || 0);
+    m.unitsResolved += Number(g.units_resolved_count || 0);
+    // Representative-only fields — meaningful when a mode groups by exactly
+    // the label being folded to (model/user: one server row per key already,
+    // so this is an exact passthrough, not an aggregate); for feature/product
+    // modes, where several server rows DO fold into one label, these are
+    // display-only and not claimed to represent every folded row.
+    if (g.sample_tier) m.sampleTier = g.sample_tier;
+    if (g.sample_user_role) m.sampleUserRole = g.sample_user_role;
+    if (g.first_seen && (!m.firstSeen || g.first_seen < m.firstSeen)) m.firstSeen = g.first_seen;
+    if (g.last_seen && (!m.lastSeen || g.last_seen > m.lastSeen)) m.lastSeen = g.last_seen;
+  });
+  return map;
+}
+function actFoldFeatureGroups(groupedRows) {
+  return actFoldGrouped(groupedRows, function (g) { return actFeatureOf(g.group_key1); });
+}
+function actFoldProductGroups(groupedRows) {
+  return actFoldGrouped(groupedRows, function (g) {
+    return g.group_key2 || (actIsCrossProductCaller(g.group_key1) ? '__cross_product__' : '__unassigned__');
+  });
+}
+function actFoldSimpleGroups(groupedRows, fallbackLabel) {
+  return actFoldGrouped(groupedRows, function (g) { return g.group_key1 || fallbackLabel; });
+}
+// Main Breakdown's "Prompt Version" option — mt_ai_cost_grouped
+// ('prompt_version') returns one row per (caller, prompt_version) pair (see
+// migration file Part C); folded here to feature+version combined keys,
+// matching the original client-side actGroupKeyFor()'s 'prompt' behavior
+// exactly (a feature can reuse the same prompt_version string as another
+// feature, so the two must not be merged).
+function actFoldPromptGroups(groupedRows) {
+  return actFoldGrouped(groupedRows, function (g) { return actFeatureOf(g.group_key1) + ' · ' + (g.group_key2 || 'Unversioned'); });
+}
+// Unassigned attribution (Type 3 / Overview's Unassigned Spend) — dollars
+// with no product_id AND not a known cross-product caller, folded from
+// the same (caller, product_id) rows 'feature' mode already returned.
+// Mirrors actAttributionGap() exactly, just server-aggregated.
+function actAttributionGapFromGrouped(groupedRows, totalCost) {
+  var unassigned = 0;
+  (groupedRows || []).forEach(function (g) {
+    if (!g.group_key2 && !actIsCrossProductCaller(g.group_key1)) unassigned += Number(g.cost || 0);
+  });
+  return { pct: totalCost ? (unassigned / totalCost * 100) : 0, dollars: unassigned };
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Opportunities — maps mt_ai_cost_opportunities' RPC rows (Type 1/2) back
+// into the exact object shape actRenderOpportunities()/actOpenOppModal()
+// already render, and folds Type 3 in client-side from an already-fetched
+// 'feature' grouped result (no separate RPC call for Type 3).
+// ══════════════════════════════════════════════════════════════════════
+
+function actComputeType3Client(featureGroupedRows, totalCost) {
+  var gap = actAttributionGapFromGrouped(featureGroupedRows, totalCost);
+  if (gap.dollars <= 0) return null;
+  return {
+    type: 3, savings: gap.dollars,
+    title: 'Unassigned product attribution',
+    evidence: actFmtPct(gap.pct, 0) + ' of spend has no product_id. This is not savings, it is a measurement gap that blocks accurate governance.',
+    confidence: null
+  };
+}
+function actMapOpportunityRow(row) {
+  if (Number(row.opp_type) === 1) {
+    return {
+      type: 1, feature: row.feature, savings: Number(row.savings),
+      title: row.feature + ' intake routing',
+      evidence: 'The smallest ' + Math.round(OPPORTUNITY_SMALL_SEGMENT_PCT * 100) + '% of ' + row.feature + ' calls by request size still route through ' + (TIER_LABEL[row.current_tier] || row.current_tier) + ' tier, alongside its larger calls.',
+      confidence: actConfidenceTier(Number(row.segment_count)),
+      segmentCount: Number(row.segment_count),
+      outlierFactor: row.outlier_factor != null ? Number(row.outlier_factor) : null,
+      currentTier: row.current_tier, candidateTier: row.candidate_tier,
+      supportingCalls: null // lazy-loaded by actOpenOppModal via actFetchOpportunitySupportingCalls
+    };
+  }
+  return {
+    type: 2, feature: row.feature, savings: Number(row.savings),
+    title: 'Prompt version ' + row.current_version + ' review',
+    evidence: row.current_version + ' shows a higher avg cost/call ($' + Number(row.current_avg_cost).toFixed(2) + ') than the immediately preceding version ' + row.baseline_version + ' ($' + Number(row.baseline_avg_cost).toFixed(2) + ') for ' + row.feature + '.',
+    confidence: actConfidenceTier(Number(row.segment_count)),
+    outlierFactor: row.outlier_factor != null ? Number(row.outlier_factor) : null
+  };
+}
+async function actLoadOpportunities(start, end, featureGroupedRows, totalCost) {
+  var raw = await actFetchOpportunities(start, end);
+  var mapped = raw.map(actMapOpportunityRow);
+  var type3 = actComputeType3Client(featureGroupedRows, totalCost);
+  if (type3) mapped.push(type3);
+  mapped.sort(function (a, b) { return b.savings - a.savings; });
+  return mapped;
+}
+
+// AI Governance's This-Month context — summary + the 3 grouped fetches its
+// widgets need (feature: Opportunity Matrix + Type 3 fold; user_role: Role
+// Economics; user: What-If's per-user percentile input; What-If's
+// per-product side reuses featureGrouped via actFoldProductGroups, no
+// separate fetch). Opportunities are shared with Overview's Needs
+// Attention via the same actLoadOpportunities() call, one source of truth
+// per the pre-existing "shared, not duplicated" comment on
+// actComputeOpportunities().
+var actMain = { summary: null, featureGrouped: [], userRoleGrouped: [], userGrouped: [], opportunities: [], start: null, end: null, now: null };
 async function actLoadMainContext() {
   var thisMonth = actMonthRange(0);
-  var lastMonth = actMonthRange(-1);
-  var rows = await actFetchRows(thisMonth.start, thisMonth.end);
-  var prevRows = await actFetchRows(lastMonth.start, lastMonth.end);
-  actMain = { rows: rows, prevRows: prevRows, start: thisMonth.start, end: thisMonth.end, now: new Date() };
+  var results = await Promise.all([
+    actFetchCostSummary(thisMonth.start, thisMonth.end),
+    actFetchCostGrouped(thisMonth.start, thisMonth.end, 'feature'),
+    actFetchCostGrouped(thisMonth.start, thisMonth.end, 'user_role'),
+    actFetchCostGrouped(thisMonth.start, thisMonth.end, 'user')
+  ]);
+  actMain.summary = results[0];
+  actMain.featureGrouped = results[1];
+  actMain.userRoleGrouped = results[2];
+  actMain.userGrouped = results[3];
+  actMain.start = thisMonth.start; actMain.end = thisMonth.end; actMain.now = new Date();
+  actMain.opportunities = await actLoadOpportunities(thisMonth.start, thisMonth.end, actMain.featureGrouped, actMain.summary ? Number(actMain.summary.total_cost) : 0);
 }
 
 var actBudget = null, actAlerts = [];
@@ -504,11 +962,14 @@ var actBudget = null, actAlerts = [];
 // Lifetime spend — Governance-only, all-time total distinct from actMain's
 // calendar-month scope (spec Section 4.4/6.2). Floor date is a hardcoded
 // placeholder for v1; revisit if it proves inaccurate as history grows.
-// Loaded once at boot alongside actMain, not per-render.
+// Loaded once at boot alongside actMain, not per-render. Now backed by
+// mt_ai_cost_summary — this was the single most-exposed figure to the
+// row-cap bug (the widest possible window), since it previously summed a
+// client-fetched row array over the app's entire history.
 var actLifetimeSpendTotal = 0;
 async function actLoadLifetimeSpend() {
-  var rows = await actFetchRows(actLifetimeFloorDate(), new Date());
-  actLifetimeSpendTotal = actSumCost(rows);
+  var summary = await actFetchCostSummary(actLifetimeFloorDate(), new Date());
+  actLifetimeSpendTotal = summary ? Number(summary.total_cost) : 0;
 }
 async function actLoadBudgetAndAlerts() {
   var client = authInit();
@@ -575,18 +1036,14 @@ async function actLoadTeamNames() {
 }
 function actUserNameOf(id) { return actUserNames[id] || (id ? id : 'Unknown User'); }
 
+// actPricedRows/actSumCost/actAvgCostPerCall/actPricingMatchRate/
+// actFailedRows/actAttributionGap/actSumField (row-array reducers) removed
+// in the v9.37 period-aggregation migration — every KPI they fed now reads
+// a server-aggregated field (mt_ai_cost_summary/mt_ai_cost_grouped)
+// instead. actIsPriced is kept: it's still applied per-row by Request
+// Explorer's flat table and Longest/Largest's "By Call" mode, both of
+// which still legitimately render individual rows.
 function actIsPriced(r) { return r.calculated_cost !== null && r.calculated_cost !== undefined; }
-function actPricedRows(rows) { return rows.filter(actIsPriced); }
-function actSumCost(rows) { var s = 0; rows.forEach(function (r) { if (actIsPriced(r)) s += Number(r.calculated_cost); }); return s; }
-function actSumField(rows, f) { var s = 0; rows.forEach(function (r) { s += Number(r[f] || 0); }); return s; }
-function actAvgCostPerCall(rows) { var p = actPricedRows(rows); return p.length ? actSumCost(p) / p.length : null; }
-function actPricingMatchRate(rows) { return rows.length ? (actPricedRows(rows).length / rows.length * 100) : null; }
-function actFailedRows(rows) { return rows.filter(function (r) { return r.status === 'error' || r.status === 'timeout'; }); }
-function actAttributionGap(rows) {
-  var total = actSumCost(rows);
-  var unassigned = actSumCost(rows.filter(function (r) { return !r.product_id && !actIsCrossProductCaller(r.caller); }));
-  return { pct: total ? (unassigned / total * 100) : 0, dollars: unassigned };
-}
 function actDeltaPct(curr, prev) {
   // No comparable prior-period value — null means "no prior data," never
   // "0% change." Callers must not coerce this to 0 (that would misrepresent
@@ -648,19 +1105,11 @@ function actFeatureOf(caller) {
 }
 function actModelOf(row) { return row.response_model || row.requested_model || 'Unknown'; }
 
-function actGroupSum(rows, keyFn) {
-  var map = {};
-  rows.forEach(function (r) {
-    var k = keyFn(r);
-    if (!map[k]) map[k] = { key: k, rows: [], cost: 0, calls: 0, inputTok: 0, outputTok: 0, failed: 0 };
-    var g = map[k];
-    g.rows.push(r); g.calls++;
-    if (actIsPriced(r)) g.cost += Number(r.calculated_cost);
-    g.inputTok += Number(r.input_tokens || 0); g.outputTok += Number(r.output_tokens || 0);
-    if (r.status === 'error' || r.status === 'timeout') g.failed++;
-  });
-  return map;
-}
+// actGroupSum (client-side row grouping) removed in the v9.37 period-
+// aggregation migration — actFoldGrouped and its actFold*Groups() variants
+// (near actFetchCostByAgent above) do the same job over server-grouped
+// rows instead. actTopBy still works unchanged on either shape (both use
+// the field names cost/calls/failed/inputTok/outputTok).
 function actTopBy(map, field) {
   var best = null;
   Object.keys(map).forEach(function (k) {
@@ -671,113 +1120,20 @@ function actTopBy(map, field) {
 
 // ══════════════════════════════════════════════════════════════════════
 // Shared: Top Optimization Opportunities (spec Section 6.4) — used by
-// both Overview's Recommended Action and Planning's own opportunity cards,
-// one source of truth per the spec's explicit instruction.
+// both Overview's Needs Attention and Governance's opportunity cards, one
+// source of truth per the spec's explicit instruction. Type 1/2's
+// row-level percentile logic (actComputeType1/actComputeType2, removed in
+// the v9.37 period-aggregation migration) now runs server-side —
+// mt_ai_cost_opportunities — since it needs to pool a feature's full call
+// set before taking a percentile segment, which isn't safe to do over a
+// client-fetched row array that can be silently capped. See
+// actMapOpportunityRow/actLoadOpportunities above (near actFetchCostByAgent).
 // ══════════════════════════════════════════════════════════════════════
 
 function actConfidenceTier(n) {
   if (n > CONFIDENCE_HIGH_MIN) return 'High';
   if (n >= CONFIDENCE_MEDIUM_MIN) return 'Medium';
   return 'Low';
-}
-
-// Type 1 needs a candidate cheaper tier's per-token rate to project cost
-// at. mt_ai_cost_events_list() returns each row's own input/output rate —
-// the candidate tier's rate is derived empirically from other rows this
-// period actually priced at that tier for the same provider (this app has
-// no separate client-side pricing catalog query — see build notes).
-function actComputeType1(rows) {
-  var byFeature = {};
-  rows.forEach(function (r) { var f = actFeatureOf(r.caller); (byFeature[f] = byFeature[f] || []).push(r); });
-  var best = null;
-  Object.keys(byFeature).forEach(function (feature) {
-    var frows = byFeature[feature].slice().sort(function (a, b) { return (a.request_bytes || 0) - (b.request_bytes || 0); });
-    var segLen = Math.max(1, Math.round(frows.length * OPPORTUNITY_SMALL_SEGMENT_PCT));
-    var segment = frows.slice(0, segLen).filter(actIsPriced);
-    if (!segment.length) return;
-    var tierCounts = {};
-    segment.forEach(function (r) { if (r.tier) tierCounts[r.tier] = (tierCounts[r.tier] || 0) + 1; });
-    var currentTier = Object.keys(tierCounts).sort(function (a, b) { return tierCounts[b] - tierCounts[a]; })[0];
-    var candidateTier = currentTier && TIER_BELOW[currentTier];
-    if (!candidateTier) return;
-    var provider = segment[0].provider;
-    var candidateRows = rows.filter(function (r) { return r.provider === provider && r.tier === candidateTier && r.input_price_per_mtok != null; });
-    if (!candidateRows.length) return;
-    var candInPrice = actSumField(candidateRows, 'input_price_per_mtok') / candidateRows.length;
-    var candOutPrice = actSumField(candidateRows, 'output_price_per_mtok') / candidateRows.length;
-    var currentCost = actSumCost(segment);
-    var projectedCost = 0;
-    segment.forEach(function (r) {
-      projectedCost += (Number(r.input_tokens || 0) / 1000000) * candInPrice + (Number(r.output_tokens || 0) / 1000000) * candOutPrice;
-    });
-    var savings = Math.max(0, currentCost - projectedCost);
-    if (savings <= 0) return;
-    var currBlended = currentCost / segment.length;
-    var candBlended = projectedCost / segment.length;
-    var outlierFactor = candBlended > 0 ? (currBlended / candBlended) : null;
-    var candidate = {
-      type: 1, feature: feature, savings: savings,
-      title: feature + ' intake routing',
-      evidence: 'The smallest ' + Math.round(OPPORTUNITY_SMALL_SEGMENT_PCT * 100) + '% of ' + feature + ' calls by request size still route through ' + TIER_LABEL[currentTier] + ' tier, alongside its larger calls.',
-      confidence: actConfidenceTier(segment.length),
-      segmentCount: segment.length, outlierFactor: outlierFactor,
-      currentTier: currentTier, candidateTier: candidateTier,
-      supportingCalls: segment.slice(0, 5)
-    };
-    if (!best || candidate.savings > best.savings) best = candidate;
-  });
-  return best;
-}
-
-function actComputeType2(rows) {
-  var byFeature = {};
-  rows.forEach(function (r) {
-    if (!r.prompt_version) return;
-    var f = actFeatureOf(r.caller);
-    var key = f + '||' + r.prompt_version;
-    if (!byFeature[f]) byFeature[f] = {};
-    if (!byFeature[f][r.prompt_version]) byFeature[f][r.prompt_version] = { rows: [], firstSeen: r.request_started_at };
-    byFeature[f][r.prompt_version].rows.push(r);
-    if (r.request_started_at < byFeature[f][r.prompt_version].firstSeen) byFeature[f][r.prompt_version].firstSeen = r.request_started_at;
-  });
-  var best = null;
-  Object.keys(byFeature).forEach(function (feature) {
-    var versions = Object.keys(byFeature[feature]).map(function (v) {
-      return { version: v, firstSeen: byFeature[feature][v].firstSeen, rows: byFeature[feature][v].rows };
-    }).sort(function (a, b) { return new Date(a.firstSeen) - new Date(b.firstSeen); });
-    if (versions.length < 2) return;
-    var baseline = versions[versions.length - 2], current = versions[versions.length - 1];
-    var baseAvgCost = actAvgCostPerCall(baseline.rows), currAvgCost = actAvgCostPerCall(current.rows);
-    if (baseAvgCost === null || currAvgCost === null || currAvgCost <= baseAvgCost) return;
-    var avoidable = (currAvgCost - baseAvgCost) * current.rows.length;
-    if (avoidable <= 0) return;
-    var candidate = {
-      type: 2, feature: feature, savings: avoidable,
-      title: 'Prompt version ' + current.version + ' review',
-      evidence: current.version + ' shows a higher avg cost/call ($' + currAvgCost.toFixed(2) + ') than the immediately preceding version ' + baseline.version + ' ($' + baseAvgCost.toFixed(2) + ') for ' + feature + '.',
-      confidence: actConfidenceTier(current.rows.length),
-      outlierFactor: baseAvgCost > 0 ? (currAvgCost / baseAvgCost) : null
-    };
-    if (!best || candidate.savings > best.savings) best = candidate;
-  });
-  return best;
-}
-
-function actComputeType3(rows) {
-  var gap = actAttributionGap(rows);
-  if (gap.dollars <= 0) return null;
-  return {
-    type: 3, savings: gap.dollars,
-    title: 'Unassigned product attribution',
-    evidence: actFmtPct(gap.pct, 0) + ' of spend has no product_id. This is not savings, it is a measurement gap that blocks accurate governance.',
-    confidence: null
-  };
-}
-
-function actComputeOpportunities(rows) {
-  var list = [actComputeType1(rows), actComputeType2(rows), actComputeType3(rows)].filter(Boolean);
-  list.sort(function (a, b) { return b.savings - a.savings; });
-  return list;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -789,7 +1145,14 @@ function actComputeOpportunities(rows) {
 // no filter). actOverviewPeriod.now is captured at fetch time since
 // actRunRate() below needs a "now" pinned to when this period was loaded,
 // the same role actMain.now already plays for Governance.
-var actOverviewPeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, now: null };
+var actOverviewPeriod = {
+  type: 'this_month', label: 'This Month',
+  summary: null, prevSummary: null,
+  featureGrouped: [], prevFeatureGrouped: [],
+  modelGrouped: [], prevModelGrouped: [],
+  agentRows: [], opportunities: [],
+  start: null, end: null, now: null
+};
 
 // Sequence guard against out-of-order resolution — if the user selects a
 // second period before the first one's fetch resolves, the first call's
@@ -809,11 +1172,26 @@ async function actSetOverviewPeriod(type, customStart, customEnd) {
   // .rows/.prevRows unconditionally before this check was the actual bug:
   // a stale call's data could still clobber a newer call's already-committed
   // state even though the stale call's own render was correctly skipped.
-  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
+  var results = await Promise.all([
+    actFetchCostSummary(range.start, range.end),
+    actFetchCostSummary(prior.start, prior.end),
+    actFetchCostGrouped(range.start, range.end, 'feature'),
+    actFetchCostGrouped(prior.start, prior.end, 'feature'),
+    actFetchCostGrouped(range.start, range.end, 'model'),
+    actFetchCostGrouped(prior.start, prior.end, 'model'),
+    actFetchCostByAgent(range.start, range.end)
+  ]);
   if (mySeq !== _actOverviewPeriodSeq) return;
   actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
-  actOverviewPeriod.rows = results[0];
-  actOverviewPeriod.prevRows = results[1];
+  actOverviewPeriod.summary = results[0];
+  actOverviewPeriod.prevSummary = results[1];
+  actOverviewPeriod.featureGrouped = results[2];
+  actOverviewPeriod.prevFeatureGrouped = results[3];
+  actOverviewPeriod.modelGrouped = results[4];
+  actOverviewPeriod.prevModelGrouped = results[5];
+  actOverviewPeriod.agentRows = results[6];
+  actOverviewPeriod.opportunities = await actLoadOpportunities(range.start, range.end, actOverviewPeriod.featureGrouped, actOverviewPeriod.summary ? Number(actOverviewPeriod.summary.total_cost) : 0);
+  if (mySeq !== _actOverviewPeriodSeq) return;
   actRenderOverview();
 }
 
@@ -850,9 +1228,33 @@ async function actApplyOverviewCustomRange() {
   await actSetOverviewPeriod('custom', start, end);
 }
 
+// Item 6 (remaining-five-widgets spec) — conversation-level cost rollup by
+// AI Trace Layer agent. Placed alongside Top Cost Drivers rather than
+// literally inside it — this app's Overview screen has no single
+// "Main Breakdown" card the prototype's own placement note assumed;
+// Cost Breakdown's Main Breakdown is a different screen entirely. Open to
+// every role (mt_ai_cost_by_agent uses _cost_tower_can_access, the same
+// open gate mt_ai_cost_events_list already uses) — no gating needed here.
+function actRenderCostByAgent(agentRows) {
+  var rowsHtml = (agentRows || []).map(function (a) {
+    return '<tr><td class="act-cell-name">' + actEsc(a.agent_name) + '</td><td>' + actFmtNum(a.trace_count) +
+      '</td><td>' + (a.avg_calls_per_trace != null ? Number(a.avg_calls_per_trace).toFixed(1) : '—') +
+      '</td><td class="act-cell-name">' + actFmtUSD(a.total_cost) + '</td></tr>';
+  }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--t4);padding:16px;">No traced conversations in this period.</td></tr>';
+  return '<div class="act-section-title">Cost by Agent</div>' +
+    '<div class="act-section-insight">Conversation-level rollup for AI Trace Layer agents — currently reflects Requirement Agent only, since it’s the sole caller writing traces today. Grows automatically as more features adopt the trace/span write path.</div>' +
+    // Code-review fix: mt_ai_cost_by_agent's avg_calls_per_trace counts
+    // every span (llm_call AND tool_call), not just billable provider
+    // calls — "Avg Calls / Trace" read as if it were the latter. Relabeled
+    // to say what it actually measures rather than changing the RPC
+    // (already applied to dev; a metric-definition change belongs in its
+    // own reviewed migration, not a silent code-review fix).
+    '<div class="act-scoped-card"><table class="act-data-table"><thead><tr><th>Agent</th><th>Traces</th><th>Avg Spans / Trace <span class="act-cell-muted" style="font-weight:400;text-transform:none;">(LLM + tool calls)</span></th><th>Total Cost</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
+}
+
 function actRenderOverview() {
-  var rows = actOverviewPeriod.rows, prevRows = actOverviewPeriod.prevRows;
-  var totalSpend = actSumCost(rows), prevSpend = actSumCost(prevRows);
+  var summary = actOverviewPeriod.summary || {}, prevSummary = actOverviewPeriod.prevSummary || {};
+  var totalSpend = Number(summary.total_cost || 0), prevSpend = Number(prevSummary.total_cost || 0);
   var spendDelta = actDeltaPct(totalSpend, prevSpend);
   // The budget is a monthly figure — comparing more than one month of real
   // spend against it (Overall, Last 3 Months, or a multi-month Custom Range)
@@ -866,31 +1268,36 @@ function actRenderOverview() {
   var isSingleMonthPeriod = actOverviewPeriod.type === 'this_month' || actOverviewPeriod.type === 'last_month';
   var budgetAmount = (actBudget && isSingleMonthPeriod) ? Number(actBudget.amount) : null;
   var budgetUsedPct = budgetAmount ? (totalSpend / budgetAmount * 100) : null;
-  var totalCalls = rows.length, prevCalls = prevRows.length;
+  var totalCalls = Number(summary.total_calls || 0), prevCalls = Number(prevSummary.total_calls || 0);
   var callsDelta = actDeltaPct(totalCalls, prevCalls);
-  var inTok = actSumField(rows, 'input_tokens'), outTok = actSumField(rows, 'output_tokens');
-  var avgCost = actAvgCostPerCall(rows), prevAvgCost = actAvgCostPerCall(prevRows);
+  var inTok = Number(summary.total_input_tokens || 0), outTok = Number(summary.total_output_tokens || 0);
+  var prevInTok = Number(prevSummary.total_input_tokens || 0), prevOutTok = Number(prevSummary.total_output_tokens || 0);
+  var pricedCalls = Number(summary.priced_calls || 0), prevPricedCalls = Number(prevSummary.priced_calls || 0);
+  var avgCost = pricedCalls ? totalSpend / pricedCalls : null;
+  var prevAvgCost = prevPricedCalls ? prevSpend / prevPricedCalls : null;
   var avgCostDelta = actDeltaPct(avgCost, prevAvgCost);
-  var pricingMatch = actPricingMatchRate(rows);
-  var unpricedCount = rows.length - actPricedRows(rows).length;
-  var attrib = actAttributionGap(rows);
+  var pricingMatch = totalCalls ? (pricedCalls / totalCalls * 100) : null;
+  var unpricedCount = Number(summary.unpriced_calls || 0);
+  var attrib = actAttributionGapFromGrouped(actOverviewPeriod.featureGrouped, totalSpend);
   var run = actRunRate(totalSpend, actOverviewPeriod.start, actOverviewPeriod.now, actOverviewPeriod.end);
   var tier = actHealthTier(run.projected, budgetAmount);
   var tierClass = tier === 'Critical' ? 'red' : (tier === 'Watch' ? 'amber' : (tier === 'On Track' ? 'green' : ''));
 
-  // Top Cost Drivers (Section 4.3) — three different selection rules, by design.
-  var featureGroups = actGroupSum(rows, function (r) { return actFeatureOf(r.caller); });
-  var prevFeatureGroups = actGroupSum(prevRows, function (r) { return actFeatureOf(r.caller); });
+  // Top Cost Drivers (Section 4.3) — three different selection rules, by
+  // design. All three fold from the same two already-fetched grouped
+  // arrays (feature/product share one 'feature'-mode fetch).
+  var featureGroups = actFoldFeatureGroups(actOverviewPeriod.featureGrouped);
+  var prevFeatureGroups = actFoldFeatureGroups(actOverviewPeriod.prevFeatureGrouped);
   var topFeature = actTopBy(featureGroups, 'cost');
   var topFeatureDelta = topFeature ? actDeltaPct(topFeature.cost, (prevFeatureGroups[topFeature.key] || { cost: 0 }).cost) : null;
 
-  var modelGroups = actGroupSum(rows, actModelOf);
-  var prevModelGroups = actGroupSum(prevRows, actModelOf);
+  var modelGroups = actFoldSimpleGroups(actOverviewPeriod.modelGrouped, 'Unknown');
+  var prevModelGroups = actFoldSimpleGroups(actOverviewPeriod.prevModelGrouped, 'Unknown');
   var topModel = actTopBy(modelGroups, 'cost');
   var topModelDelta = topModel ? actDeltaPct(topModel.cost, (prevModelGroups[topModel.key] || { cost: 0 }).cost) : null;
 
-  var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
-  var prevProductGroups = actGroupSum(prevRows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
+  var productGroups = actFoldProductGroups(actOverviewPeriod.featureGrouped);
+  var prevProductGroups = actFoldProductGroups(actOverviewPeriod.prevFeatureGrouped);
   var topGrowthProduct = null, topGrowthPct = -Infinity;
   Object.keys(productGroups).forEach(function (k) {
     if (k === '__unassigned__' || k === '__cross_product__') return;
@@ -900,10 +1307,10 @@ function actRenderOverview() {
   });
 
   // Needs Attention (Section 4.4)
-  var opportunities = actComputeOpportunities(rows);
+  var opportunities = actOverviewPeriod.opportunities;
   var top1 = opportunities[0];
-  var balancedFrontierShare = rows.length ? (rows.filter(function (r) { return r.tier === 'balanced' || r.tier === 'frontier'; }).length / rows.length * 100) : 0;
-  var prevBalancedFrontierShare = prevRows.length ? (prevRows.filter(function (r) { return r.tier === 'balanced' || r.tier === 'frontier'; }).length / prevRows.length * 100) : 0;
+  var balancedFrontierShare = totalCalls ? (Number(summary.balanced_frontier_calls || 0) / totalCalls * 100) : 0;
+  var prevBalancedFrontierShare = prevCalls ? (Number(prevSummary.balanced_frontier_calls || 0) / prevCalls * 100) : 0;
   var tierShiftPp = balancedFrontierShare - prevBalancedFrontierShare;
   var overallDeltaPct = actDeltaPct(totalSpend, prevSpend);
 
@@ -930,7 +1337,7 @@ function actRenderOverview() {
         : '') +
       '<table class="act-evidence-table"><thead><tr><th>Evidence</th><th>This Period</th><th>Prior Period</th><th>Change</th></tr></thead><tbody>' +
       '<tr><td>Total calls</td><td>' + actFmtNum(totalCalls) + '</td><td>' + actFmtNum(prevCalls) + '</td><td>' + actDeltaHtml(callsDelta) + '</td></tr>' +
-      '<tr><td>Total tokens</td><td>' + actFmtTokens(inTok + outTok) + '</td><td>' + actFmtTokens(actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens')) + '</td><td>' + actDeltaHtml(actDeltaPct(inTok + outTok, actSumField(prevRows, 'input_tokens') + actSumField(prevRows, 'output_tokens'))) + '</td></tr>' +
+      '<tr><td>Total tokens</td><td>' + actFmtTokens(inTok + outTok) + '</td><td>' + actFmtTokens(prevInTok + prevOutTok) + '</td><td>' + actDeltaHtml(actDeltaPct(inTok + outTok, prevInTok + prevOutTok)) + '</td></tr>' +
       '<tr><td>Balanced/frontier share of calls</td><td>' + actFmtPct(balancedFrontierShare, 0) + '</td><td>' + actFmtPct(prevBalancedFrontierShare, 0) + '</td><td>' + (tierShiftPp >= 0 ? '<span class="act-delta-up">+' + tierShiftPp.toFixed(0) + 'pt</span>' : '<span class="act-delta-down">' + tierShiftPp.toFixed(0) + 'pt</span>') + '</td></tr>' +
       (topFeature ? '<tr><td>' + actEsc(topFeature.key) + ' spend</td><td>' + actFmtUSD(topFeature.cost) + '</td><td>' + actFmtUSD((prevFeatureGroups[topFeature.key] || { cost: 0 }).cost) + '</td><td>' + actDeltaHtml(topFeatureDelta) + '</td></tr>' : '') +
       '</tbody></table>' +
@@ -973,6 +1380,7 @@ function actRenderOverview() {
     (topModel ? '<div class="act-driver-card"><div class="act-driver-top"><span class="act-driver-tag">Model</span>' + actDeltaHtml(topModelDelta) + '</div><div class="act-driver-title">' + actEsc(topModel.key) + '</div><div class="act-driver-value">' + actFmtUSD0(topModel.cost) + '</div><div class="act-driver-note">Highest model spend this period.</div><div class="act-driver-link" onclick="actGoToBreakdown(\'model\')">Open Model View &rarr;</div></div>' : '') +
     (topGrowthProduct ? '<div class="act-driver-card"><div class="act-driver-top"><span class="act-driver-tag">Product</span>' + (isFinite(topGrowthPct) ? actDeltaHtml(topGrowthPct) : '<span class="act-delta-up">New</span>') + '</div><div class="act-driver-title">' + actEsc(actProductNameOf(topGrowthProduct.key)) + '</div><div class="act-driver-value">' + actFmtUSD0(topGrowthProduct.cost) + '</div><div class="act-driver-note">Fastest growing product spend this period.</div><div class="act-driver-link" onclick="actGoToBreakdown(\'product\')">Open Product View &rarr;</div></div>' : '') +
     '</div>' +
+    actRenderCostByAgent(actOverviewPeriod.agentRows) +
     needsAttentionHtml +
     '<div class="act-section-title">Unassigned Spend</div>' +
     '<div class="act-unassigned-line"><div class="act-unassigned-left"><div class="act-unassigned-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg></div>' +
@@ -987,7 +1395,22 @@ function actRenderOverview() {
 // SCREEN 2: Cost Breakdown (spec Section 5)
 // ══════════════════════════════════════════════════════════════════════
 
-var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, group: 'feature' };
+// Every "Group by" option prefetches together (feature/product share one
+// 'feature'-mode fetch — both CASE branches in mt_ai_cost_grouped produce
+// identical (caller, product_id) rows, so 'product' as a separate mode is
+// never actually requested), so actSelectGroup() below stays a pure
+// client-side re-render — no per-mode network round trip when switching.
+var actBreakdown = {
+  type: 'this_month', label: 'This Month', group: 'feature',
+  summary: null, prevSummary: null,
+  featureGrouped: [], prevFeatureGrouped: [],
+  modelGrouped: [], prevModelGrouped: [],
+  userGrouped: [], prevUserGrouped: [],
+  promptGrouped: [], selectionGrouped: [], failurePhaseGrouped: [], unpricedDrillGrouped: [], varianceCauseGrouped: [],
+  topCallsDuration: [], topCallsSize: [],
+  explorerRows: [], explorerTotalCount: 0, explorerOffset: 0,
+  traceSummaries: [], start: null, end: null
+};
 
 // Sequence guard against out-of-order resolution — same pattern as
 // _actOverviewPeriodSeq/_actOutcomePeriodSeq. This screen predates those two
@@ -1001,16 +1424,54 @@ async function actSetBreakdownPeriod(type, customStart, customEnd) {
   var mySeq = ++_actBreakdownPeriodSeq;
   var resolved = actResolvePeriodRange(type, customStart, customEnd);
   var range = resolved.range, prior = resolved.prior;
-  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
+  var wantsTraceDetail = actIsGovernanceViewer();
+  var fetches = [
+    actFetchCostSummary(range.start, range.end),
+    actFetchCostSummary(prior.start, prior.end),
+    actFetchCostGrouped(range.start, range.end, 'feature'),
+    actFetchCostGrouped(prior.start, prior.end, 'feature'),
+    actFetchCostGrouped(range.start, range.end, 'model'),
+    actFetchCostGrouped(prior.start, prior.end, 'model'),
+    actFetchCostGrouped(range.start, range.end, 'user'),
+    actFetchCostGrouped(prior.start, prior.end, 'user'),
+    actFetchCostGrouped(range.start, range.end, 'prompt_version'),
+    actFetchCostGrouped(range.start, range.end, 'selection_rule'),
+    actFetchCostGrouped(range.start, range.end, 'failure_phase'),
+    actFetchCostGrouped(range.start, range.end, 'unpriced_drill'),
+    actFetchCostGrouped(range.start, range.end, 'variance_cause'),
+    actFetchTopCalls(range.start, range.end, 'duration', 10, null),
+    actFetchTopCalls(range.start, range.end, 'size', 10, null),
+    // Request Explorer's flat table is the one place that still needs
+    // individual rows — page 0 (most recent 1,000, ORDER BY
+    // request_started_at DESC) loads with the rest of the screen;
+    // actExplorerGoToPage() fetches further pages on demand.
+    actFetchRows(range.start, range.end, 1000, 0)
+  ];
+  // Trace-layer widgets (By Trace toggle, By Conversation ranking, Failure
+  // Cost's 2 new KPIs, Trace Explorer card) share this one fetch, per the
+  // spec's sequencing note. Governance-gated server-side, so skipped
+  // outright for a read-only viewer rather than issuing a call known to fail.
+  if (wantsTraceDetail) fetches.push(actFetchTraceDetail(range.start, range.end));
+  var results = await Promise.all(fetches);
   if (mySeq !== _actBreakdownPeriodSeq) return;
   actBreakdown.start = range.start; actBreakdown.end = range.end;
-  actBreakdown.rows = results[0];
-  actBreakdown.prevRows = results[1];
-  // Kept as a console diagnostic (not a DOM element anymore, now that the
-  // row count is folded directly into the toolbar's own confidence chip) —
-  // still useful for anyone checking DevTools if a period change ever looks
-  // like it isn't reaching the fetch.
-  console.log('[Cost Tower] period=' + type, 'range=', range.start.toISOString(), '→', range.end.toISOString(), 'rows=', actBreakdown.rows.length);
+  actBreakdown.summary = results[0]; actBreakdown.prevSummary = results[1];
+  actBreakdown.featureGrouped = results[2]; actBreakdown.prevFeatureGrouped = results[3];
+  actBreakdown.modelGrouped = results[4]; actBreakdown.prevModelGrouped = results[5];
+  actBreakdown.userGrouped = results[6]; actBreakdown.prevUserGrouped = results[7];
+  actBreakdown.promptGrouped = results[8];
+  actBreakdown.selectionGrouped = results[9];
+  actBreakdown.failurePhaseGrouped = results[10];
+  actBreakdown.unpricedDrillGrouped = results[11];
+  actBreakdown.varianceCauseGrouped = results[12];
+  actBreakdown.topCallsDuration = results[13];
+  actBreakdown.topCallsSize = results[14];
+  actBreakdown.explorerRows = results[15].rows;
+  actBreakdown.explorerTotalCount = results[15].totalCount;
+  actBreakdown.explorerOffset = 0;
+  actBreakdown.traceSummaries = wantsTraceDetail ? actBuildTraceSummaries(results[16] || []) : [];
+  actIndexTraceSpans(actBreakdown.traceSummaries);
+  console.log('[Cost Tower] period=' + type, 'range=', range.start.toISOString(), '→', range.end.toISOString(), 'total_calls=', actBreakdown.summary ? actBreakdown.summary.total_calls : 0);
   actRenderCostBreakdown();
 }
 
@@ -1058,20 +1519,24 @@ function actSelectGroup(group) {
 
 var BREAKDOWN_INSIGHTS = {}; // populated per render from actual winning row
 
-function actGroupKeyFor(group, r) {
-  if (group === 'feature') return actFeatureOf(r.caller);
-  if (group === 'product') return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__');
-  if (group === 'model') return actModelOf(r);
-  if (group === 'user') return r.user_id || '__unknown_user__';
-  if (group === 'prompt') return actFeatureOf(r.caller) + ' · ' + (r.prompt_version || 'Unversioned');
-  return 'other';
+// Picks the already-prefetched grouped array for the active "Group by"
+// mode and folds it to the label the table/insight actually displays —
+// feature/product share one 'feature'-mode fetch (see actBreakdown's own
+// comment), so this never triggers a new network round trip.
+function actGroupsForMode(group) {
+  if (group === 'feature') return { groups: actFoldFeatureGroups(actBreakdown.featureGrouped), prevGroups: actFoldFeatureGroups(actBreakdown.prevFeatureGrouped) };
+  if (group === 'product') return { groups: actFoldProductGroups(actBreakdown.featureGrouped), prevGroups: actFoldProductGroups(actBreakdown.prevFeatureGrouped) };
+  if (group === 'model') return { groups: actFoldSimpleGroups(actBreakdown.modelGrouped, 'Unknown'), prevGroups: actFoldSimpleGroups(actBreakdown.prevModelGrouped, 'Unknown') };
+  if (group === 'user') return { groups: actFoldSimpleGroups(actBreakdown.userGrouped, '__unknown_user__'), prevGroups: actFoldSimpleGroups(actBreakdown.prevUserGrouped, '__unknown_user__') };
+  if (group === 'prompt') return { groups: actFoldPromptGroups(actBreakdown.promptGrouped), prevGroups: {} }; // no trend column for this mode
+  return { groups: {}, prevGroups: {} };
 }
 
 function actRenderMainBreakdown() {
-  var rows = actBreakdown.rows, prevRows = actBreakdown.prevRows, group = actBreakdown.group;
-  var groups = actGroupSum(rows, function (r) { return actGroupKeyFor(group, r); });
-  var prevGroups = actGroupSum(prevRows, function (r) { return actGroupKeyFor(group, r); });
-  var totalCost = actSumCost(rows);
+  var group = actBreakdown.group;
+  var folded = actGroupsForMode(group);
+  var groups = folded.groups, prevGroups = folded.prevGroups;
+  var totalCost = actBreakdown.summary ? Number(actBreakdown.summary.total_cost) : 0;
   var keys = Object.keys(groups).sort(function (a, b) { return groups[b].cost - groups[a].cost; });
   var top = keys.length ? groups[keys[0]] : null;
 
@@ -1101,12 +1566,11 @@ function actRenderMainBreakdown() {
       : k === '__cross_product__' ? '<span class="act-cell-name">Cross-Product (Shared)</span><div class="act-cell-muted">Runs across every product</div>'
       : actEsc(group === 'product' ? actProductNameOf(k) : k);
     if (group === 'model') {
-      var tierRow = g.rows.find(function (r) { return r.tier; });
-      var tierBadge = tierRow ? '<span class="act-tag-status info">' + TIER_LABEL[tierRow.tier] + '</span>' : '<span class="act-cell-muted">Unpriced</span>';
+      var tierBadge = g.sampleTier ? '<span class="act-tag-status info">' + (TIER_LABEL[g.sampleTier] || g.sampleTier) + '</span>' : '<span class="act-cell-muted">Unpriced</span>';
       return '<tr><td class="act-cell-name">' + displayName + '</td><td>' + tierBadge + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td><td>' + actDeltaHtml(delta) + '</td></tr>';
     }
     if (group === 'user') {
-      var role = g.rows[0] ? (g.rows[0].user_role_at_call || '—') : '—';
+      var role = g.sampleUserRole || '—';
       return '<tr><td class="act-cell-name">' + (k === '__unknown_user__' ? 'Unknown' : actEsc(actUserNameOf(k))) + '</td><td>' + actEsc(role) + '</td><td>' + actFmtNum(g.calls) + '</td><td class="act-cell-bar"><div class="act-cell-bar-track"><div class="act-cell-bar-fill" style="width:' + barPct + '%"></div></div>' + share.toFixed(0) + '%</td><td class="act-cell-name">' + actFmtUSD(g.cost) + '</td></tr>';
     }
     if (group === 'prompt') {
@@ -1128,8 +1592,9 @@ function actRenderMainBreakdown() {
 }
 
 function actRenderCostBreakdown() {
-  var rows = actBreakdown.rows, prevRows = actBreakdown.prevRows;
-  var pricingMatch = actPricingMatchRate(rows);
+  var summary = actBreakdown.summary || {};
+  var totalCalls = Number(summary.total_calls || 0);
+  var pricingMatch = totalCalls ? (Number(summary.priced_calls || 0) / totalCalls * 100) : null;
   var confClass = pricingMatch !== null && pricingMatch < PRICING_MATCH_LAUNCH_GATE_PCT ? 'warn' : '';
   var periodMenuOptions = [
     { type: 'this_month', label: 'This Month' },
@@ -1150,7 +1615,7 @@ function actRenderCostBreakdown() {
     '</div></div>' +
     '<div id="act-export-cost-target">' +
     '<div id="act-export-cost-header" style="text-align:center;font-size:24px;font-weight:700;color:var(--t1);margin-bottom:16px;display:none;"></div>' +
-    '<div class="act-filter-toolbar-hint" style="margin:0 0 14px;">' + actFmtNum(rows.length) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span></div>' +
+    '<div class="act-filter-toolbar-hint" style="margin:0 0 14px;">' + actFmtNum(totalCalls) + ' calls · <span class="act-confidence-pill ' + confClass + '" style="margin-left:4px;"><span class="act-confidence-dot"></span>Pricing match ' + actFmtPct(pricingMatch, 1) + '</span></span></div>' +
     '<div class="act-anchor-row">' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-main-breakdown\')">Main Breakdown</span>' +
     '<span class="act-anchor-chip" onclick="actScrollToSection(\'act-economics-signals\')">Economics Signals</span>' +
@@ -1167,15 +1632,15 @@ function actRenderCostBreakdown() {
     '<div class="act-group-body"><div class="act-section-insight" id="act-main-breakdown-insight"></div><table class="act-data-table" id="act-main-breakdown-table"></table></div></div>' +
 
     '<div id="act-economics-signals" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">B. Economics Signals</div><div class="act-group-title">What may be driving cost behavior</div></div>' +
-    '<div class="act-group-body">' + actRenderSelectionEconomics(rows) +
+    '<div class="act-group-body">' + actRenderSelectionEconomics(actBreakdown.selectionGrouped) +
     '<div class="act-callout card"><div><b>Prompt version analysis:</b> use Group by: Prompt Version in the Main Breakdown above. Keeping it there avoids showing overlapping prompt-version tables with different slices of the same data.</div></div>' +
     '</div></div>' +
 
     '<div id="act-operational-signals" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">C. Operational Signals</div><div class="act-group-title">Failures, large calls, and cache readiness</div></div>' +
-    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(rows) + actRenderCacheUsage(rows) + '</div>' + actRenderLongestLargest(rows) + '</div></div>' +
+    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(summary, actBreakdown.featureGrouped, actBreakdown.failurePhaseGrouped, actBreakdown.traceSummaries) + actRenderCacheUsage(summary) + '</div>' + actRenderLongestLargest(actBreakdown.topCallsDuration, actBreakdown.topCallsSize, actBreakdown.traceSummaries) + '</div></div>' +
 
     '<div id="act-trust-audit" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">D. Trust &amp; Audit</div><div class="act-group-title">Prove the cost numbers are reliable</div></div>' +
-    '<div class="act-group-body">' + actRenderDataQuality(rows) + actRenderRequestExplorer(rows) + '</div></div>' +
+    '<div class="act-group-body">' + actRenderDataQuality(summary, actBreakdown.unpricedDrillGrouped, actBreakdown.varianceCauseGrouped) + actRenderRequestExplorer(actBreakdown.explorerRows, actBreakdown.explorerTotalCount, actBreakdown.explorerOffset, actBreakdown.traceSummaries) + actRenderTraceExplorer(actBreakdown.traceSummaries) + '</div></div>' +
 
     '<div class="act-foot-hint">Reporting period governs every section above except Trust &amp; Audit’s Request Explorer statement of scope. Timezone: browser-local.</div>' +
     '</div>';
@@ -1183,10 +1648,18 @@ function actRenderCostBreakdown() {
   document.getElementById('act-scr-cost').innerHTML = html;
   actRenderMainBreakdown();
   actApplyExplorerFilter();
+  actRenderLongestLargestBody();
+  // Code-review fix: only build the By Trace view's HTML when it's the
+  // active mode — it was previously rendered unconditionally into a
+  // hidden div on every single Cost Breakdown render (every period
+  // switch), work with zero visible benefit unless the toggle was opened.
+  // actSetExplorerViewMode() renders it lazily on demand when switched to.
+  if (actExplorerViewMode === 'trace') actRenderExplorerTraceView();
+  actApplyTraceExplorerFilter();
 }
 
-function actRenderSelectionEconomics(rows) {
-  var groups = actGroupSum(rows, function (r) { return r.selection_rule || 'unknown'; });
+function actRenderSelectionEconomics(groupedRows) {
+  var groups = actFoldSimpleGroups(groupedRows, 'unknown');
   var keys = Object.keys(groups);
   var body = keys.length ? keys.map(function (k) {
     var g = groups[k];
@@ -1201,45 +1674,74 @@ function actRenderSelectionEconomics(rows) {
     '<table class="act-data-table"><thead><tr><th>Selection Path</th><th>Calls</th><th>Avg Cost / Call</th><th>Total Cost</th><th>Failure Rate</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
-function actRenderFailureCost(rows) {
-  var failed = actFailedRows(rows);
-  var failCost = actSumCost(failed);
-  var failRate = rows.length ? (failed.length / rows.length * 100) : 0;
-  var phaseGroups = actGroupSum(failed, function (r) { return r.failure_phase || 'unspecified'; });
+function actRenderFailureCost(summary, featureGroupedRows, phaseGroupedRows, traceSummaries) {
+  var totalCalls = Number(summary.total_calls || 0);
+  var totalCost = Number(summary.total_cost || 0);
+  var failCost = Number(summary.failed_cost || 0);
+  var failRate = totalCalls ? (Number(summary.failed_calls || 0) / totalCalls * 100) : 0;
+  var phaseGroups = actFoldSimpleGroups(phaseGroupedRows, 'unspecified');
   var topPhase = actTopBy(phaseGroups, 'cost');
-  var featureGroups = actGroupSum(failed, function (r) { return actFeatureOf(r.caller); });
-  var topFeature = actTopBy(featureGroups, 'cost');
+  // 'Top Feature' ranks by FAILURE cost specifically (failedCost), not
+  // total cost — actFoldFeatureGroups already carries failedCost per
+  // feature from the same 'feature'-mode fetch Main Breakdown uses, so no
+  // separate failed-rows-only fetch is needed.
+  var featureGroups = actFoldFeatureGroups(featureGroupedRows);
+  var topFeature = actTopBy(featureGroups, 'failedCost');
+  // Code-review fix: actTopBy() picks the FIRST key when every candidate
+  // ties (its `!best` branch), which every feature does at failedCost===0
+  // in a period with zero failures — featureGroups is the full, unfiltered
+  // grouping, not pre-filtered to failed rows the way the old client-side
+  // actGroupSum(failed, ...) was. Without this guard, "Top Feature" showed
+  // an arbitrary feature name instead of "—" whenever nothing had failed.
+  if (topFeature && topFeature.failedCost <= 0) topFeature = null;
+
+  // Items 3 (remaining-five-widgets spec) — 2 new conversation-level KPIs,
+  // only for a governance viewer with trace data (mt_ai_trace_detail_list
+  // is gated the same as the payload viewer) — the original 4-KPI strip is
+  // unchanged for a read-only viewer rather than showing a half-locked card.
+  var traceKpisHtml = '', gridCols = 4;
+  if (actIsGovernanceViewer() && traceSummaries) {
+    var traces = traceSummaries;
+    // Code-review fix: match actFailedRows' own failure definition (error
+    // OR timeout) — previously only 'error' counted here, undercounting
+    // relative to the existing per-call Failure Cost KPIs on this same card.
+    var withFailedSpan = traces.filter(function (t) { return t.spans.some(function (s) { return s.span_status === 'error' || s.span_status === 'timeout'; }); });
+    var pctWithFailedSpan = traces.length ? (withFailedSpan.length / traces.length * 100) : null;
+    // Denominator is ALL traces, not just withFailedSpan — matches the
+    // prototype's own implied semantics (9% recovered sits alongside 12%
+    // w/ ≥1 failed span, both out of the same total).
+    var recovered = traces.filter(function (t) { return t.statusKind === 'recovered'; });
+    var pctRecovered = traces.length ? (recovered.length / traces.length * 100) : null;
+    var abandoned = traces.filter(function (t) { return t.statusKind === 'abandoned'; });
+    var abandonedSpend = abandoned.reduce(function (s, t) { return s + t.totalCost; }, 0);
+    gridCols = 6;
+    traceKpisHtml =
+      '<div class="act-kpi" style="background:var(--amber-pale);"><div class="act-kpi-label">Traces w/ &ge;1 Failed Span</div><div class="act-kpi-value">' + (pctWithFailedSpan !== null ? pctWithFailedSpan.toFixed(1) + '%' : '—') + '</div><div class="act-kpi-sub">' + (pctRecovered !== null ? 'a later span succeeded: ' + pctRecovered.toFixed(0) + '%' : 'no traces this period') + '</div></div>' +
+      '<div class="act-kpi" style="background:var(--amber-pale);"><div class="act-kpi-label">Spend on Abandoned Traces</div><div class="act-kpi-value">' + actFmtUSD0(abandonedSpend) + '</div><div class="act-kpi-sub">last span errored, nothing after</div></div>';
+  }
+
   return '<div class="act-scoped-card"><div class="act-section-title">Provider-Call Failure Cost</div>' +
-    '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);">' +
-    '<div class="act-kpi"><div class="act-kpi-label">Failure Cost</div><div class="act-kpi-value">' + actFmtUSD0(failCost) + '</div><div class="act-kpi-sub">' + (actSumCost(rows) ? (failCost / actSumCost(rows) * 100).toFixed(1) : '0') + '% of spend</div></div>' +
+    '<div class="act-kpi-strip" style="grid-template-columns:repeat(' + (gridCols === 6 ? 3 : 4) + ',1fr);">' +
+    '<div class="act-kpi"><div class="act-kpi-label">Failure Cost</div><div class="act-kpi-value">' + actFmtUSD0(failCost) + '</div><div class="act-kpi-sub">' + (totalCost ? (failCost / totalCost * 100).toFixed(1) : '0') + '% of spend</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Failure Rate</div><div class="act-kpi-value">' + failRate.toFixed(1) + '%</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Top Phase</div><div class="act-kpi-value" style="font-size:13px;">' + (topPhase ? actEsc(topPhase.key) : '—') + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Top Feature</div><div class="act-kpi-value" style="font-size:13px;">' + (topFeature ? actEsc(topFeature.key) : '—') + '</div></div>' +
-    '</div><div class="act-scoped-card-note">Covers failed or timed-out provider calls only, not poor-quality successful outputs or user rework. Phase detail is limited today — every failed call currently logs the same phase, so Top Phase will not vary until that field carries more granularity.</div></div>';
+    traceKpisHtml +
+    '</div><div class="act-scoped-card-note">Covers failed or timed-out provider calls only, not poor-quality successful outputs or user rework. Phase detail is limited today — every failed call currently logs the same phase, so Top Phase will not vary until that field carries more granularity.' +
+    (gridCols === 6 ? ' The two conversation-level KPIs above reflect the AI Trace Layer’s current adoption (Requirement Agent only) — they undercount as more features adopt tracing, not because failures elsewhere aren’t happening.' : '') +
+    '</div></div>';
 }
 
-function actRenderCacheUsage(rows) {
-  var totalEligibleInput = 0, totalCacheRead = 0, savings = 0;
-  rows.forEach(function (r) {
-    var cr = Number(r.cache_read_tokens || 0);
-    var inputTok = Number(r.input_tokens || 0);
-    // Anthropic's input_tokens EXCLUDES cache reads (a separate, additive
-    // billing bucket) — total eligible input is input_tokens + cache reads.
-    // OpenAI's input_tokens_details.cached_tokens and Gemini's
-    // total_cached_tokens are already INCLUDED inside input_tokens/
-    // total_input_tokens (a breakdown, not an addition) — adding cache
-    // reads again there would double-count. Found by /code-review: this
-    // same provider distinction applies to calculated_cost's own formula
-    // (sql/ai-cost-tower-cache-cost-fix.sql).
-    totalEligibleInput += (r.provider === 'anthropic') ? (inputTok + cr) : inputTok;
-    totalCacheRead += cr;
-    // input_price_per_mtok / cache_read_price_per_mtok come from the same
-    // LEFT JOIN as calculated_cost, so they're null together on an unpriced
-    // row — actIsPriced() is the same guard actSumCost() already needs.
-    if (cr > 0 && actIsPriced(r) && r.input_price_per_mtok != null && r.cache_read_price_per_mtok != null) {
-      savings += (cr / 1000000) * (r.input_price_per_mtok - r.cache_read_price_per_mtok);
-    }
-  });
+// cache_eligible_input/cache_read_tokens/cache_savings are computed
+// server-side by mt_ai_cost_summary using this exact same provider-
+// conditional formula (Anthropic's input_tokens excludes cache reads —
+// additive; OpenAI/Gemini's already includes them — see migration file
+// Part B and sql/ai-cost-tower-cache-cost-fix.sql for the original
+// per-row logic this mirrors).
+function actRenderCacheUsage(summary) {
+  var totalEligibleInput = Number(summary.cache_eligible_input || 0);
+  var totalCacheRead = Number(summary.cache_read_tokens || 0);
+  var savings = Number(summary.cache_savings || 0);
   var sharePct = totalEligibleInput > 0 ? (totalCacheRead / totalEligibleInput * 100) : null;
   var noteMsg = 'OpenAI and Gemini cache usage is tracked automatically. Anthropic prompt caching is not yet enabled — Anthropic calls will show zero cache reads until that ships separately.';
   if (totalCacheRead === 0) {
@@ -1254,11 +1756,30 @@ function actRenderCacheUsage(rows) {
     '</div><div class="act-scoped-card-note">' + actEsc(noteMsg) + '</div></div>';
 }
 
-function actRenderLongestLargest(rows) {
-  var longest = rows.slice().sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); }).slice(0, 10);
-  var largest = rows.slice().sort(function (a, b) { return ((b.request_bytes || 0) + (b.response_bytes || 0)) - ((a.request_bytes || 0) + (a.response_bytes || 0)); }).slice(0, 10);
+// Item 2 (remaining-five-widgets spec) — "By Conversation" ranks whole
+// traces instead of individual calls. Same top-10-longest + top-10-largest
+// merge-and-cap-20 logic as the existing "By Call" view, re-aggregated
+// over trace-level totals instead of per-call fields.
+var actLongestLargestMode = 'call';
+var actLongestLargestTopDuration = [];
+var actLongestLargestTopSize = [];
+var actLongestLargestTraces = [];
+
+function actSetLongestLargestMode(mode) {
+  actLongestLargestMode = mode;
+  document.querySelectorAll('#act-longest-largest-toggle .act-view-toggle-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+  });
+  actRenderLongestLargestBody();
+}
+
+// topDuration/topSize are already the server's own top-10-by-duration and
+// top-10-by-size (mt_ai_cost_top_calls, migration file Part D) — correct
+// by construction, unlike sorting a client-fetched row array that could be
+// silently missing the actual longest/largest call under the old row cap.
+function actLongestLargestCallHtml(topDuration, topSize) {
   var seen = {}, combined = [];
-  longest.concat(largest).forEach(function (r) {
+  (topDuration || []).concat(topSize || []).forEach(function (r) {
     var key = r.request_started_at + '|' + r.caller + '|' + r.duration_ms;
     if (!seen[key]) { seen[key] = true; combined.push(r); }
   });
@@ -1266,45 +1787,98 @@ function actRenderLongestLargest(rows) {
   var featureCounts = {};
   combined.forEach(function (r) { var f = actFeatureOf(r.caller); featureCounts[f] = (featureCounts[f] || 0) + 1; });
   var topFeature = Object.keys(featureCounts).sort(function (a, b) { return featureCounts[b] - featureCounts[a]; })[0];
+  // Code-review fix: this insight is rendered via textContent (actRenderLongestLargestBody), which
+  // does not decode HTML entities the way the old innerHTML-based render did — actEsc() here would
+  // double-escape (e.g. a literal "&amp;" shown instead of "&").
+  var insight = topFeature ? topFeature + ' accounts for the most rows in the combined longest/largest set this period.' : 'No data for this period.';
   var rowsHtml = combined.map(function (r) {
     return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(actModelOf(r)) + '</td><td>' + ((r.duration_ms || 0) / 1000).toFixed(1) + 's</td><td>' + Math.round(((r.request_bytes || 0) + (r.response_bytes || 0)) / 1024) + ' KB</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
   }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:16px;">No calls in this period.</td></tr>';
-  return '<div class="act-scoped-card"><div class="act-section-title">Longest and Largest Requests</div>' +
-    '<div class="act-section-insight">' + (topFeature ? actEsc(topFeature) + ' accounts for the most rows in the combined longest/largest set this period.' : 'No data for this period.') + '</div>' +
-    '<div style="max-height:340px;overflow-y:auto;"><table class="act-data-table"><thead><tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div></div>';
+  return {
+    insight: insight,
+    head: '<tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr>',
+    body: rowsHtml
+  };
 }
 
-function actRenderDataQuality(rows) {
-  var pricingMatch = actPricingMatchRate(rows);
-  var unpricedRows = rows.filter(function (r) { return !actIsPriced(r); });
-  var nullTokenCount = rows.filter(function (r) { return r.input_tokens == null || r.output_tokens == null; }).length;
-  var varianceRows = rows.filter(function (r) { return r.response_model && r.requested_model && r.response_model !== r.requested_model; });
-  var variancePct = rows.length ? (varianceRows.length / rows.length * 100) : 0;
+function actLongestLargestConversationHtml(traces) {
+  var longest = traces.slice().sort(function (a, b) { return b.totalDurationMs - a.totalDurationMs; }).slice(0, 10);
+  var largest = traces.slice().sort(function (a, b) { return b.totalBytes - a.totalBytes; }).slice(0, 10);
+  var seen = {}, combined = [];
+  longest.concat(largest).forEach(function (t) {
+    if (!seen[t.trace_id]) { seen[t.trace_id] = true; combined.push(t); }
+  });
+  combined = combined.slice(0, 20).sort(function (a, b) { return b.totalDurationMs - a.totalDurationMs; });
+  var insight = combined.length ? 'Ranking whole conversations, not individual calls — a conversation with several quick calls can outrank a single slow call.' : 'No traced conversations in this period.';
+  var rowsHtml = combined.map(function (t) {
+    return '<tr><td>' + new Date(t.trace_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(t.agent_name) + '</td><td>' + t.spanCount + '</td><td>' + (t.totalDurationMs / 1000).toFixed(1) + 's</td><td>' + Math.round(t.totalBytes / 1024) + ' KB</td><td>' + actTraceStatusPillHtml(t) + '</td></tr>';
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:16px;">No traced conversations in this period.</td></tr>';
+  return {
+    insight: insight,
+    head: '<tr><th>Started</th><th>Agent</th><th>Calls</th><th>Total Duration</th><th>Total Size</th><th>Outcome</th></tr>',
+    body: rowsHtml
+  };
+}
 
-  var unpricedGroups = actGroupSum(unpricedRows, function (r) { return (r.provider || '?') + ' · ' + (r.requested_model || '?') + ' → ' + (r.response_model || '—'); });
+function actRenderLongestLargestBody() {
+  var insightEl = document.getElementById('act-longest-largest-insight');
+  var headEl = document.getElementById('act-longest-largest-thead');
+  var bodyEl = document.getElementById('act-longest-largest-tbody');
+  if (!bodyEl) return;
+  var result = actLongestLargestMode === 'conversation'
+    ? actLongestLargestConversationHtml(actLongestLargestTraces)
+    : actLongestLargestCallHtml(actLongestLargestTopDuration, actLongestLargestTopSize);
+  if (insightEl) insightEl.textContent = result.insight;
+  if (headEl) headEl.innerHTML = result.head;
+  bodyEl.innerHTML = result.body;
+}
+
+function actRenderLongestLargest(topDuration, topSize, traceSummaries) {
+  actLongestLargestTopDuration = topDuration;
+  actLongestLargestTopSize = topSize;
+  actLongestLargestTraces = traceSummaries || [];
+  var toggleHtml = actIsGovernanceViewer()
+    ? '<div class="act-view-toggle" id="act-longest-largest-toggle" style="margin-bottom:10px;">' +
+      '<button class="act-view-toggle-btn ' + (actLongestLargestMode === 'call' ? 'active' : '') + '" data-mode="call" onclick="actSetLongestLargestMode(\'call\')">By Call</button>' +
+      '<button class="act-view-toggle-btn ' + (actLongestLargestMode === 'conversation' ? 'active' : '') + '" data-mode="conversation" onclick="actSetLongestLargestMode(\'conversation\')">By Conversation</button>' +
+      '</div>'
+    : '';
+  return '<div class="act-scoped-card"><div class="act-section-title">Longest and Largest Requests</div>' +
+    toggleHtml +
+    '<div class="act-section-insight" id="act-longest-largest-insight"></div>' +
+    '<div style="max-height:340px;overflow-y:auto;"><table class="act-data-table"><thead id="act-longest-largest-thead"></thead><tbody id="act-longest-largest-tbody"></tbody></table></div></div>';
+}
+
+function actRenderDataQuality(summary, unpricedDrillGroupedRows, varianceCauseGroupedRows) {
+  var totalCalls = Number(summary.total_calls || 0);
+  var unpricedCount = Number(summary.unpriced_calls || 0);
+  var pricingMatch = totalCalls ? (Number(summary.priced_calls || 0) / totalCalls * 100) : null;
+  var nullTokenCount = Number(summary.null_token_calls || 0);
+  var varianceCount = Number(summary.model_variance_calls || 0);
+  var variancePct = totalCalls ? (varianceCount / totalCalls * 100) : 0;
+
+  var unpricedGroups = actFoldGrouped(unpricedDrillGroupedRows, function (g) { return g.group_key1 + ' · ' + g.group_key2; });
   var unpricedKeys = Object.keys(unpricedGroups).sort(function (a, b) { return unpricedGroups[b].calls - unpricedGroups[a].calls; });
   var topUnpriced = unpricedKeys[0] ? unpricedGroups[unpricedKeys[0]] : null;
 
-  var varianceErrorCounts = {};
-  varianceRows.forEach(function (r) { var k = r.error_type || r.failure_phase || 'mixed'; varianceErrorCounts[k] = (varianceErrorCounts[k] || 0) + 1; });
+  var varianceGroups = actFoldSimpleGroups(varianceCauseGroupedRows, 'mixed');
   var dominantVarianceCause = null;
-  Object.keys(varianceErrorCounts).forEach(function (k) {
-    if (varianceRows.length && varianceErrorCounts[k] / varianceRows.length > 0.5) dominantVarianceCause = k;
+  Object.keys(varianceGroups).forEach(function (k) {
+    if (varianceCount && varianceGroups[k].calls / varianceCount > 0.5) dominantVarianceCause = k;
   });
 
   var trustNote = topUnpriced
     ? actEsc(unpricedKeys[0]) + ' has the highest unpriced-call count this period (' + topUnpriced.calls + ' calls).'
     : 'No unpriced calls this period.';
-  trustNote += ' ' + (dominantVarianceCause ? 'Model variance is mostly driven by ' + actEsc(dominantVarianceCause) + '.' : (varianceRows.length ? 'Model variance causes are mixed — no single pattern accounts for a clear majority.' : ''));
+  trustNote += ' ' + (dominantVarianceCause ? 'Model variance is mostly driven by ' + actEsc(dominantVarianceCause) + '.' : (varianceCount ? 'Model variance causes are mixed — no single pattern accounts for a clear majority.' : ''));
 
   var launchGateWarning = (pricingMatch !== null && pricingMatch < PRICING_MATCH_LAUNCH_GATE_PCT)
     ? '<div class="act-callout amber"><div><b>Launch gate:</b> Pricing Match Rate is below ' + PRICING_MATCH_LAUNCH_GATE_PCT + '%. Overview’s Total Spend figure for this period should be treated as provisional, not an unqualified number.</div></div>' : '';
 
   var drillRows = unpricedKeys.map(function (k) {
     var g = unpricedGroups[k];
-    var times = g.rows.map(function (r) { return new Date(r.request_started_at).getTime(); });
-    var first = new Date(Math.min.apply(null, times)).toLocaleDateString();
-    var last = new Date(Math.max.apply(null, times)).toLocaleDateString();
+    var first = g.firstSeen ? new Date(g.firstSeen).toLocaleDateString() : '—';
+    var last = g.lastSeen ? new Date(g.lastSeen).toLocaleDateString() : '—';
     return '<tr><td>' + actEsc(k) + '</td><td>' + g.calls + '</td><td>' + first + '</td><td>' + last + '</td></tr>';
   }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--t4);padding:12px;">No unpriced calls.</td></tr>';
 
@@ -1312,7 +1886,7 @@ function actRenderDataQuality(rows) {
     '<div class="act-section-insight">A cost tool that silently undercounts is worse than no cost tool.</div>' +
     '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px;">' +
     '<div class="act-kpi"><div class="act-kpi-label">Pricing Match Rate</div><div class="act-kpi-value green">' + actFmtPct(pricingMatch, 1) + '</div></div>' +
-    '<div class="act-kpi"><div class="act-kpi-label">Unpriced Calls</div><div class="act-kpi-value amber">' + unpricedRows.length + '</div></div>' +
+    '<div class="act-kpi"><div class="act-kpi-label">Unpriced Calls</div><div class="act-kpi-value amber">' + unpricedCount + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Null-Token Calls</div><div class="act-kpi-value">' + nullTokenCount + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Model Variance</div><div class="act-kpi-value">' + variancePct.toFixed(1) + '%</div><div class="act-kpi-sub">response ≠ requested</div></div>' +
     '</div>' + launchGateWarning +
@@ -1324,6 +1898,14 @@ function actRenderDataQuality(rows) {
 
 var EXPLORER_ROW_CAP = 300;
 var actExplorerSourceRows = [];
+
+// AI Trace Layer — Prompt & Response Payload Viewer (v9.34). Maps
+// usage_event_id -> its full row object so the delegated click listener
+// below can retrieve rowContext without closing over a per-render local
+// variable (actExplorerRowHtml's `r` no longer exists once its returned
+// string is injected via innerHTML). Reset every re-render inside
+// actApplyExplorerFilter() so entries don't accumulate across a session.
+var actExplorerPayloadRowById = Object.create(null);
 
 // Hybrid model display (build-review decision): show the model that
 // actually produced the response (what was billed) as the primary value —
@@ -1339,7 +1921,58 @@ function actExplorerModelCell(r) {
 }
 
 function actExplorerRowHtml(r) {
-  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actExplorerModelCell(r) + '</td><td>' + actEsc(r.prompt_version || '—') + '</td><td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
+  return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(r.provider || '—') + '</td><td>' + actExplorerModelCell(r) + '</td>' + actExplorerPromptCell(r) + '<td>' + actFmtNum((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td><td>' + (actIsPriced(r) ? actFmtUSD(r.calculated_cost) : '—') + '</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
+}
+
+// Prompt column's inspect affordance (AI Trace Layer, v9.34). Replaces the
+// prompt_version fallback this cell used to show — prompt_version is
+// unpopulated in production today, and Nethaji decided the icon is a
+// natural evolution of this column's intent rather than a shared cell.
+// Active only for a caller who passes the governance check AND whose row
+// carries a non-null usage_event_id (server-side NULL-masked for
+// non-governance roles in mt_ai_cost_events_list, §5.1 of the payload-
+// viewer spec) — the icon itself is a UX-layer hint only; the RPC behind
+// it enforces access independently. Icon is active whenever the row is
+// identifiable at all, not only when a payload is confirmed present — the
+// modal (not this cell) resolves the actual payload state after the click,
+// since the table's own data can't cheaply distinguish those cases without
+// an extra round-trip per row.
+function actExplorerPromptCell(r) {
+  if (!actIsGovernanceViewer() || !r.usage_event_id) return '<td>—</td>';
+  actExplorerPayloadRowById[String(r.usage_event_id)] = r;
+  return '<td><button type="button" class="act-payload-btn" data-usage-event-id="' +
+    actEsc(String(r.usage_event_id)) +
+    '" aria-label="Inspect prompt and response">↗</button></td>';
+}
+
+// One delegated listener on the (already-existing) tbody, bound once per
+// freshly-created <tbody> element — not one inline handler per row (`r` is
+// a per-render local variable that no longer exists once actExplorerRowHtml's
+// returned string is injected via innerHTML, so an inline onclick
+// referencing it would throw ReferenceError on click).
+function actBindExplorerPayloadClicks() {
+  var body = document.getElementById('act-explorer-body');
+  if (!body || body._payloadClickBound) return;
+  body._payloadClickBound = true;
+  body.addEventListener('click', function (event) {
+    var target = event.target;
+    // event.target can be a text node (nodeType !== 1) when the click lands
+    // on the button's inner glyph rather than the button element itself —
+    // text nodes have no .closest(), so walk up to the nearest element node
+    // first.
+    if (target && target.nodeType !== 1) target = target.parentElement;
+    var btn = target && target.closest ? target.closest('.act-payload-btn') : null;
+    if (!btn) return;
+    event.preventDefault();
+    event.stopPropagation();
+    var id = btn.getAttribute('data-usage-event-id');
+    var row = actExplorerPayloadRowById[id];
+    if (!row) {
+      actToast('Could not find payload row context.', 'error');
+      return;
+    }
+    actOpenPayloadModal(id, row);
+  });
 }
 
 // Inline per-column filters, applied client-side over the full period's
@@ -1370,16 +2003,124 @@ function actApplyExplorerFilter() {
   }).sort(function (a, b) { return new Date(b.request_started_at) - new Date(a.request_started_at); });
 
   var shown = filtered.slice(0, EXPLORER_ROW_CAP);
+
+  // Reset the payload row-lookup map before repopulating it via
+  // actExplorerRowHtml -> actExplorerPromptCell — without this, entries
+  // from every prior filter/date-range change accumulate indefinitely
+  // across a long session. Not a security issue (the RPC behind the modal
+  // enforces access independently of anything client-side) — state
+  // hygiene only, but cheap to get right.
+  actExplorerPayloadRowById = Object.create(null);
+
+  // Also invalidate any payload fetch still in flight for a row that no
+  // longer appears in this filtered view — without this, a slow response
+  // for a row clicked before the filter changed could still pop the
+  // payload modal open afterward, for a row the viewer has since moved
+  // away from, even though no modal was open at the time to have masked
+  // its arrival.
+  actUiInvalidationSeq++;
+
   var body = document.getElementById('act-explorer-body');
-  if (body) body.innerHTML = shown.map(actExplorerRowHtml).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--t4);padding:16px;">No calls match these filters.</td></tr>';
+  if (body) {
+    body.innerHTML = shown.map(actExplorerRowHtml).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--t4);padding:16px;">No calls match these filters.</td></tr>';
+    actBindExplorerPayloadClicks();
+  }
   var countEl = document.getElementById('act-explorer-count');
-  if (countEl) countEl.textContent = 'Showing ' + actFmtNum(shown.length) + ' of ' + actFmtNum(filtered.length) + ' matching calls (' + actFmtNum(actExplorerSourceRows.length) + ' total this period).';
+  if (countEl) {
+    var pageStart = actBreakdown.explorerOffset + 1;
+    var pageEnd = actBreakdown.explorerOffset + actExplorerSourceRows.length;
+    var pageNote = actBreakdown.explorerTotalCount > actExplorerSourceRows.length || actBreakdown.explorerOffset > 0
+      ? ' · viewing rows ' + actFmtNum(pageStart) + '–' + actFmtNum(pageEnd) + ' of ' + actFmtNum(actBreakdown.explorerTotalCount) + ' total this period'
+      : '';
+    countEl.textContent = 'Showing ' + actFmtNum(shown.length) + ' of ' + actFmtNum(filtered.length) + ' matching calls in this page' + pageNote + '.';
+  }
 }
 
-function actRenderRequestExplorer(rows) {
+// Fetches the previous/next 1,000-row page (mt_ai_cost_events_list is
+// ORDER BY request_started_at DESC — page 0 is the most recent 1,000).
+// Re-renders the whole Cost Breakdown screen rather than patching just
+// this widget's DOM — paging through the audit table is not a hot path,
+// and a full re-render avoids partial-state bugs between this widget and
+// its filters/inline listeners.
+async function actExplorerGoToPage(delta) {
+  // Code-review fix: reuses _actBreakdownPeriodSeq (the same guard
+  // actSetBreakdownPeriod already checks) rather than leaving this the one
+  // fetch chain on the screen with no race guard — a second page click
+  // before the first resolves, or a period change while a page fetch is
+  // in flight, must not let the stale response overwrite newer state.
+  var mySeq = ++_actBreakdownPeriodSeq;
+  var pageSize = 1000;
+  var newOffset = Math.max(0, actBreakdown.explorerOffset + delta * pageSize);
+  if (newOffset >= actBreakdown.explorerTotalCount && delta > 0) return;
+  var result = await actFetchRows(actBreakdown.start, actBreakdown.end, pageSize, newOffset);
+  if (mySeq !== _actBreakdownPeriodSeq) return;
+  // A page past the true end (or a race with in-flight data change) can
+  // return zero rows — mt_ai_cost_events_list's total_row_count window
+  // column is then 0-over-an-empty-set, not the period's real total.
+  // Preserve the last known-good total instead of letting the pager and
+  // "N total this period" text collapse to 0.
+  actBreakdown.explorerRows = result.rows;
+  actBreakdown.explorerTotalCount = result.rows.length ? result.totalCount : actBreakdown.explorerTotalCount;
+  actBreakdown.explorerOffset = newOffset;
+  actRenderCostBreakdown();
+}
+
+// Item 1 (remaining-five-widgets spec) — "By Trace" toggle. Flat view is
+// entirely unchanged; By Trace groups the same period's data via the
+// shared trace-detail fetch (actBreakdown.traceSummaries), reusing
+// actTraceGroupRowsHtml/actBindTraceGroupClicks (also used by the Trace
+// Explorer card below) rather than a second implementation of the same
+// expand/collapse + payload-icon behavior.
+var actExplorerViewMode = 'flat';
+var actExplorerTraceSummaries = [];
+
+function actSetExplorerViewMode(mode) {
+  actExplorerViewMode = mode;
+  var flatWrap = document.getElementById('act-explorer-flat-wrap');
+  var traceWrap = document.getElementById('act-explorer-trace-wrap');
+  if (flatWrap) flatWrap.style.display = mode === 'flat' ? '' : 'none';
+  if (traceWrap) traceWrap.style.display = mode === 'trace' ? '' : 'none';
+  document.querySelectorAll('#act-explorer-view-toggle .act-view-toggle-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+  });
+  if (mode === 'trace') actRenderExplorerTraceView();
+}
+
+function actRenderExplorerTraceView() {
+  var wrap = document.getElementById('act-explorer-trace-wrap');
+  if (!wrap) return;
+  var traces = actExplorerTraceSummaries;
+  var rowsHtml = actTraceGroupRowsHtml(traces);
+  wrap.innerHTML =
+    '<div class="act-cell-muted" style="margin-bottom:6px;">' + actFmtNum(traces.length) + ' conversation' + (traces.length === 1 ? '' : 's') + ' this period (capped at the 100 most recent).</div>' +
+    (rowsHtml ? '<div class="act-trace-group-list">' + rowsHtml + '</div>' : '<div class="act-empty-state"><div class="act-empty-state-title">No traced conversations in this period.</div></div>') +
+    '<div class="act-scoped-card-note" style="margin-top:10px;">Only calls from features that have adopted the AI Trace Layer appear grouped here — today, that’s Requirement Agent only. Every other feature’s calls are still visible in Flat view, just not grouped into conversations yet.</div>';
+  actBindTraceGroupClicks(wrap);
+}
+
+function actRenderRequestExplorer(rows, totalCount, offset, traceSummaries) {
   actExplorerSourceRows = rows;
-  return '<div class="act-scoped-card"><div class="act-section-title">Request Explorer</div>' +
+  actExplorerTraceSummaries = traceSummaries || [];
+  var toggleHtml = actIsGovernanceViewer()
+    ? '<div class="act-view-toggle" id="act-explorer-view-toggle">' +
+      '<button class="act-view-toggle-btn ' + (actExplorerViewMode === 'flat' ? 'active' : '') + '" data-mode="flat" onclick="actSetExplorerViewMode(\'flat\')">Flat</button>' +
+      '<button class="act-view-toggle-btn ' + (actExplorerViewMode === 'trace' ? 'active' : '') + '" data-mode="trace" onclick="actSetExplorerViewMode(\'trace\')">By Trace</button>' +
+      '</div>'
+    : '';
+  // Real server-side pagination (1,000 rows/page, ORDER BY
+  // request_started_at DESC) — only rendered when the period holds more
+  // than one page, so a small period looks exactly as it did before this
+  // migration.
+  var pagerHtml = totalCount > 1000
+    ? '<div class="act-explorer-pager" style="display:flex;gap:8px;align-items:center;margin:0 0 8px;">' +
+      '<button class="act-btn act-btn-secondary act-btn-sm" onclick="actExplorerGoToPage(-1)" ' + (offset <= 0 ? 'disabled' : '') + '>&larr; Newer 1,000</button>' +
+      '<button class="act-btn act-btn-secondary act-btn-sm" onclick="actExplorerGoToPage(1)" ' + (offset + 1000 >= totalCount ? 'disabled' : '') + '>Older 1,000 &rarr;</button>' +
+      '</div>'
+    : '';
+  return '<div class="act-scoped-card"><div class="act-section-title-row"><div class="act-section-title" style="margin:0;">Request Explorer</div>' + toggleHtml + '</div>' +
     '<div class="act-section-insight">Raw event-level audit table. Uses the reporting period only — intentionally ignores Main Breakdown’s Group By, since an audit view needs everything in the period, not a dimension-filtered slice. Filter any column below to narrow down a specific record.</div>' +
+    pagerHtml +
+    '<div id="act-explorer-flat-wrap"' + (actExplorerViewMode === 'flat' ? '' : ' style="display:none;"') + '>' +
     '<div class="act-cell-muted" id="act-explorer-count" style="margin-bottom:6px;"></div>' +
     '<div style="max-height:420px;overflow-y:auto;"><table class="act-data-table"><thead>' +
     '<tr><th>Time</th><th>Feature</th><th>Provider</th><th>Model</th><th>Prompt</th><th>Tokens</th><th>Cost</th><th>Status</th></tr>' +
@@ -1390,7 +2131,61 @@ function actRenderRequestExplorer(rows) {
     '<th></th><th></th><th></th><th></th>' +
     '<th><select id="act-exp-f-status" onchange="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 2px;border:1px solid var(--divider);border-radius:4px;"><option value="">All</option><option value="success">Success</option><option value="error">Error</option><option value="timeout">Timeout</option></select></th>' +
     '</tr>' +
-    '</thead><tbody id="act-explorer-body"></tbody></table></div></div>';
+    '</thead><tbody id="act-explorer-body"></tbody></table></div></div>' +
+    '<div id="act-explorer-trace-wrap"' + (actExplorerViewMode === 'trace' ? '' : ' style="display:none;"') + '></div>' +
+    '</div>';
+}
+
+// Item 5 (remaining-five-widgets spec) — Trace Explorer card. Placed next
+// to Request Explorer (Decision 1: a card inside Cost Breakdown, not a new
+// tab). Reuses actTraceGroupRowsHtml/actBindTraceGroupClicks — the same
+// expand/collapse + payload-icon behavior as Item 1's By Trace toggle, and
+// the same payload modal already shipped (actOpenPayloadModal) rather than
+// a separate "Payload Inspector" surface.
+var actTraceExplorerSummaries = [];
+var actTraceExplorerFilter = { agent: '', status: '' };
+
+function actApplyTraceExplorerFilter() {
+  var body = document.getElementById('act-trace-explorer-body');
+  if (!body) return;
+  // Code-review fix: matches actApplyExplorerFilter's own race guard — a
+  // payload icon clicked just before an agent/status filter change here
+  // could otherwise still pop the modal open for a trace the viewer has
+  // since filtered away from.
+  actUiInvalidationSeq++;
+  actTraceExplorerFilter.agent = ((document.getElementById('act-te-f-agent') || {}).value || '').trim().toLowerCase();
+  actTraceExplorerFilter.status = (document.getElementById('act-te-f-status') || {}).value || '';
+  var filtered = actTraceExplorerSummaries.filter(function (t) {
+    if (actTraceExplorerFilter.agent && t.agent_name.toLowerCase().indexOf(actTraceExplorerFilter.agent) === -1) return false;
+    if (actTraceExplorerFilter.status && t.statusKind !== actTraceExplorerFilter.status) return false;
+    return true;
+  });
+  var rowsHtml = actTraceGroupRowsHtml(filtered);
+  body.innerHTML = rowsHtml ? '<div class="act-trace-group-list">' + rowsHtml + '</div>'
+    : '<div class="act-empty-state"><div class="act-empty-state-title">No traced conversations match these filters.</div></div>';
+  actBindTraceGroupClicks(body);
+  var countEl = document.getElementById('act-trace-explorer-count');
+  if (countEl) countEl.textContent = 'Showing ' + actFmtNum(filtered.length) + ' of ' + actFmtNum(actTraceExplorerSummaries.length) + ' traced conversations this period (capped at the 100 most recent).';
+}
+
+function actRenderTraceExplorer(traceSummaries) {
+  if (!actIsGovernanceViewer()) {
+    return '<div class="act-scoped-card"><div class="act-section-title">Trace Explorer</div>' +
+      '<div class="act-empty-state"><div class="act-empty-state-title">Admin or Power User access required</div>' +
+      '<div class="act-empty-state-sub">Trace/span-level detail is gated the same as Request Explorer’s payload viewer.</div></div></div>';
+  }
+  actTraceExplorerSummaries = traceSummaries || [];
+  return '<div class="act-scoped-card"><div class="act-section-title">Trace Explorer</div>' +
+    '<div class="act-section-insight">Conversation-level drill-down — one row per trace, expand for its ordered spans. Filters below apply within this reporting period.</div>' +
+    '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">' +
+    '<input id="act-te-f-agent" type="text" placeholder="Filter by agent…" oninput="actApplyTraceExplorerFilter()" style="font-size:11px;padding:6px 8px;border:1px solid var(--divider);border-radius:6px;flex:1;min-width:140px;">' +
+    '<select id="act-te-f-status" onchange="actApplyTraceExplorerFilter()" style="font-size:11px;padding:6px 8px;border:1px solid var(--divider);border-radius:6px;">' +
+    '<option value="">All statuses</option><option value="completed">Completed</option><option value="recovered">1 error span</option><option value="abandoned">Abandoned</option><option value="other">Other (e.g. timeout)</option>' +
+    '</select></div>' +
+    '<div class="act-cell-muted" id="act-trace-explorer-count" style="margin-bottom:6px;"></div>' +
+    '<div id="act-trace-explorer-body"></div>' +
+    '<div class="act-scoped-card-note" style="margin-top:10px;">Trace Explorer currently reflects Requirement Agent conversations only, since it’s the sole caller writing traces today — every other feature’s calls remain visible in Request Explorer, just not grouped into conversations yet.</div>' +
+    '</div>';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1398,12 +2193,12 @@ function actRenderRequestExplorer(rows) {
 // ══════════════════════════════════════════════════════════════════════
 
 function actRenderPlan() {
-  var rows = actMain.rows;
-  var totalSpend = actSumCost(rows);
+  var summary = actMain.summary || {};
+  var totalSpend = Number(summary.total_cost || 0);
   var run = actRunRate(totalSpend, actMain.start, actMain.now, actMain.end);
   var budgetAmount = actBudget ? Number(actBudget.amount) : null;
   var variance = budgetAmount !== null ? (run.projected - budgetAmount) : null;
-  var whatIfData = actComputeWhatIfData(rows);
+  var whatIfData = actComputeWhatIfData(actMain.featureGrouped, actMain.userGrouped);
 
   var html =
     '<div class="act-screen-header-row"><div class="act-screen-title-block"><div class="act-eyebrow">AI Governance</div><div class="act-screen-subtitle">Track run rate against budget, act on optimization opportunities, and restrict or stop AI usage directly when needed.</div></div>' +
@@ -1420,17 +2215,17 @@ function actRenderPlan() {
     '<div class="act-kpi"><div class="act-kpi-label">Budget Variance</div><div class="act-kpi-value ' + (variance !== null && variance > 0 ? 'amber' : 'green') + '">' + (variance !== null ? (variance >= 0 ? '+' : '') + actFmtUSD0(variance) : '—') + '</div></div>' +
     '</div>' +
     actRenderCostControls(whatIfData) +
-    '<div class="act-planning-grid" style="margin-top:20px;">' + actRenderRoleEconomics(rows) + actRenderAlertsCard() + '</div>' +
-    actRenderOpportunities(rows) +
-    actRenderOpportunityMatrix(rows) +
+    '<div class="act-planning-grid" style="margin-top:20px;">' + actRenderRoleEconomics(actMain.userRoleGrouped) + actRenderAlertsCard() + '</div>' +
+    actRenderOpportunities(actMain.opportunities, actMain.start, actMain.end) +
+    actRenderOpportunityMatrix(actMain.featureGrouped) +
     '</div>';
 
   document.getElementById('act-scr-plan').innerHTML = html;
   window._actWhatIf = whatIfData;
 }
 
-function actRenderRoleEconomics(rows) {
-  var groups = actGroupSum(rows, function (r) { return r.user_role_at_call || 'Unknown'; });
+function actRenderRoleEconomics(groupedRows) {
+  var groups = actFoldSimpleGroups(groupedRows, 'Unknown');
   var keys = Object.keys(groups).sort(function (a, b) { return groups[b].calls - groups[a].calls; });
   var body = keys.map(function (k, idx) {
     var g = groups[k];
@@ -1458,10 +2253,10 @@ function actPercentile(values, p) {
 // blank until Simulate runs). A <script> tag embedded via innerHTML never
 // executes anyway (a DOM/HTML spec behavior, not a bug in this app) — this
 // must NOT be reintroduced as an inline <script> inside the returned HTML string.
-function actComputeWhatIfData(rows) {
-  var productGroups = actGroupSum(rows, function (r) { return r.product_id || (actIsCrossProductCaller(r.caller) ? '__cross_product__' : '__unassigned__'); });
+function actComputeWhatIfData(featureGroupedRows, userGroupedRows) {
+  var productGroups = actFoldProductGroups(featureGroupedRows);
   var productCosts = Object.keys(productGroups).filter(function (k) { return k !== '__unassigned__' && k !== '__cross_product__'; }).map(function (k) { return productGroups[k].cost; });
-  var userGroups = actGroupSum(rows, function (r) { return r.user_id || '__unknown__'; });
+  var userGroups = actFoldSimpleGroups(userGroupedRows, '__unknown__');
   // '__unknown__' bucket excluded from the percentile inputs — it's not one
   // user, it's every /v1-ingested row with no user_id merged together
   // (mt_ai_usage_events.user_id is nullable for the OpenAPI Ingestion Layer;
@@ -1508,9 +2303,9 @@ function actUpdateWhatIf() {
   out.value = actFmtUSD0(low) + ' - ' + actFmtUSD0(high);
 }
 
-function actRenderOpportunities(rows) {
-  var opps = actComputeOpportunities(rows);
+function actRenderOpportunities(opps, periodStart, periodEnd) {
   window._actOppData = opps;
+  window._actOppPeriod = { start: periodStart, end: periodEnd };
   var cards = opps.map(function (opp, idx) {
     var rankTag = '<span class="act-opp-rank">#' + (idx + 1) + (opp.type === 3 ? ' · Governance' : '') + '</span>';
     var amountHtml = opp.type === 3
@@ -1534,18 +2329,33 @@ function actRenderOpportunities(rows) {
     '<div class="act-opportunity-grid">' + cards + '</div>';
 }
 
-function actOpenOppModal(idx) {
+// Async — supportingCalls is no longer pre-computed (mt_ai_cost_opportunities
+// doesn't return per-call detail, only the winning feature/segment stats);
+// this fetches mt_ai_cost_opportunity_supporting_calls on demand when the
+// modal opens, scoped to the SAME period the opportunities card used
+// (window._actOppPeriod, set by actRenderOpportunities()).
+async function actOpenOppModal(idx) {
   var opp = (window._actOppData || [])[idx];
-  if (!opp || !opp.supportingCalls) return;
+  var period = window._actOppPeriod;
+  if (!opp || opp.type !== 1 || !period) return;
   document.getElementById('act-modal-title').textContent = 'Supporting Calls: ' + opp.title;
-  var rowsHtml = opp.supportingCalls.map(function (r) {
+  document.getElementById('act-modal-body').innerHTML = '<div class="act-section-insight">Loading…</div>';
+  actShowModal();
+  // Code-review fix: captured AFTER actShowModal() (which already bumps
+  // actUiInvalidationSeq on open) — same race-guard pattern
+  // actOpenPayloadModal uses, so a double-click, a close, or opening a
+  // different opportunity's modal before this fetch resolves discards the
+  // stale response instead of overwriting newer modal content.
+  var seq = actUiInvalidationSeq;
+  var calls = await actFetchOpportunitySupportingCalls(period.start, period.end, opp.feature, 5);
+  if (seq !== actUiInvalidationSeq) return;
+  var rowsHtml = calls.map(function (r) {
     return '<tr><td>' + new Date(r.request_started_at).toLocaleTimeString() + '</td><td>' + Math.round((r.request_bytes || 0) / 1024) + ' KB</td><td>' + ((r.duration_ms || 0) / 1000).toFixed(1) + 's</td><td>' + (TIER_LABEL[r.tier] || 'Untiered') + '</td><td>' + actFmtUSD(r.calculated_cost) + '</td></tr>';
   }).join('');
   document.getElementById('act-modal-body').innerHTML =
     '<div class="act-section-insight" style="margin-bottom:10px;">Up to 5 example calls from the actual qualifying segment this period.</div>' +
     '<table class="act-data-table"><thead><tr><th>Time</th><th>Request Size</th><th>Duration</th><th>Current Tier</th><th>Actual Cost</th></tr></thead><tbody>' + rowsHtml + '</tbody></table>' +
     '<div class="act-scoped-card-note">The estimate is based on the full qualifying segment (' + opp.segmentCount + ' calls this period), not these rows alone.</div>';
-  actShowModal();
 }
 
 // Shared modal show/hide — adds the focus trap and capture-phase Escape
@@ -1559,6 +2369,18 @@ var _actModalFocusCleanup = null;
 function _actModalEscHandler(ev) {
   if (ev.key === 'Escape') actCloseModal();
 }
+// General-purpose "invalidate any pending async UI update" counter — not
+// owned by any one feature. Any code that fetches data and later mutates
+// the DOM based on the response should capture this value before
+// awaiting and compare after, abandoning a stale response if it no
+// longer matches. actShowModal()/actCloseModal() bump it below (any
+// modal open/close invalidates a pending fetch elsewhere), and
+// actApplyExplorerFilter() bumps it too (a filter/date-range change
+// invalidates a payload fetch for a row the viewer has since filtered
+// away from). Currently consumed by actOpenPayloadModal; a future
+// second async-then-render feature should reuse this counter rather
+// than invent its own.
+var actUiInvalidationSeq = 0;
 function _actTrapFocus(container) {
   var focusable = container.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
   if (!focusable.length) return null;
@@ -1573,6 +2395,7 @@ function _actTrapFocus(container) {
   return function () { container.removeEventListener('keydown', handleTab); };
 }
 function actShowModal() {
+  actUiInvalidationSeq++; // any modal opening invalidates a still-in-flight async fetch — see below
   document.getElementById('act-modal-overlay').classList.add('open');
   var box = document.getElementById('act-modal-box');
   box.classList.add('open');
@@ -1581,6 +2404,7 @@ function actShowModal() {
   _actModalFocusCleanup = _actTrapFocus(box);
 }
 function actCloseModal() {
+  actUiInvalidationSeq++; // ditto — closing the shared modal also invalidates it
   document.getElementById('act-modal-overlay').classList.remove('open');
   var box = document.getElementById('act-modal-box');
   box.classList.remove('open');
@@ -1592,8 +2416,199 @@ function actCloseModal() {
   if (_actModalFocusCleanup) { _actModalFocusCleanup(); _actModalFocusCleanup = null; }
 }
 
-function actRenderOpportunityMatrix(rows) {
-  var groups = actGroupSum(rows, function (r) { return actFeatureOf(r.caller); });
+// ══════════════════════════════════════════════════════════════════════
+// AI Trace Layer — Prompt & Response Payload Viewer (v9.34). Reuses the
+// shared #act-modal-overlay/#act-modal-box (actShowModal/actCloseModal
+// above) rather than building separate modal chrome — same pattern as
+// actOpenSwitchAppModal/actOpenCustomRangeModal/actOpenOppModal, all of
+// which already populate #act-modal-title/#act-modal-body and call
+// actShowModal(). Reached from Request Explorer's delegated click listener
+// (actBindExplorerPayloadClicks, above actExplorerRowHtml).
+// ══════════════════════════════════════════════════════════════════════
+
+// actUiInvalidationSeq (declared above, alongside actShowModal/actCloseModal)
+// is bumped by those two functions and by actApplyExplorerFilter() too —
+// this guard invalidates a still-in-flight payload fetch whenever the user
+// closes this modal, opens ANY other modal (Custom Date Range, Supporting
+// Calls, a second payload lookup), or changes a Request Explorer filter/
+// date field before the RPC resolves — not only a second payload click.
+var MAX_PAYLOAD_PREVIEW_BYTES = 500000;
+var MAX_PAYLOAD_PREVIEW_CHARS = 500000;
+
+// Pre-fetch size gate — runs before any RPC call or JSON.stringify. Uses
+// rowContext's own request_bytes/response_bytes (already part of
+// mt_ai_cost_events_list's return shape) as a cheap proxy for serialized
+// payload size, so an oversized payload never reaches JSON.stringify at
+// all, rather than being stringified and then checked.
+function actPayloadPreviewTooLarge(rowContext) {
+  var reqBytes = Number((rowContext && rowContext.request_bytes) || 0);
+  var resBytes = Number((rowContext && rowContext.response_bytes) || 0);
+  return (reqBytes + resBytes) > MAX_PAYLOAD_PREVIEW_BYTES;
+}
+
+// Secondary guard only — the primary guard is actPayloadPreviewTooLarge()
+// above. This one still calls JSON.stringify, so it does not by itself
+// prevent a freeze; it exists only for the residual case where
+// request_bytes/response_bytes undersell the actual serialized size.
+function actStringifyPayloadForPreview(value) {
+  var text;
+  try { text = JSON.stringify(value, null, 2); }
+  catch (e) { return '[Unable to render payload JSON]'; }
+  if (text.length <= MAX_PAYLOAD_PREVIEW_CHARS) return text;
+  return text.slice(0, MAX_PAYLOAD_PREVIEW_CHARS) +
+    '\n\n… Payload preview truncated. Full payload is larger than the safe browser-rendering limit.';
+}
+
+function actPayloadGateStripHtml() {
+  return '<div class="act-payload-gate-strip">🔒 Visible to Admin and Power User — raw call content, distinct from the rest of this table’s metadata-level access.</div>';
+}
+
+async function actOpenPayloadModal(usageEventId, rowContext) {
+  var seq = ++actUiInvalidationSeq;
+
+  // Gate before the RPC call and before any JSON handling — an oversized
+  // payload is rejected here without ever being fetched or stringified.
+  if (actPayloadPreviewTooLarge(rowContext)) {
+    actRenderPayloadTooLargeModal();
+    return;
+  }
+
+  var result;
+  try {
+    var client = authInit();
+    // supabase-js RPC calls return { data, error } — they do not throw for
+    // a normal SQL exception. Deliberately not using .single()/.maybeSingle():
+    // both would collapse the "no payload row" state (a normal, common,
+    // non-error outcome) into the same code path as a genuine
+    // authorization/network failure. Wrapped in try/catch (matching
+    // actLoadBudgetAndAlerts/actLoadProductNames elsewhere in this file)
+    // since this is reached directly from a click handler with no outer
+    // try/catch of its own — an actual thrown exception (network drop,
+    // client-library error), not just a populated `error`, must still
+    // surface a toast instead of an unhandled rejection.
+    result = await client.rpc('mt_ai_trace_payload_get', {
+      p_company_id: actCompanyId,
+      p_app_id: actAppId,
+      p_usage_event_id: usageEventId
+    });
+  } catch (e) {
+    console.error('[Cost Tower] mt_ai_trace_payload_get exception:', e);
+    if (seq === actUiInvalidationSeq) actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  // Race guard: if the user closed this modal, opened a different one,
+  // changed a Request Explorer filter, or clicked a different row while
+  // this request was in flight, actUiInvalidationSeq has since changed —
+  // abandon this stale response rather than overwrite whatever state is
+  // now current.
+  if (seq !== actUiInvalidationSeq) return;
+
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_trace_payload_get failed:', result.error.message);
+    actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  var data = result.data;
+  // Unexpected-shape guard: do not silently coerce a non-array response
+  // into an empty array — that would misreport an integration bug as the
+  // ordinary "no payload captured" product state.
+  if (!Array.isArray(data)) {
+    console.error('[Cost Tower] Unexpected mt_ai_trace_payload_get response shape:', data);
+    actToast('Could not load payload data for this call.', 'error');
+    return;
+  }
+
+  if (data.length === 0) {
+    // Zero rows with no error is the normal, expected "no payload
+    // captured" outcome — not an error, must not toast.
+    actRenderNoPayloadModal();
+    return;
+  }
+
+  if (data.length > 1) {
+    // Should be structurally impossible — mt_ai_trace_payloads.usage_event_id
+    // is UNIQUE — but a defensive check costs nothing and a silent
+    // "pick the first row" would hide a real data problem if this
+    // invariant is ever violated by a future schema change.
+    actToast('Unexpected duplicate payload records for this call.', 'error');
+    return;
+  }
+
+  var payload = data[0];
+  if (payload.request_payload == null && payload.response_payload == null) {
+    actRenderEmptyPayloadRecordModal(payload);
+    return;
+  }
+
+  actRenderPayloadModal(payload, rowContext);
+}
+
+function actRenderNoPayloadModal() {
+  document.getElementById('act-modal-title').textContent = 'No Payload Captured';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 14px;">No payload was captured for this call — either this feature isn’t yet on the AI Trace Layer, or the call predates payload capture being enabled, or capture was gated off for this app at the time.</div>' +
+    actPayloadGateStripHtml();
+  actShowModal();
+}
+
+function actRenderEmptyPayloadRecordModal(payload) {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 6px;">A payload record exists for this call, but it doesn’t contain any prompt or response content.</div>' +
+    '<div class="act-payload-id-note">Payload ID: ' + actEsc(payload.payload_id) + '</div>' +
+    '<div style="margin-top:14px;">' + actPayloadGateStripHtml() + '</div>';
+  actShowModal();
+}
+
+function actRenderPayloadTooLargeModal() {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  document.getElementById('act-modal-body').innerHTML =
+    '<div class="act-scoped-card-note" style="margin:0 0 14px;">This call’s payload is too large to preview safely in the browser (over ' + actFmtNum(MAX_PAYLOAD_PREVIEW_BYTES) + ' bytes combined). It was not fetched.</div>' +
+    actPayloadGateStripHtml();
+  actShowModal();
+}
+
+// Found-with-content states (payload found with both/either side present,
+// optionally past its retention window). Mandatory rendering rule: the
+// request_payload/response_payload content itself is assigned via
+// textContent, never innerHTML — this content originates from end-user
+// and model text, is untrusted, and interpolating it into innerHTML would
+// be an avoidable stored-XSS vector inside this modal. Everything else in
+// this modal (labels, notes, gate strip) may continue to use this file's
+// existing innerHTML-based construction pattern.
+function actRenderPayloadModal(payload, rowContext) {
+  document.getElementById('act-modal-title').textContent = 'Prompt & Response';
+  var hasReq = payload.request_payload != null;
+  var hasRes = payload.response_payload != null;
+  var reqBadge = (hasReq && rowContext && rowContext.input_tokens != null)
+    ? ' <span class="act-payload-block-badge">' + actFmtNum(rowContext.input_tokens) + ' tokens</span>'
+    : '';
+  var expiredNote = payload.is_expired
+    ? '<div class="act-payload-expired-note">This payload passed its 90-day retention window on ' +
+        actEsc(new Date(payload.expires_at).toLocaleDateString()) +
+        ' — it’s still viewable because the cleanup process hasn’t run yet, not because it’s meant to be kept long-term.</div>'
+    : '';
+
+  document.getElementById('act-modal-body').innerHTML =
+    expiredNote +
+    '<div class="act-payload-block-label">Request' + reqBadge + '</div>' +
+    (hasReq ? '<pre class="act-payload-box" id="act-payload-request-box"></pre>'
+            : '<div class="act-cell-muted" style="margin:0 0 16px;">No request payload captured for this call.</div>') +
+    '<div class="act-payload-block-label">Response</div>' +
+    (hasRes ? '<pre class="act-payload-box" id="act-payload-response-box"></pre>'
+            : '<div class="act-cell-muted" style="margin:0;">No response payload captured for this call.</div>') +
+    actPayloadGateStripHtml();
+
+  if (hasReq) document.getElementById('act-payload-request-box').textContent = actStringifyPayloadForPreview(payload.request_payload);
+  if (hasRes) document.getElementById('act-payload-response-box').textContent = actStringifyPayloadForPreview(payload.response_payload);
+
+  actShowModal();
+}
+
+function actRenderOpportunityMatrix(groupedRows) {
+  var groups = actFoldFeatureGroups(groupedRows);
   var keys = Object.keys(groups);
   if (!keys.length) return '<div class="act-section-title">Opportunity Matrix</div><div class="act-empty-state"><div class="act-empty-state-title">No data for this period.</div></div>';
 
@@ -1635,7 +2650,7 @@ function actRenderOpportunityMatrix(rows) {
 // sits above Cost Governance instead of sharing a row with the alert
 // list/config (reviewed wireframe, AI Governance restructure).
 function actRenderBudgetBar() {
-  var spendSoFar = actSumCost(actMain.rows);
+  var spendSoFar = actMain.summary ? Number(actMain.summary.total_cost) : 0;
   var amount = actBudget ? Number(actBudget.amount) : 0;
   var warnPct = actBudget ? Number(actBudget.warn_threshold_pct) : 80;
   var escPct = actBudget ? Number(actBudget.escalate_threshold_pct) : 90;
