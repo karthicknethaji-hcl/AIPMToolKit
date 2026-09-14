@@ -90,10 +90,23 @@ SELECT classid::regclass, objid, deptype
 FROM pg_depend
 WHERE refobjid = 'public.mt_ai_cost_events_list(uuid,text,timestamptz,timestamptz)'::regprocedure;
 
--- Dependency check — text-level references pg_depend does not track:
+-- Dependency check — text-level references pg_depend does not track.
+-- BUG FOUND LIVE (2026-09-14, running this migration against pgt-dev):
+-- `pg_get_functiondef(p.oid)` errors with "<name> is an aggregate
+-- function" (42809/wrong_object_type) the moment it's evaluated against
+-- an aggregate's pg_proc row (array_agg, count, sum, ...) — it only
+-- accepts ordinary functions/procedures. The original query scanned every
+-- row in pg_proc with no prokind/schema filter, so it was guaranteed to
+-- hit a built-in aggregate and fail before ever reaching a real result.
+-- Restricting to p.prokind = 'f' (ordinary functions only) in the
+-- public schema — the only place a real dependent could live for this
+-- app — both fixes the error and is the query this comment always meant
+-- to run.
 SELECT n.nspname, p.proname, pg_get_function_arguments(p.oid)
 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-WHERE pg_get_functiondef(p.oid) ILIKE '%mt_ai_cost_events_list%'
+WHERE p.prokind = 'f'
+  AND n.nspname = 'public'
+  AND pg_get_functiondef(p.oid) ILIKE '%mt_ai_cost_events_list%'
   AND p.proname != 'mt_ai_cost_events_list';
 
 SELECT schemaname, viewname FROM pg_views WHERE definition ILIKE '%mt_ai_cost_events_list%';
