@@ -18,6 +18,16 @@
 // anthropic-proxy.js requires './providerAdapters' from there instead of
 // reaching back into this directory.
 //
+// CAVEAT — this site is deployed via manual zip drag-and-drop into
+// Netlify's UI, not a git-connected build, so netlify.toml's [build]
+// command above never actually runs for a real deploy of this app (it
+// only applies if this site is ever switched to git-connected builds).
+// Whoever builds the deploy zip must manually copy this file's CURRENT
+// contents to netlify/functions/providerAdapters.js and include it in the
+// zip every time this file changes — there's no automated step doing that
+// copy today. Forgetting it re-introduces the exact "Cannot find module"
+// failure above, silently, since nothing checks for it at zip-build time.
+//
 // One adapter per provider. Each exposes:
 //   buildUpstreamRequest(normalizedBody) -> { url, method, headers, body }
 //   normalizeSuccess(rawParsedBody) -> { text, provider, requestedModel,
