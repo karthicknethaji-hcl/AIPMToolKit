@@ -2,3 +2,4 @@
 scripts/env.js
 node_modules/
 favicon-base64.txt
+netlify/functions/providerAdapters.js
