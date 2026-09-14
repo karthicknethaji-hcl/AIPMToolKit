@@ -1,8 +1,8 @@
 // ── AI Cost Control Tower v2: Outcome-Based Cost (Screen 4) ──
 // Standalone page (ai-cost-tower.html), loaded after cost-tower.js — reuses
 // its globals (actCompanyId, actMain, actMonthRange, actDeltaPct,
-// actFetchRows, actSumCost, actIsPriced, actPricedRows, authInit,
-// authGetFreshToken) rather than duplicating them. Computes the prototype's
+// actFetchCostSummary, actFetchCostGrouped, actFetchTopCalls, actFoldGrouped,
+// authInit, authGetFreshToken) rather than duplicating them. Computes the prototype's
 // exact outcomeTypes object shape from real RPC data and reuses its render
 // functions — see ai-cost-control-tower-v2-outcome-prototype.html for the
 // shape/render spec of record. Two deliberate, labeled deviations from that
@@ -116,14 +116,56 @@ function _outcomesTrendFields(currCost, prevCost) {
 // with real data in the exact same shape.
 // ══════════════════════════════════════════════════════════════════════
 
-function _outcomesPickSampleCalls(costRows) {
-  return costRows.slice().sort(function (a, b) { return (b.calculated_cost || 0) - (a.calculated_cost || 0); })
-    .slice(0, 3)
+// v9.37 period-aggregation migration — cost-side inputs are now
+// server-aggregated (mt_ai_cost_grouped('outcome_type')/('feature'),
+// mt_ai_cost_top_calls) instead of raw currCosts/prevCosts row arrays
+// filtered client-side. actFoldGrouped (cost-tower.js) does the summing;
+// this file only reshapes the already-small result.
+
+// Folds mt_ai_cost_grouped('outcome_type')'s (outcome_type_id,
+// completion_bucket) rows into {[outcome_type_id]: {total, completed,
+// sunk}} — mirrors buildOutcomeTypes()'s old completedIds/abandonedIds
+// split, just computed server-side (migration file Part C's LEFT JOIN
+// LATERAL already scopes each cost row to an outcome that both exists and
+// itself started within the period, the same membership rule the old
+// currOutcomeIds/prevOutcomeIds filter enforced).
+function _outcomesFoldByTypeBucket(groupedRows) {
+  var byType = {};
+  (groupedRows || []).forEach(function (g) {
+    var id = g.group_key1;
+    if (!byType[id]) byType[id] = { total: 0, completed: 0, sunk: 0 };
+    var cost = Number(g.cost || 0);
+    byType[id].total += cost;
+    if (g.group_key2 === 'completed') byType[id].completed += cost;
+    if (g.group_key2 === 'abandoned') byType[id].sunk += cost;
+  });
+  return byType;
+}
+
+// mt_ai_cost_top_calls(partition_by=...) already caps each partition key
+// at its own top-N — merging a type's several caller-partitions and
+// re-ranking is safe (the true top-3 across a caller set must each be
+// within their own caller's top-3) and avoids a second RPC per type.
+function _outcomesSampleCallsForCallers(topCallsByCaller, callers) {
+  var combined = (topCallsByCaller || []).filter(function (r) { return callers.indexOf(r.partition_key) !== -1; });
+  combined.sort(function (a, b) { return (b.calculated_cost || 0) - (a.calculated_cost || 0); });
+  return combined.slice(0, 3).map(function (r) { return { caller: r.caller, cost: Number(r.calculated_cost) || 0, note: '' }; });
+}
+function _outcomesSampleCallsForType(topCallsByType, id) {
+  return (topCallsByType || []).filter(function (r) { return r.partition_key === id; })
     .map(function (r) { return { caller: r.caller, cost: Number(r.calculated_cost) || 0, note: '' }; });
 }
 
-function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prevCosts, callerModes) {
+function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, typeBucketGrouped, prevTypeBucketGrouped, featureGrouped, prevFeatureGrouped, topCallsByType, topCallsByCaller, callerModes) {
   var outcomeTypes = {};
+  var currTypeTotals = _outcomesFoldByTypeBucket(typeBucketGrouped);
+  var prevTypeTotals = _outcomesFoldByTypeBucket(prevTypeBucketGrouped);
+  // actFoldGrouped (cost-tower.js) keyed by caller alone — ignores
+  // product_id, collapsing every (caller, product_id) row mt_ai_cost_grouped
+  // ('feature') returns for the same caller into one entry, which is
+  // exactly the per-caller total a yield type's caller list needs.
+  var currCallerTotals = actFoldGrouped(featureGrouped, function (g) { return g.group_key1; });
+  var prevCallerTotals = actFoldGrouped(prevFeatureGrouped, function (g) { return g.group_key1; });
 
   // Yield callers grouped by outcomeType — callerModes is {caller: outcomeType},
   // the Yield-relevant subset of CALLER_ATTRIBUTION_MODE fetched once above.
@@ -139,29 +181,9 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
 
     if (typeRow.costing_method === 'session_sum') {
       var currTypeOutcomes = currOutcomes.filter(function (o) { return o.outcome_type_id === id; });
-      var prevTypeOutcomes = prevOutcomes.filter(function (o) { return o.outcome_type_id === id; });
-      var currOutcomeIds = {};
-      currTypeOutcomes.forEach(function (o) { currOutcomeIds[o.outcome_id] = true; });
-      var prevOutcomeIds = {};
-      prevTypeOutcomes.forEach(function (o) { prevOutcomeIds[o.outcome_id] = true; });
-
-      // Scoped to THIS type's own outcome_ids — the bug an earlier draft
-      // had was filtering the whole mt_outcomes_list() result set instead,
-      // producing identical sunk-cost/attempts figures on every card.
-      var currTypeCosts = currCosts.filter(function (e) { return e.outcome_id && currOutcomeIds[e.outcome_id]; });
-      var prevTypeCosts = prevCosts.filter(function (e) { return e.outcome_id && prevOutcomeIds[e.outcome_id]; });
-
-      var abandonedIds = {};
-      currTypeOutcomes.forEach(function (o) { if (o.is_abandoned) abandonedIds[o.outcome_id] = true; });
-      // Completed and abandoned are mutually exclusive by construction
-      // (is_abandoned only ever applies to a still-in_progress outcome,
-      // per mt_outcomes_list()'s SQL) — an outcome_id can appear in at most
-      // one of completedIds/abandonedIds, never both.
-      var completedIds = {};
-      currTypeOutcomes.forEach(function (o) { if (o.status === 'completed') completedIds[o.outcome_id] = true; });
-
-      var totalCost = actSumCost(currTypeCosts);
-      var trendFields = _outcomesTrendFields(totalCost, actSumCost(prevTypeCosts));
+      var totals = currTypeTotals[id] || { total: 0, completed: 0, sunk: 0 };
+      var prevTotals = prevTypeTotals[id] || { total: 0, completed: 0, sunk: 0 };
+      var trendFields = _outcomesTrendFields(totals.total, prevTotals.total);
 
       var entry = {
         name: typeRow.name,
@@ -170,19 +192,19 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         attempts: currTypeOutcomes.length,
         completed: currTypeOutcomes.filter(function (o) { return o.status === 'completed'; }).length,
         abandoned: currTypeOutcomes.filter(function (o) { return o.is_abandoned; }).length,
-        totalCost: totalCost,
+        totalCost: totals.total,
         // Cost actually attributable to outcomes that reached status
         // 'completed' — NOT totalCost minus sunkCost. That residual would
         // silently include cost from outcomes still in progress (neither
         // completed nor abandoned yet), which is a different, third bucket
         // (see computePortfolio()'s inProgressValue).
-        completedCost: actSumCost(currTypeCosts.filter(function (e) { return completedIds[e.outcome_id]; })),
-        sunkCost: actSumCost(currTypeCosts.filter(function (e) { return abandonedIds[e.outcome_id]; })),
+        completedCost: totals.completed,
+        sunkCost: totals.sunk,
         trend: trendFields.trend,
         trendDir: trendFields.trendDir,
         completionSignal: OUTCOME_COMPLETION_SIGNAL[id] || '',
         abandonWindow: typeRow.abandonment_window_hrs,
-        sampleCalls: _outcomesPickSampleCalls(currTypeCosts)
+        sampleCalls: _outcomesSampleCallsForType(topCallsByType, id)
       };
 
       // Release Plan lineage rollup — DEFERRED (Phase 4/5 build-list
@@ -203,32 +225,30 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
     } else {
       // yield_ratio
       var callers = yieldCallersByType[id] || [];
-      var currTypeCosts2 = currCosts.filter(function (e) { return callers.indexOf(e.caller) !== -1; });
-      var prevTypeCosts2 = prevCosts.filter(function (e) { return callers.indexOf(e.caller) !== -1; });
-
-      var totalCost2 = actSumCost(currTypeCosts2);
-      var trendFields2 = _outcomesTrendFields(totalCost2, actSumCost(prevTypeCosts2));
-
-      // units_generated is only reliably populated for fixed_1 callers today
-      // (set at insert time, Phase 4/5 fix) and for anything the Phase 6
-      // report-back endpoint has since updated. Sum only non-null values —
-      // a row with units_generated still null on success is "not yet
-      // reported," not "zero," and must not silently count as either.
-      var units = 0;
-      var hasAnyUnits = false;
-      currTypeCosts2.forEach(function (e) {
-        if (e.units_generated !== null && e.units_generated !== undefined) {
-          units += Number(e.units_generated);
-          hasAnyUnits = true;
+      var totalCost2 = 0, prevTotalCost2 = 0, units = 0, hasAnyUnits = false, unitsResolvedCount = 0, failedCost2 = 0;
+      callers.forEach(function (c) {
+        var g = currCallerTotals[c];
+        if (g) {
+          totalCost2 += g.cost;
+          // units_generated is only reliably populated for fixed_1 callers
+          // today (set at insert time, Phase 4/5 fix) and for anything the
+          // Phase 6 report-back endpoint has since updated. unitsResolved
+          // (COUNT(*) FILTER (WHERE units_generated IS NOT NULL), summed
+          // per caller) is the same "has anything reported" signal the old
+          // per-row hasAnyUnits check used, just server-counted.
+          if (g.unitsResolved > 0) { hasAnyUnits = true; units += g.unitsSum; unitsResolvedCount += g.unitsResolved; }
+          failedCost2 += g.failedCost;
         }
+        var pg = prevCallerTotals[c];
+        if (pg) prevTotalCost2 += pg.cost;
       });
+      var trendFields2 = _outcomesTrendFields(totalCost2, prevTotalCost2);
 
-      // failedSharePct: status-based, never units-based. null (not yet
-      // reported) and 0 (confirmed failure, set at insert time) are
-      // different facts — a call awaiting its Phase 6 report-back is not
-      // the same as a call that actually failed.
-      var failedCosts = currTypeCosts2.filter(function (e) { return e.status === 'error' || e.status === 'timeout'; });
-      var failedSharePct = totalCost2 > 0 ? Math.round((actSumCost(failedCosts) / totalCost2) * 100) : 0;
+      // failedSharePct: cost-based (failedCost2 is SUM(calc_cost) FILTER
+      // (WHERE status IN ('error','timeout')) per caller), never
+      // units-based — null (not yet reported) and 0 (confirmed failure) are
+      // different facts, same distinction the old per-row filter preserved.
+      var failedSharePct = totalCost2 > 0 ? Math.round((failedCost2 / totalCost2) * 100) : 0;
 
       outcomeTypes[id] = {
         name: typeRow.name,
@@ -247,12 +267,12 @@ function buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prev
         // value for a given real attempt (see e.g. Prototype's
         // prototype-wireframe/prototype-brief pairing) — if that's ever
         // violated, this double-counts right alongside units.
-        attempts: currTypeCosts2.filter(function (e) { return e.units_generated !== null && e.units_generated !== undefined; }).length,
+        attempts: unitsResolvedCount,
         failedSharePct: failedSharePct,
         trend: trendFields2.trend,
         trendDir: trendFields2.trendDir,
         callers: callers,
-        sampleCalls: _outcomesPickSampleCalls(currTypeCosts2)
+        sampleCalls: _outcomesSampleCallsForCallers(topCallsByCaller, callers)
       };
     }
   });
@@ -598,7 +618,12 @@ function openOutcomeModal(id) {
 // current + prior range, so its filter genuinely governs every widget.
 // ══════════════════════════════════════════════════════════════════════
 
-var actOutcomePeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, outcomes: [], prevOutcomes: [], typeRows: [], callerModes: {} };
+var actOutcomePeriod = {
+  type: 'this_month', label: 'This Month', start: null, end: null,
+  summary: null, typeBucketGrouped: [], prevTypeBucketGrouped: [],
+  featureGrouped: [], prevFeatureGrouped: [], topCallsByType: [], topCallsByCaller: [],
+  outcomes: [], prevOutcomes: [], typeRows: [], callerModes: {}
+};
 
 // Sequence guard against out-of-order resolution — mirrors
 // _actOverviewPeriodSeq (cost-tower.js). If the user selects a second
@@ -615,26 +640,40 @@ async function actSetOutcomePeriod(type, customStart, customEnd) {
   actOutcomePeriod.start = range.start; actOutcomePeriod.end = range.end;
   var valEl = document.getElementById('act-outcome-period-value');
   if (valEl) valEl.textContent = actOutcomePeriod.label;
-  // All six fetches run in one round-trip, including _outcomesFetchTypes()/
+  // All fetches run in one round-trip, including _outcomesFetchTypes()/
   // _outcomesFetchCallerModes() — neither depends on the period range, but
   // running them here (rather than in actRenderOutcomeScreen(), after this
   // Promise.all already resolved) avoids paying a second, fully sequential
-  // round-trip on every period change.
+  // round-trip on every period change. Cost-side inputs now come from
+  // cost-tower.js's server-aggregated RPCs (mt_ai_cost_summary/
+  // mt_ai_cost_grouped/mt_ai_cost_top_calls) instead of raw actFetchRows —
+  // mt_outcomes_list stays row-based (low volume, hardened with ORDER BY
+  // only, see migration file Part G).
   var results = await Promise.all([
-    actFetchRows(range.start, range.end),
-    actFetchRows(prior.start, prior.end),
+    actFetchCostSummary(range.start, range.end),
+    actFetchCostGrouped(range.start, range.end, 'outcome_type'),
+    actFetchCostGrouped(prior.start, prior.end, 'outcome_type'),
+    actFetchCostGrouped(range.start, range.end, 'feature'),
+    actFetchCostGrouped(prior.start, prior.end, 'feature'),
+    actFetchTopCalls(range.start, range.end, 'cost', 3, 'outcome_type'),
+    actFetchTopCalls(range.start, range.end, 'cost', 3, 'caller'),
     _outcomesFetchOutcomeRows(range.start, range.end),
     _outcomesFetchOutcomeRows(prior.start, prior.end),
     _outcomesFetchTypes(),
     _outcomesFetchCallerModes()
   ]);
   if (mySeq !== _actOutcomePeriodSeq) return;
-  actOutcomePeriod.rows = results[0];
-  actOutcomePeriod.prevRows = results[1];
-  actOutcomePeriod.outcomes = results[2];
-  actOutcomePeriod.prevOutcomes = results[3];
-  actOutcomePeriod.typeRows = results[4];
-  actOutcomePeriod.callerModes = results[5];
+  actOutcomePeriod.summary = results[0];
+  actOutcomePeriod.typeBucketGrouped = results[1];
+  actOutcomePeriod.prevTypeBucketGrouped = results[2];
+  actOutcomePeriod.featureGrouped = results[3];
+  actOutcomePeriod.prevFeatureGrouped = results[4];
+  actOutcomePeriod.topCallsByType = results[5];
+  actOutcomePeriod.topCallsByCaller = results[6];
+  actOutcomePeriod.outcomes = results[7];
+  actOutcomePeriod.prevOutcomes = results[8];
+  actOutcomePeriod.typeRows = results[9];
+  actOutcomePeriod.callerModes = results[10];
   await actRenderOutcomeScreen();
 }
 
@@ -682,15 +721,17 @@ async function actApplyOutcomeCustomRange() {
 
 async function actRenderOutcomeScreen() {
   try {
-    var currCosts = actOutcomePeriod.rows;
-    var prevCosts = actOutcomePeriod.prevRows;
     var currOutcomes = actOutcomePeriod.outcomes;
     var prevOutcomes = actOutcomePeriod.prevOutcomes;
     var typeRows = actOutcomePeriod.typeRows;
     var callerModes = actOutcomePeriod.callerModes;
 
-    TOTAL_AI_SPEND_PERIOD = actSumCost(currCosts);
-    outcomeTypes = buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes, currCosts, prevCosts, callerModes);
+    TOTAL_AI_SPEND_PERIOD = actOutcomePeriod.summary ? Number(actOutcomePeriod.summary.total_cost) : 0;
+    outcomeTypes = buildOutcomeTypes(typeRows, currOutcomes, prevOutcomes,
+      actOutcomePeriod.typeBucketGrouped, actOutcomePeriod.prevTypeBucketGrouped,
+      actOutcomePeriod.featureGrouped, actOutcomePeriod.prevFeatureGrouped,
+      actOutcomePeriod.topCallsByType, actOutcomePeriod.topCallsByCaller,
+      callerModes);
 
     renderExecCards();
     renderOutcomeSupport();
