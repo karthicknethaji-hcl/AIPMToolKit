@@ -490,6 +490,200 @@ async function actFetchRows(start, end) {
   return _actRowCache[key];
 }
 
+// AI Trace Layer — remaining widgets (By Trace toggle, By Conversation
+// ranking, Failure Cost's 2 new KPIs, Trace Explorer card). Separate
+// fetch/cache pair, not a reuse of actFetchRows above — actFetchRows's
+// cache key is start|end only, no RPC-name component, so sharing it with
+// a second RPC would collide cache entries between the two. Governance-
+// gated server-side (_cost_tower_can_manage_governance, same tier as the
+// payload viewer's mt_ai_trace_payload_get) — callers should skip this
+// fetch outright for a non-governance viewer rather than let it fail.
+var _actTraceDetailCache = {};
+async function actFetchTraceDetail(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actTraceDetailCache[key]) return _actTraceDetailCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_trace_detail_list', {
+    p_company_id: actCompanyId,
+    p_app_id: actAppId,
+    p_period_start: start.toISOString(),
+    p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_trace_detail_list failed:', result.error.message);
+    actToast('Could not load trace detail for this period.', 'error');
+    return [];
+  }
+  _actTraceDetailCache[key] = result.data || [];
+  return _actTraceDetailCache[key];
+}
+
+// Groups mt_ai_trace_detail_list's span-level rows (one row per span,
+// sharing trace_id/agent_name/etc. across every span of the same trace)
+// into one summary object per trace — the frontend does this grouping,
+// not the RPC, per §2's design. Computes each trace's total duration/
+// cost/bytes and a status classification in one pass, so every consumer
+// (Request Explorer's By Trace toggle, Longest/Largest's By Conversation
+// ranking, Failure Cost's 2 new KPIs, Trace Explorer) reads the same
+// already-computed fields instead of re-deriving them independently.
+function actBuildTraceSummaries(detailRows) {
+  var byTrace = Object.create(null);
+  var order = [];
+  detailRows.forEach(function (r) {
+    if (!byTrace[r.trace_id]) {
+      byTrace[r.trace_id] = {
+        trace_id: r.trace_id, agent_name: r.agent_name, client_trace_id: r.client_trace_id,
+        trace_started_at: r.trace_started_at, trace_completed_at: r.trace_completed_at,
+        outcome_id: r.outcome_id, spans: []
+      };
+      order.push(r.trace_id);
+    }
+    byTrace[r.trace_id].spans.push(r);
+  });
+  return order.map(function (id) {
+    var t = byTrace[id];
+    t.spans.sort(function (a, b) { return (a.sequence_order || 0) - (b.sequence_order || 0); });
+    var totalDuration = 0, totalCost = 0, totalBytes = 0, hasEarlierFailure = false;
+    t.spans.forEach(function (s, idx) {
+      totalDuration += Number(s.span_duration_ms || 0);
+      if (s.calculated_cost != null) totalCost += Number(s.calculated_cost);
+      totalBytes += Number(s.request_bytes || 0) + Number(s.response_bytes || 0);
+      // Matches actFailedRows' own failure definition (status 'error' OR
+      // 'timeout') — code-review fix: this previously only checked 'error',
+      // undercounting a trace-level failure relative to the existing
+      // per-call Failure Cost KPIs, which already treat both as failed.
+      if (idx < t.spans.length - 1 && (s.span_status === 'error' || s.span_status === 'timeout')) hasEarlierFailure = true;
+    });
+    var lastStatus = t.spans[t.spans.length - 1].span_status;
+    // Decision 2 (spec §0): abandoned = last span status='error', no
+    // successful span after it — single-span-error traces count too, no
+    // carve-out (§9 item 6). 'recovered' = worded as adjacency ("a later
+    // span succeeded"), not confirmed retry-recovery — this schema can't
+    // prove genuine retry semantics (§5). Code-review fix: 'recovered' now
+    // requires the last span to have actually succeeded — previously this
+    // fell through to 'recovered' whenever hasEarlierFailure was true and
+    // lastStatus merely wasn't 'error' (e.g. lastStatus === 'timeout'),
+    // which is not "a later span succeeded." A trace whose last span timed
+    // out lands in 'other', not 'completed' or 'recovered'.
+    var statusKind = lastStatus === 'error' ? 'abandoned'
+      : (lastStatus === 'success' ? (hasEarlierFailure ? 'recovered' : 'completed') : 'other');
+    t.totalDurationMs = totalDuration;
+    t.totalCost = totalCost;
+    t.totalBytes = totalBytes;
+    t.spanCount = t.spans.length;
+    t.statusKind = statusKind;
+    t.lastStatus = lastStatus;
+    return t;
+  });
+}
+
+// Populated once per trace-detail fetch (actSetBreakdownPeriod), not
+// per-render — every consumer (Request Explorer's By Trace rows, Trace
+// Explorer card) shares this one map rather than each rebuilding it from
+// whatever subset it happens to render, which would stomp on the others'
+// entries when their renders are interleaved on the same screen.
+var actTraceSpanRowById = Object.create(null);
+function actIndexTraceSpans(traceSummaries) {
+  actTraceSpanRowById = Object.create(null);
+  traceSummaries.forEach(function (t) {
+    t.spans.forEach(function (s) {
+      if (s.usage_event_id) actTraceSpanRowById[String(s.usage_event_id)] = s;
+    });
+  });
+}
+
+function actTraceStatusPillHtml(t) {
+  if (t.statusKind === 'abandoned') return '<span class="act-tag-status bad">abandoned</span>';
+  if (t.statusKind === 'recovered') return '<span class="act-tag-status warn">1 error span</span>';
+  if (t.statusKind === 'completed') return '<span class="act-tag-status ok">completed</span>';
+  return '<span class="act-tag-status warn">' + actEsc(t.lastStatus || 'unknown') + '</span>';
+}
+
+// Shared trace→span expandable rows, used by both Request Explorer's By
+// Trace toggle (Item 1) and the Trace Explorer card (Item 5) — the
+// expand/collapse and payload-icon wiring exists in exactly one place,
+// not duplicated per consumer, per the spec's explicit reuse instruction.
+function actTraceGroupRowsHtml(traces) {
+  if (!traces.length) return '';
+  return traces.map(function (t) {
+    var spansHtml = t.spans.map(function (s) {
+      var canOpenPayload = actIsGovernanceViewer() && s.span_type === 'llm_call' && s.usage_event_id;
+      var payloadBtn = canOpenPayload
+        ? '<button type="button" class="act-payload-btn act-trace-span-payload-btn" data-usage-event-id="' + actEsc(String(s.usage_event_id)) + '" aria-label="Inspect prompt and response">↗</button>'
+        : '';
+      return '<div class="act-trace-span-row"><span class="act-trace-span-seq">' + s.sequence_order + '</span>' +
+        '<span class="act-trace-span-type ' + (s.span_type === 'llm_call' ? 'llm' : 'tool') + '">' + (s.span_type === 'llm_call' ? 'llm_call' : actEsc(s.tool_name || 'tool_call')) + '</span>' +
+        '<span class="act-trace-span-dur">' + (s.span_duration_ms != null ? (s.span_duration_ms / 1000).toFixed(1) + 's' : '—') + '</span>' +
+        '<span class="act-trace-span-cost">' + (s.calculated_cost != null ? actFmtUSD(s.calculated_cost) : '—') + '</span>' +
+        '<span class="act-trace-span-status"><span class="act-tag-status ' + (s.span_status === 'success' ? 'ok' : (s.span_status === 'error' ? 'bad' : 'warn')) + '">' + actEsc(s.span_status) + '</span>' + payloadBtn + '</span></div>';
+    }).join('');
+    return '<div class="act-trace-group" data-trace-id="' + actEsc(t.trace_id) + '">' +
+      '<div class="act-trace-row" data-trace-toggle="' + actEsc(t.trace_id) + '">' +
+      '<span class="act-trace-toggle-icon">&#9656;</span>' +
+      '<span class="act-trace-agent">' + actEsc(t.agent_name) + '</span>' +
+      '<span class="act-trace-meta">' + t.spanCount + ' call' + (t.spanCount === 1 ? '' : 's') + ' · ' + (t.totalDurationMs / 1000).toFixed(1) + 's</span>' +
+      '<span class="act-trace-cost">' + actFmtUSD(t.totalCost) + '</span>' +
+      actTraceStatusPillHtml(t) +
+      '</div>' +
+      '<div class="act-trace-span-list" style="display:none;">' + spansHtml + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// One delegated listener per container (idempotency flag, same pattern as
+// actBindExplorerPayloadClicks) — handles both the expand/collapse toggle
+// and the payload-inspect icon inside any span row.
+function actBindTraceGroupClicks(containerEl) {
+  if (!containerEl || containerEl._traceClickBound) return;
+  containerEl._traceClickBound = true;
+  containerEl.addEventListener('click', function (event) {
+    var target = event.target;
+    if (target && target.nodeType !== 1) target = target.parentElement;
+    var payloadBtn = target && target.closest ? target.closest('.act-trace-span-payload-btn') : null;
+    if (payloadBtn) {
+      event.preventDefault(); event.stopPropagation();
+      var id = payloadBtn.getAttribute('data-usage-event-id');
+      var span = actTraceSpanRowById[id];
+      if (!span) { actToast('Could not find payload row context.', 'error'); return; }
+      actOpenPayloadModal(id, span);
+      return;
+    }
+    var toggleRow = target && target.closest ? target.closest('[data-trace-toggle]') : null;
+    if (!toggleRow) return;
+    var group = toggleRow.closest('.act-trace-group');
+    var list = group && group.querySelector('.act-trace-span-list');
+    var icon = toggleRow.querySelector('.act-trace-toggle-icon');
+    if (!list) return;
+    var isOpen = list.style.display !== 'none';
+    list.style.display = isOpen ? 'none' : 'block';
+    if (icon) icon.innerHTML = isOpen ? '&#9656;' : '&#9662;';
+  });
+}
+
+// Item 6 — Cost by Agent. Independent of the trace-detail RPC/fetch above
+// (span-level detail is irrelevant to a per-agent rollup) and gated on the
+// more open _cost_tower_can_access, not the governance gate — fetched
+// unconditionally for every role.
+var _actCostByAgentCache = {};
+async function actFetchCostByAgent(start, end) {
+  var key = start.toISOString() + '|' + end.toISOString();
+  if (_actCostByAgentCache[key]) return _actCostByAgentCache[key];
+  var client = authInit();
+  var result = await client.rpc('mt_ai_cost_by_agent', {
+    p_company_id: actCompanyId,
+    p_app_id: actAppId,
+    p_period_start: start.toISOString(),
+    p_period_end: end.toISOString()
+  });
+  if (result.error) {
+    console.error('[Cost Tower] mt_ai_cost_by_agent failed:', result.error.message);
+    actToast('Could not load cost by agent for this period.', 'error');
+    return [];
+  }
+  _actCostByAgentCache[key] = result.data || [];
+  return _actCostByAgentCache[key];
+}
+
 var actMain = { rows: [], prevRows: [], start: null, end: null, now: null };
 async function actLoadMainContext() {
   var thisMonth = actMonthRange(0);
@@ -789,7 +983,7 @@ function actComputeOpportunities(rows) {
 // no filter). actOverviewPeriod.now is captured at fetch time since
 // actRunRate() below needs a "now" pinned to when this period was loaded,
 // the same role actMain.now already plays for Governance.
-var actOverviewPeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, now: null };
+var actOverviewPeriod = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], agentRows: [], start: null, end: null, now: null };
 
 // Sequence guard against out-of-order resolution — if the user selects a
 // second period before the first one's fetch resolves, the first call's
@@ -809,11 +1003,16 @@ async function actSetOverviewPeriod(type, customStart, customEnd) {
   // .rows/.prevRows unconditionally before this check was the actual bug:
   // a stale call's data could still clobber a newer call's already-committed
   // state even though the stale call's own render was correctly skipped.
-  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
+  var results = await Promise.all([
+    actFetchRows(range.start, range.end),
+    actFetchRows(prior.start, prior.end),
+    actFetchCostByAgent(range.start, range.end)
+  ]);
   if (mySeq !== _actOverviewPeriodSeq) return;
   actOverviewPeriod.start = range.start; actOverviewPeriod.end = range.end; actOverviewPeriod.now = new Date();
   actOverviewPeriod.rows = results[0];
   actOverviewPeriod.prevRows = results[1];
+  actOverviewPeriod.agentRows = results[2];
   actRenderOverview();
 }
 
@@ -848,6 +1047,30 @@ async function actApplyOverviewCustomRange() {
   actCloseModal();
   actOverviewPeriod.label = fromVal + ' – ' + toVal;
   await actSetOverviewPeriod('custom', start, end);
+}
+
+// Item 6 (remaining-five-widgets spec) — conversation-level cost rollup by
+// AI Trace Layer agent. Placed alongside Top Cost Drivers rather than
+// literally inside it — this app's Overview screen has no single
+// "Main Breakdown" card the prototype's own placement note assumed;
+// Cost Breakdown's Main Breakdown is a different screen entirely. Open to
+// every role (mt_ai_cost_by_agent uses _cost_tower_can_access, the same
+// open gate mt_ai_cost_events_list already uses) — no gating needed here.
+function actRenderCostByAgent(agentRows) {
+  var rowsHtml = (agentRows || []).map(function (a) {
+    return '<tr><td class="act-cell-name">' + actEsc(a.agent_name) + '</td><td>' + actFmtNum(a.trace_count) +
+      '</td><td>' + (a.avg_calls_per_trace != null ? Number(a.avg_calls_per_trace).toFixed(1) : '—') +
+      '</td><td class="act-cell-name">' + actFmtUSD(a.total_cost) + '</td></tr>';
+  }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--t4);padding:16px;">No traced conversations in this period.</td></tr>';
+  return '<div class="act-section-title">Cost by Agent</div>' +
+    '<div class="act-section-insight">Conversation-level rollup for AI Trace Layer agents — currently reflects Requirement Agent only, since it’s the sole caller writing traces today. Grows automatically as more features adopt the trace/span write path.</div>' +
+    // Code-review fix: mt_ai_cost_by_agent's avg_calls_per_trace counts
+    // every span (llm_call AND tool_call), not just billable provider
+    // calls — "Avg Calls / Trace" read as if it were the latter. Relabeled
+    // to say what it actually measures rather than changing the RPC
+    // (already applied to dev; a metric-definition change belongs in its
+    // own reviewed migration, not a silent code-review fix).
+    '<div class="act-scoped-card"><table class="act-data-table"><thead><tr><th>Agent</th><th>Traces</th><th>Avg Spans / Trace <span class="act-cell-muted" style="font-weight:400;text-transform:none;">(LLM + tool calls)</span></th><th>Total Cost</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div>';
 }
 
 function actRenderOverview() {
@@ -973,6 +1196,7 @@ function actRenderOverview() {
     (topModel ? '<div class="act-driver-card"><div class="act-driver-top"><span class="act-driver-tag">Model</span>' + actDeltaHtml(topModelDelta) + '</div><div class="act-driver-title">' + actEsc(topModel.key) + '</div><div class="act-driver-value">' + actFmtUSD0(topModel.cost) + '</div><div class="act-driver-note">Highest model spend this period.</div><div class="act-driver-link" onclick="actGoToBreakdown(\'model\')">Open Model View &rarr;</div></div>' : '') +
     (topGrowthProduct ? '<div class="act-driver-card"><div class="act-driver-top"><span class="act-driver-tag">Product</span>' + (isFinite(topGrowthPct) ? actDeltaHtml(topGrowthPct) : '<span class="act-delta-up">New</span>') + '</div><div class="act-driver-title">' + actEsc(actProductNameOf(topGrowthProduct.key)) + '</div><div class="act-driver-value">' + actFmtUSD0(topGrowthProduct.cost) + '</div><div class="act-driver-note">Fastest growing product spend this period.</div><div class="act-driver-link" onclick="actGoToBreakdown(\'product\')">Open Product View &rarr;</div></div>' : '') +
     '</div>' +
+    actRenderCostByAgent(actOverviewPeriod.agentRows) +
     needsAttentionHtml +
     '<div class="act-section-title">Unassigned Spend</div>' +
     '<div class="act-unassigned-line"><div class="act-unassigned-left"><div class="act-unassigned-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg></div>' +
@@ -987,7 +1211,7 @@ function actRenderOverview() {
 // SCREEN 2: Cost Breakdown (spec Section 5)
 // ══════════════════════════════════════════════════════════════════════
 
-var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], start: null, end: null, group: 'feature' };
+var actBreakdown = { type: 'this_month', label: 'This Month', rows: [], prevRows: [], traceSummaries: [], start: null, end: null, group: 'feature' };
 
 // Sequence guard against out-of-order resolution — same pattern as
 // _actOverviewPeriodSeq/_actOutcomePeriodSeq. This screen predates those two
@@ -1001,11 +1225,22 @@ async function actSetBreakdownPeriod(type, customStart, customEnd) {
   var mySeq = ++_actBreakdownPeriodSeq;
   var resolved = actResolvePeriodRange(type, customStart, customEnd);
   var range = resolved.range, prior = resolved.prior;
-  var results = await Promise.all([actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)]);
+  var fetches = [actFetchRows(range.start, range.end), actFetchRows(prior.start, prior.end)];
+  // Trace-layer widgets (By Trace toggle, By Conversation ranking, Failure
+  // Cost's 2 new KPIs, Trace Explorer card) share this one fetch, per the
+  // spec's sequencing note — same "one shared fetch" pattern actFetchRows
+  // itself already establishes for this screen's other widgets. Governance-
+  // gated server-side, so skipped outright for a read-only viewer rather
+  // than issuing a call known to fail.
+  var wantsTraceDetail = actIsGovernanceViewer();
+  if (wantsTraceDetail) fetches.push(actFetchTraceDetail(range.start, range.end));
+  var results = await Promise.all(fetches);
   if (mySeq !== _actBreakdownPeriodSeq) return;
   actBreakdown.start = range.start; actBreakdown.end = range.end;
   actBreakdown.rows = results[0];
   actBreakdown.prevRows = results[1];
+  actBreakdown.traceSummaries = wantsTraceDetail ? actBuildTraceSummaries(results[2] || []) : [];
+  actIndexTraceSpans(actBreakdown.traceSummaries);
   // Kept as a console diagnostic (not a DOM element anymore, now that the
   // row count is folded directly into the toolbar's own confidence chip) —
   // still useful for anyone checking DevTools if a period change ever looks
@@ -1172,10 +1407,10 @@ function actRenderCostBreakdown() {
     '</div></div>' +
 
     '<div id="act-operational-signals" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">C. Operational Signals</div><div class="act-group-title">Failures, large calls, and cache readiness</div></div>' +
-    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(rows) + actRenderCacheUsage(rows) + '</div>' + actRenderLongestLargest(rows) + '</div></div>' +
+    '<div class="act-group-body"><div class="act-planning-grid">' + actRenderFailureCost(rows, actBreakdown.traceSummaries) + actRenderCacheUsage(rows) + '</div>' + actRenderLongestLargest(rows, actBreakdown.traceSummaries) + '</div></div>' +
 
     '<div id="act-trust-audit" class="act-group-card"><div class="act-group-head"><div class="act-group-kicker">D. Trust &amp; Audit</div><div class="act-group-title">Prove the cost numbers are reliable</div></div>' +
-    '<div class="act-group-body">' + actRenderDataQuality(rows) + actRenderRequestExplorer(rows) + '</div></div>' +
+    '<div class="act-group-body">' + actRenderDataQuality(rows) + actRenderRequestExplorer(rows, actBreakdown.traceSummaries) + actRenderTraceExplorer(actBreakdown.traceSummaries) + '</div></div>' +
 
     '<div class="act-foot-hint">Reporting period governs every section above except Trust &amp; Audit’s Request Explorer statement of scope. Timezone: browser-local.</div>' +
     '</div>';
@@ -1183,6 +1418,14 @@ function actRenderCostBreakdown() {
   document.getElementById('act-scr-cost').innerHTML = html;
   actRenderMainBreakdown();
   actApplyExplorerFilter();
+  actRenderLongestLargestBody();
+  // Code-review fix: only build the By Trace view's HTML when it's the
+  // active mode — it was previously rendered unconditionally into a
+  // hidden div on every single Cost Breakdown render (every period
+  // switch), work with zero visible benefit unless the toggle was opened.
+  // actSetExplorerViewMode() renders it lazily on demand when switched to.
+  if (actExplorerViewMode === 'trace') actRenderExplorerTraceView();
+  actApplyTraceExplorerFilter();
 }
 
 function actRenderSelectionEconomics(rows) {
@@ -1201,7 +1444,7 @@ function actRenderSelectionEconomics(rows) {
     '<table class="act-data-table"><thead><tr><th>Selection Path</th><th>Calls</th><th>Avg Cost / Call</th><th>Total Cost</th><th>Failure Rate</th></tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
-function actRenderFailureCost(rows) {
+function actRenderFailureCost(rows, traceSummaries) {
   var failed = actFailedRows(rows);
   var failCost = actSumCost(failed);
   var failRate = rows.length ? (failed.length / rows.length * 100) : 0;
@@ -1209,13 +1452,42 @@ function actRenderFailureCost(rows) {
   var topPhase = actTopBy(phaseGroups, 'cost');
   var featureGroups = actGroupSum(failed, function (r) { return actFeatureOf(r.caller); });
   var topFeature = actTopBy(featureGroups, 'cost');
+
+  // Items 3 (remaining-five-widgets spec) — 2 new conversation-level KPIs,
+  // only for a governance viewer with trace data (mt_ai_trace_detail_list
+  // is gated the same as the payload viewer) — the original 4-KPI strip is
+  // unchanged for a read-only viewer rather than showing a half-locked card.
+  var traceKpisHtml = '', gridCols = 4;
+  if (actIsGovernanceViewer() && traceSummaries) {
+    var traces = traceSummaries;
+    // Code-review fix: match actFailedRows' own failure definition (error
+    // OR timeout) — previously only 'error' counted here, undercounting
+    // relative to the existing per-call Failure Cost KPIs on this same card.
+    var withFailedSpan = traces.filter(function (t) { return t.spans.some(function (s) { return s.span_status === 'error' || s.span_status === 'timeout'; }); });
+    var pctWithFailedSpan = traces.length ? (withFailedSpan.length / traces.length * 100) : null;
+    // Denominator is ALL traces, not just withFailedSpan — matches the
+    // prototype's own implied semantics (9% recovered sits alongside 12%
+    // w/ ≥1 failed span, both out of the same total).
+    var recovered = traces.filter(function (t) { return t.statusKind === 'recovered'; });
+    var pctRecovered = traces.length ? (recovered.length / traces.length * 100) : null;
+    var abandoned = traces.filter(function (t) { return t.statusKind === 'abandoned'; });
+    var abandonedSpend = abandoned.reduce(function (s, t) { return s + t.totalCost; }, 0);
+    gridCols = 6;
+    traceKpisHtml =
+      '<div class="act-kpi" style="background:var(--amber-pale);"><div class="act-kpi-label">Traces w/ &ge;1 Failed Span</div><div class="act-kpi-value">' + (pctWithFailedSpan !== null ? pctWithFailedSpan.toFixed(1) + '%' : '—') + '</div><div class="act-kpi-sub">' + (pctRecovered !== null ? 'a later span succeeded: ' + pctRecovered.toFixed(0) + '%' : 'no traces this period') + '</div></div>' +
+      '<div class="act-kpi" style="background:var(--amber-pale);"><div class="act-kpi-label">Spend on Abandoned Traces</div><div class="act-kpi-value">' + actFmtUSD0(abandonedSpend) + '</div><div class="act-kpi-sub">last span errored, nothing after</div></div>';
+  }
+
   return '<div class="act-scoped-card"><div class="act-section-title">Provider-Call Failure Cost</div>' +
-    '<div class="act-kpi-strip" style="grid-template-columns:repeat(4,1fr);">' +
+    '<div class="act-kpi-strip" style="grid-template-columns:repeat(' + (gridCols === 6 ? 3 : 4) + ',1fr);">' +
     '<div class="act-kpi"><div class="act-kpi-label">Failure Cost</div><div class="act-kpi-value">' + actFmtUSD0(failCost) + '</div><div class="act-kpi-sub">' + (actSumCost(rows) ? (failCost / actSumCost(rows) * 100).toFixed(1) : '0') + '% of spend</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Failure Rate</div><div class="act-kpi-value">' + failRate.toFixed(1) + '%</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Top Phase</div><div class="act-kpi-value" style="font-size:13px;">' + (topPhase ? actEsc(topPhase.key) : '—') + '</div></div>' +
     '<div class="act-kpi"><div class="act-kpi-label">Top Feature</div><div class="act-kpi-value" style="font-size:13px;">' + (topFeature ? actEsc(topFeature.key) : '—') + '</div></div>' +
-    '</div><div class="act-scoped-card-note">Covers failed or timed-out provider calls only, not poor-quality successful outputs or user rework. Phase detail is limited today — every failed call currently logs the same phase, so Top Phase will not vary until that field carries more granularity.</div></div>';
+    traceKpisHtml +
+    '</div><div class="act-scoped-card-note">Covers failed or timed-out provider calls only, not poor-quality successful outputs or user rework. Phase detail is limited today — every failed call currently logs the same phase, so Top Phase will not vary until that field carries more granularity.' +
+    (gridCols === 6 ? ' The two conversation-level KPIs above reflect the AI Trace Layer’s current adoption (Requirement Agent only) — they undercount as more features adopt tracing, not because failures elsewhere aren’t happening.' : '') +
+    '</div></div>';
 }
 
 function actRenderCacheUsage(rows) {
@@ -1254,7 +1526,23 @@ function actRenderCacheUsage(rows) {
     '</div><div class="act-scoped-card-note">' + actEsc(noteMsg) + '</div></div>';
 }
 
-function actRenderLongestLargest(rows) {
+// Item 2 (remaining-five-widgets spec) — "By Conversation" ranks whole
+// traces instead of individual calls. Same top-10-longest + top-10-largest
+// merge-and-cap-20 logic as the existing "By Call" view, re-aggregated
+// over trace-level totals instead of per-call fields.
+var actLongestLargestMode = 'call';
+var actLongestLargestRows = [];
+var actLongestLargestTraces = [];
+
+function actSetLongestLargestMode(mode) {
+  actLongestLargestMode = mode;
+  document.querySelectorAll('#act-longest-largest-toggle .act-view-toggle-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+  });
+  actRenderLongestLargestBody();
+}
+
+function actLongestLargestCallHtml(rows) {
   var longest = rows.slice().sort(function (a, b) { return (b.duration_ms || 0) - (a.duration_ms || 0); }).slice(0, 10);
   var largest = rows.slice().sort(function (a, b) { return ((b.request_bytes || 0) + (b.response_bytes || 0)) - ((a.request_bytes || 0) + (a.response_bytes || 0)); }).slice(0, 10);
   var seen = {}, combined = [];
@@ -1266,12 +1554,65 @@ function actRenderLongestLargest(rows) {
   var featureCounts = {};
   combined.forEach(function (r) { var f = actFeatureOf(r.caller); featureCounts[f] = (featureCounts[f] || 0) + 1; });
   var topFeature = Object.keys(featureCounts).sort(function (a, b) { return featureCounts[b] - featureCounts[a]; })[0];
+  // Code-review fix: this insight is rendered via textContent (actRenderLongestLargestBody), which
+  // does not decode HTML entities the way the old innerHTML-based render did — actEsc() here would
+  // double-escape (e.g. a literal "&amp;" shown instead of "&").
+  var insight = topFeature ? topFeature + ' accounts for the most rows in the combined longest/largest set this period.' : 'No data for this period.';
   var rowsHtml = combined.map(function (r) {
     return '<tr><td>' + new Date(r.request_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(actFeatureOf(r.caller)) + '</td><td>' + actEsc(actModelOf(r)) + '</td><td>' + ((r.duration_ms || 0) / 1000).toFixed(1) + 's</td><td>' + Math.round(((r.request_bytes || 0) + (r.response_bytes || 0)) / 1024) + ' KB</td><td><span class="act-tag-status ' + (r.status === 'success' ? 'ok' : 'bad') + '">' + actEsc(r.status) + '</span></td></tr>';
   }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:16px;">No calls in this period.</td></tr>';
+  return {
+    insight: insight,
+    head: '<tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr>',
+    body: rowsHtml
+  };
+}
+
+function actLongestLargestConversationHtml(traces) {
+  var longest = traces.slice().sort(function (a, b) { return b.totalDurationMs - a.totalDurationMs; }).slice(0, 10);
+  var largest = traces.slice().sort(function (a, b) { return b.totalBytes - a.totalBytes; }).slice(0, 10);
+  var seen = {}, combined = [];
+  longest.concat(largest).forEach(function (t) {
+    if (!seen[t.trace_id]) { seen[t.trace_id] = true; combined.push(t); }
+  });
+  combined = combined.slice(0, 20).sort(function (a, b) { return b.totalDurationMs - a.totalDurationMs; });
+  var insight = combined.length ? 'Ranking whole conversations, not individual calls — a conversation with several quick calls can outrank a single slow call.' : 'No traced conversations in this period.';
+  var rowsHtml = combined.map(function (t) {
+    return '<tr><td>' + new Date(t.trace_started_at).toLocaleString() + '</td><td class="act-cell-name">' + actEsc(t.agent_name) + '</td><td>' + t.spanCount + '</td><td>' + (t.totalDurationMs / 1000).toFixed(1) + 's</td><td>' + Math.round(t.totalBytes / 1024) + ' KB</td><td>' + actTraceStatusPillHtml(t) + '</td></tr>';
+  }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--t4);padding:16px;">No traced conversations in this period.</td></tr>';
+  return {
+    insight: insight,
+    head: '<tr><th>Started</th><th>Agent</th><th>Calls</th><th>Total Duration</th><th>Total Size</th><th>Outcome</th></tr>',
+    body: rowsHtml
+  };
+}
+
+function actRenderLongestLargestBody() {
+  var insightEl = document.getElementById('act-longest-largest-insight');
+  var headEl = document.getElementById('act-longest-largest-thead');
+  var bodyEl = document.getElementById('act-longest-largest-tbody');
+  if (!bodyEl) return;
+  var result = actLongestLargestMode === 'conversation'
+    ? actLongestLargestConversationHtml(actLongestLargestTraces)
+    : actLongestLargestCallHtml(actLongestLargestRows);
+  if (insightEl) insightEl.textContent = result.insight;
+  if (headEl) headEl.innerHTML = result.head;
+  bodyEl.innerHTML = result.body;
+}
+
+function actRenderLongestLargest(rows, traceSummaries) {
+  actLongestLargestRows = rows;
+  actLongestLargestTraces = traceSummaries || [];
+  var toggleHtml = actIsGovernanceViewer()
+    ? '<div class="act-view-toggle" id="act-longest-largest-toggle" style="margin-bottom:10px;">' +
+      '<button class="act-view-toggle-btn ' + (actLongestLargestMode === 'call' ? 'active' : '') + '" data-mode="call" onclick="actSetLongestLargestMode(\'call\')">By Call</button>' +
+      '<button class="act-view-toggle-btn ' + (actLongestLargestMode === 'conversation' ? 'active' : '') + '" data-mode="conversation" onclick="actSetLongestLargestMode(\'conversation\')">By Conversation</button>' +
+      '</div>'
+    : '';
   return '<div class="act-scoped-card"><div class="act-section-title">Longest and Largest Requests</div>' +
-    '<div class="act-section-insight">' + (topFeature ? actEsc(topFeature) + ' accounts for the most rows in the combined longest/largest set this period.' : 'No data for this period.') + '</div>' +
-    '<div style="max-height:340px;overflow-y:auto;"><table class="act-data-table"><thead><tr><th>Time</th><th>Feature</th><th>Model</th><th>Duration</th><th>Payload Size</th><th>Status</th></tr></thead><tbody>' + rowsHtml + '</tbody></table></div></div>';
+    toggleHtml +
+    '<div class="act-section-insight" id="act-longest-largest-insight"></div>' +
+    '<div style="max-height:340px;overflow-y:auto;"><table class="act-data-table"><thead id="act-longest-largest-thead"></thead><tbody id="act-longest-largest-tbody"></tbody></table></div></div>';
 }
 
 function actRenderDataQuality(rows) {
@@ -1455,10 +1796,51 @@ function actApplyExplorerFilter() {
   if (countEl) countEl.textContent = 'Showing ' + actFmtNum(shown.length) + ' of ' + actFmtNum(filtered.length) + ' matching calls (' + actFmtNum(actExplorerSourceRows.length) + ' total this period).';
 }
 
-function actRenderRequestExplorer(rows) {
+// Item 1 (remaining-five-widgets spec) — "By Trace" toggle. Flat view is
+// entirely unchanged; By Trace groups the same period's data via the
+// shared trace-detail fetch (actBreakdown.traceSummaries), reusing
+// actTraceGroupRowsHtml/actBindTraceGroupClicks (also used by the Trace
+// Explorer card below) rather than a second implementation of the same
+// expand/collapse + payload-icon behavior.
+var actExplorerViewMode = 'flat';
+var actExplorerTraceSummaries = [];
+
+function actSetExplorerViewMode(mode) {
+  actExplorerViewMode = mode;
+  var flatWrap = document.getElementById('act-explorer-flat-wrap');
+  var traceWrap = document.getElementById('act-explorer-trace-wrap');
+  if (flatWrap) flatWrap.style.display = mode === 'flat' ? '' : 'none';
+  if (traceWrap) traceWrap.style.display = mode === 'trace' ? '' : 'none';
+  document.querySelectorAll('#act-explorer-view-toggle .act-view-toggle-btn').forEach(function (b) {
+    b.classList.toggle('active', b.getAttribute('data-mode') === mode);
+  });
+  if (mode === 'trace') actRenderExplorerTraceView();
+}
+
+function actRenderExplorerTraceView() {
+  var wrap = document.getElementById('act-explorer-trace-wrap');
+  if (!wrap) return;
+  var traces = actExplorerTraceSummaries;
+  var rowsHtml = actTraceGroupRowsHtml(traces);
+  wrap.innerHTML =
+    '<div class="act-cell-muted" style="margin-bottom:6px;">' + actFmtNum(traces.length) + ' conversation' + (traces.length === 1 ? '' : 's') + ' this period (capped at the 100 most recent).</div>' +
+    (rowsHtml ? '<div class="act-trace-group-list">' + rowsHtml + '</div>' : '<div class="act-empty-state"><div class="act-empty-state-title">No traced conversations in this period.</div></div>') +
+    '<div class="act-scoped-card-note" style="margin-top:10px;">Only calls from features that have adopted the AI Trace Layer appear grouped here — today, that’s Requirement Agent only. Every other feature’s calls are still visible in Flat view, just not grouped into conversations yet.</div>';
+  actBindTraceGroupClicks(wrap);
+}
+
+function actRenderRequestExplorer(rows, traceSummaries) {
   actExplorerSourceRows = rows;
-  return '<div class="act-scoped-card"><div class="act-section-title">Request Explorer</div>' +
+  actExplorerTraceSummaries = traceSummaries || [];
+  var toggleHtml = actIsGovernanceViewer()
+    ? '<div class="act-view-toggle" id="act-explorer-view-toggle">' +
+      '<button class="act-view-toggle-btn ' + (actExplorerViewMode === 'flat' ? 'active' : '') + '" data-mode="flat" onclick="actSetExplorerViewMode(\'flat\')">Flat</button>' +
+      '<button class="act-view-toggle-btn ' + (actExplorerViewMode === 'trace' ? 'active' : '') + '" data-mode="trace" onclick="actSetExplorerViewMode(\'trace\')">By Trace</button>' +
+      '</div>'
+    : '';
+  return '<div class="act-scoped-card"><div class="act-section-title-row"><div class="act-section-title" style="margin:0;">Request Explorer</div>' + toggleHtml + '</div>' +
     '<div class="act-section-insight">Raw event-level audit table. Uses the reporting period only — intentionally ignores Main Breakdown’s Group By, since an audit view needs everything in the period, not a dimension-filtered slice. Filter any column below to narrow down a specific record.</div>' +
+    '<div id="act-explorer-flat-wrap"' + (actExplorerViewMode === 'flat' ? '' : ' style="display:none;"') + '>' +
     '<div class="act-cell-muted" id="act-explorer-count" style="margin-bottom:6px;"></div>' +
     '<div style="max-height:420px;overflow-y:auto;"><table class="act-data-table"><thead>' +
     '<tr><th>Time</th><th>Feature</th><th>Provider</th><th>Model</th><th>Prompt</th><th>Tokens</th><th>Cost</th><th>Status</th></tr>' +
@@ -1469,7 +1851,61 @@ function actRenderRequestExplorer(rows) {
     '<th></th><th></th><th></th><th></th>' +
     '<th><select id="act-exp-f-status" onchange="actApplyExplorerFilter()" style="width:100%;font-size:10px;padding:4px 2px;border:1px solid var(--divider);border-radius:4px;"><option value="">All</option><option value="success">Success</option><option value="error">Error</option><option value="timeout">Timeout</option></select></th>' +
     '</tr>' +
-    '</thead><tbody id="act-explorer-body"></tbody></table></div></div>';
+    '</thead><tbody id="act-explorer-body"></tbody></table></div></div>' +
+    '<div id="act-explorer-trace-wrap"' + (actExplorerViewMode === 'trace' ? '' : ' style="display:none;"') + '></div>' +
+    '</div>';
+}
+
+// Item 5 (remaining-five-widgets spec) — Trace Explorer card. Placed next
+// to Request Explorer (Decision 1: a card inside Cost Breakdown, not a new
+// tab). Reuses actTraceGroupRowsHtml/actBindTraceGroupClicks — the same
+// expand/collapse + payload-icon behavior as Item 1's By Trace toggle, and
+// the same payload modal already shipped (actOpenPayloadModal) rather than
+// a separate "Payload Inspector" surface.
+var actTraceExplorerSummaries = [];
+var actTraceExplorerFilter = { agent: '', status: '' };
+
+function actApplyTraceExplorerFilter() {
+  var body = document.getElementById('act-trace-explorer-body');
+  if (!body) return;
+  // Code-review fix: matches actApplyExplorerFilter's own race guard — a
+  // payload icon clicked just before an agent/status filter change here
+  // could otherwise still pop the modal open for a trace the viewer has
+  // since filtered away from.
+  actUiInvalidationSeq++;
+  actTraceExplorerFilter.agent = ((document.getElementById('act-te-f-agent') || {}).value || '').trim().toLowerCase();
+  actTraceExplorerFilter.status = (document.getElementById('act-te-f-status') || {}).value || '';
+  var filtered = actTraceExplorerSummaries.filter(function (t) {
+    if (actTraceExplorerFilter.agent && t.agent_name.toLowerCase().indexOf(actTraceExplorerFilter.agent) === -1) return false;
+    if (actTraceExplorerFilter.status && t.statusKind !== actTraceExplorerFilter.status) return false;
+    return true;
+  });
+  var rowsHtml = actTraceGroupRowsHtml(filtered);
+  body.innerHTML = rowsHtml ? '<div class="act-trace-group-list">' + rowsHtml + '</div>'
+    : '<div class="act-empty-state"><div class="act-empty-state-title">No traced conversations match these filters.</div></div>';
+  actBindTraceGroupClicks(body);
+  var countEl = document.getElementById('act-trace-explorer-count');
+  if (countEl) countEl.textContent = 'Showing ' + actFmtNum(filtered.length) + ' of ' + actFmtNum(actTraceExplorerSummaries.length) + ' traced conversations this period (capped at the 100 most recent).';
+}
+
+function actRenderTraceExplorer(traceSummaries) {
+  if (!actIsGovernanceViewer()) {
+    return '<div class="act-scoped-card"><div class="act-section-title">Trace Explorer</div>' +
+      '<div class="act-empty-state"><div class="act-empty-state-title">Admin or Power User access required</div>' +
+      '<div class="act-empty-state-sub">Trace/span-level detail is gated the same as Request Explorer’s payload viewer.</div></div></div>';
+  }
+  actTraceExplorerSummaries = traceSummaries || [];
+  return '<div class="act-scoped-card"><div class="act-section-title">Trace Explorer</div>' +
+    '<div class="act-section-insight">Conversation-level drill-down — one row per trace, expand for its ordered spans. Filters below apply within this reporting period.</div>' +
+    '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">' +
+    '<input id="act-te-f-agent" type="text" placeholder="Filter by agent…" oninput="actApplyTraceExplorerFilter()" style="font-size:11px;padding:6px 8px;border:1px solid var(--divider);border-radius:6px;flex:1;min-width:140px;">' +
+    '<select id="act-te-f-status" onchange="actApplyTraceExplorerFilter()" style="font-size:11px;padding:6px 8px;border:1px solid var(--divider);border-radius:6px;">' +
+    '<option value="">All statuses</option><option value="completed">Completed</option><option value="recovered">1 error span</option><option value="abandoned">Abandoned</option><option value="other">Other (e.g. timeout)</option>' +
+    '</select></div>' +
+    '<div class="act-cell-muted" id="act-trace-explorer-count" style="margin-bottom:6px;"></div>' +
+    '<div id="act-trace-explorer-body"></div>' +
+    '<div class="act-scoped-card-note" style="margin-top:10px;">Trace Explorer currently reflects Requirement Agent conversations only, since it’s the sole caller writing traces today — every other feature’s calls remain visible in Request Explorer, just not grouped into conversations yet.</div>' +
+    '</div>';
 }
 
 // ══════════════════════════════════════════════════════════════════════
