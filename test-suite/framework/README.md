@@ -89,3 +89,54 @@ nothing in this harness writes to any agent's production prompt code.
 5. Run `node run-tests.js --agent <new-agent-name>`.
 
 `run-tests.js` and `evaluator.js` are never touched for this.
+
+Steps 2–4 above can be drafted rather than hand-authored from scratch — see
+"Test suite generator (Phase 1)" below.
+
+## Test suite generator (Phase 1)
+
+Source: `Phase1-Generator-Addendum.md` (kept by Nethaji outside this repo,
+alongside `RA-Test-Execution-Spec.md`). Onboarding Requirement Agent meant
+hand-authoring all three of its files from scratch across this project's
+first build; this generator drafts them instead, so the next agent doesn't
+repeat that cost.
+
+- **`generator/GENERATOR-PROMPT.md`** — the generator itself. There's no
+  script to run for the drafting step: reading an agent's source and
+  inferring its real behavior is a reasoning task, so this file is a set of
+  instructions run through a Claude Code session (source code required, a
+  PRD optional-supplementary), producing draft `<Agent>-Test-Cases.md` /
+  `<Agent>-Rubrics.md` / `invoke-config.js`, each opening with a `DRAFT —
+  pending review` confidence banner. Workflow is hybrid: one drafting pass,
+  then iterative refinement with the reviewer before either gate.
+- **`generator/smoke-test.js`** — automated pre-check, run against a drafted
+  `invoke-config.js` before it reaches a human reviewer:
+  `node generator/smoke-test.js --agent <new-agent-name>`. Confirms the draft
+  actually reaches the real endpoint, gets a well-formed response, and — the
+  full DB round-trip, not just response shape — is recorded in both
+  `mt_ai_traces` and `mt_ai_usage_events`. Requires `SUPABASE_URL` /
+  `SUPABASE_SERVICE_ROLE_KEY` (unlike `run-tests.js`, this check is
+  meaningless without them, so it errors out rather than degrading).
+- **`generator/REVIEW-CHECKLIST.md`** — copy to
+  `test-suite/agents/<new-agent-name>/REVIEW.md`. Records two *independent*
+  approval gates — Gate 1 (PM-owned: test-cases + rubrics, a product
+  judgment call) and Gate 2 (engineer-owned: invoke-config fidelity, a
+  technical judgment call). Gate 1 passing never substitutes for Gate 2.
+
+Three decisions worth recording here, since they shaped the design and
+aren't obvious from the files alone:
+- **No standing Gate 2 reviewer is assigned.** Only Requirement Agent has
+  been onboarded so far; who reviews the next agent's `invoke-config.js` is
+  decided per-agent, at onboarding time, rather than fixed in advance.
+- **The smoke test checks the full DB round-trip**, not just response
+  shape/auth — a drafted `invoke-config.js` that reaches the endpoint but
+  never gets traced or logged is still a failing draft.
+- **The workflow is draft-then-refine, not one-shot** — mirrors how
+  Requirement Agent's own test cases and rubrics actually got iterated in
+  this project (draft, feedback, refine, approve), not a single
+  take-it-or-leave-it generation pass.
+
+Phase 2 (an LLM that generates a *self-executing* invoke-config by
+simulating an agent's own runtime, without a human deciding invocation
+strategy) is explicitly out of scope — see the addendum's "Deferred to
+Phase 2" section for why.
