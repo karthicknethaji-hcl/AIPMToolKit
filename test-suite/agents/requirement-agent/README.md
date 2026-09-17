@@ -39,14 +39,37 @@ Env vars `invoke-config.js` reads:
   the browser session (dev tools → Application → local/session storage →
   the Supabase auth token) before each run.
 - `RA_TEST_COMPANY_ID` (required) — `pgt-dev`'s `company_id` UUID.
+- `RA_TEST_PRODUCT_ID` (required for RA-G03/RA-A02, optional otherwise) —
+  the product/session the harness fetches real Discovery Map/Capability
+  Canvas state for (see "Live session context" below). In the browser
+  console on the Product Studio page, with the product you want to test
+  against active, run `activeProfileId` — that's the value.
 - `RA_TEST_PROXY_URL` (optional) — defaults to
   `http://localhost:3001/api/anthropic` (the local dev proxy). Point this
   at the hosted dev proxy if not running the proxy locally.
-- `RA_TEST_MODEL` (optional) — defaults to `claude-sonnet-5`.
+- `RA_TEST_MODEL` (optional) — defaults to `claude-sonnet-4-6`. Must be one
+  of `proxy/providerAdapters.js`'s `MODEL_CATALOG_BY_PROVIDER` entries for
+  the `anthropic` provider, or the proxy rejects the call before it ever
+  reaches the model.
 
-Result persistence to `mt_ai_quality_scores` (optional, see the framework
-README) reuses `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` — the same names
-`proxy/server.js` uses.
+Result persistence to `mt_ai_quality_scores`, **and fetching live Discovery
+Map/Capability Canvas context** (see below), both reuse
+`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` — the same names `proxy/server.js`
+uses. Without these two set, the harness still runs every case, it just has
+no real session data to inject and won't persist results.
+
+## Live session context — Discovery Map / Capability Canvas
+
+`invoke-config.js` fetches the most recent `mt_sessions` row for
+`RA_TEST_COMPANY_ID` + `RA_TEST_PRODUCT_ID` (there's no "active session"
+flag in the schema — most-recent `saved_at` is a heuristic, not a
+guarantee), reads its `snapshot.gData` (Discovery Map) and
+`snapshot.capStore` (Capability Canvas), and appends a rendered summary of
+both into every call's system prompt. This is fetched once per harness run
+(not re-fetched per turn) and requires `SUPABASE_SERVICE_ROLE_KEY` — without
+it, RA sees no real Discovery Map/Capability Canvas state at all, and
+RA-G03/RA-A02 will have nothing genuine to match against regardless of
+what's set up in the app.
 
 ## Known limitation — request-fidelity (accepted, not hidden)
 
@@ -96,8 +119,16 @@ A few active cases assume pre-existing state in the test company/product
 context that this harness's own chat turns cannot create (noted per-case
 in `test-cases.json` as `fixtureDependency`):
 
-- **RA-G03** — a Discovery Map with a specific named metric already present.
-- **RA-A02** — a capability that genuinely already exists on Capability
-  Canvas.
+- **RA-G03** — a Discovery Map with a specific named metric ("Repeat
+  Purchase Rate" under a "Retention" stage) already present.
+- **RA-A02** — a capability ("Loyalty Tier Progress") that genuinely
+  already exists on Capability Canvas.
 
-Set these up once in `pgt-dev` before running these two cases.
+Set these up once in `pgt-dev`, for the specific product `RA_TEST_PRODUCT_ID`
+points to — Discovery Map has no "add a stage/metric" button, so the
+practical path is: in Capability Canvas, add a capability and pick "Custom
+Process Area"/"Custom Metric" as its bucket (this creates a new stage with
+one metric), then use Discovery Map's Edit Stage / edit-metric actions to
+rename them to the names above. Both `RA_TEST_PRODUCT_ID` and
+`SUPABASE_SERVICE_ROLE_KEY` must also be set (see "Live session context"
+above) or the harness has no way to see this fixture even once it exists.

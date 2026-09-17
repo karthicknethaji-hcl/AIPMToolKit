@@ -119,7 +119,8 @@ async function writeScore(supabaseAdmin, runId, agentName, testCase, outcome, cl
     pass: outcome.pass,
     evaluator: outcome.evaluator,
     run_id: runId,
-    notes: outcome.notes || null
+    notes: outcome.notes || null,
+    recommendation: outcome.recommendation || null
   });
   if (error) console.warn('[run-tests] Failed to write score for', testCase.testId, ':', error.message);
 }

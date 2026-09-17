@@ -21,6 +21,9 @@ const crypto = require('crypto');
 const PROXY_URL = process.env.RA_TEST_PROXY_URL || 'http://localhost:3001/api/anthropic';
 const AUTH_TOKEN = process.env.RA_TEST_AUTH_TOKEN || '';
 const COMPANY_ID = process.env.RA_TEST_COMPANY_ID || '';
+const PRODUCT_ID = process.env.RA_TEST_PRODUCT_ID || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 // Must be one of proxy/providerAdapters.js's MODEL_CATALOG_BY_PROVIDER
 // entries for the 'anthropic' provider (checked server-side by
 // isKnownModel() — an unrecognized string is rejected before any upstream
@@ -33,12 +36,93 @@ if (!AUTH_TOKEN) {
 if (!COMPANY_ID) {
   console.warn('[invoke-config] RA_TEST_COMPANY_ID is not set — /api/anthropic calls will fail requireActiveCompanyMember. See README.md.');
 }
+if (!PRODUCT_ID) {
+  console.warn('[invoke-config] RA_TEST_PRODUCT_ID is not set — no real Discovery Map/Capability Canvas context will be fetched. Cases that depend on real session state (RA-G03, RA-A02) will have nothing real to match against. See README.md.');
+}
+
+// ── Live session context — Discovery Map / Capability Canvas ───────────────
+// mt_sessions.snapshot is a JSONB blob keyed by (company_id, product_id),
+// with no fixed schema and no unique constraint on that pair (confirmed
+// against scripts/session-store.js/sql/*.sql) — a company can have several
+// sessions per product, with no "active session" flag. Most-recent
+// saved_at for the given company_id+product_id is the closest thing to
+// "current" and is what's used below; it is a heuristic, not a guarantee.
+// Fetched once per harness run (module-level cache), not per turn — this
+// mirrors how the harness reuses one static system prompt across turns
+// rather than re-deriving context every call.
+// snapshot.gData shape: {northStarMetric, stages:[{id,label,l1_metrics:[{name,why}]}]}
+//   (scripts/session-store.js's _sessionStoreBuildSnapshot()/_ssApplySnapshotFields())
+// snapshot.capStore shape: object keyed by `${stageId}||${metricName}`, each
+//   value {metricName, stageLabel, stageId, capabilities:[{name, why, ...}]}
+//   (scripts/capability-canvas.js)
+let liveContextPromise = null;
+
+function renderDiscoveryMapContext(gData) {
+  if (!gData || !Array.isArray(gData.stages) || !gData.stages.length) return null;
+  const lines = ['Existing Discovery Map (real session state — use these exact names verbatim when a capability clearly belongs under one of them; do not invent a new stage/metric name if one of these already fits):'];
+  for (const stage of gData.stages) {
+    const metricNames = (stage.l1_metrics || []).map(function (m) { return m.name; }).join(', ') || '(no metrics yet)';
+    lines.push('- Stage "' + stage.label + '": ' + metricNames);
+  }
+  return lines.join('\n');
+}
+
+function renderCapabilityCanvasContext(capStore) {
+  if (!capStore || typeof capStore !== 'object') return null;
+  const lines = ['Existing capabilities already on Capability Canvas (tag any of these "(existing)" if referenced — never re-create them as new):'];
+  for (const key of Object.keys(capStore)) {
+    const entry = capStore[key];
+    for (const cap of (entry && entry.capabilities) || []) {
+      lines.push('- "' + cap.name + '" (under: ' + entry.metricName + ')');
+    }
+  }
+  return lines.length > 1 ? lines.join('\n') : null;
+}
+
+async function fetchLiveContext() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !COMPANY_ID || !PRODUCT_ID) {
+    return { discoveryMapText: null, capabilityCanvasText: null };
+  }
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    const { data, error } = await supabase
+      .from('mt_sessions')
+      .select('snapshot, saved_at')
+      .eq('company_id', COMPANY_ID)
+      .eq('product_id', PRODUCT_ID)
+      .order('saved_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      console.warn('[invoke-config] Could not fetch live session snapshot:', error.message);
+      return { discoveryMapText: null, capabilityCanvasText: null };
+    }
+    if (!data) {
+      console.warn('[invoke-config] No mt_sessions row found for this company_id/product_id — nothing to fetch.');
+      return { discoveryMapText: null, capabilityCanvasText: null };
+    }
+    const snapshot = data.snapshot || {};
+    return {
+      discoveryMapText: renderDiscoveryMapContext(snapshot.gData),
+      capabilityCanvasText: renderCapabilityCanvasContext(snapshot.capStore)
+    };
+  } catch (e) {
+    console.warn('[invoke-config] Live context fetch threw:', e.message);
+    return { discoveryMapText: null, capabilityCanvasText: null };
+  }
+}
+
+function getLiveContext() {
+  if (!liveContextPromise) liveContextPromise = fetchLiveContext();
+  return liveContextPromise;
+}
 
 // Condensed, hand-maintained approximation of Requirement Agent's system
 // prompt (scripts/prompts.js's buildTreePrompt), sufficient to exercise the
 // rubrics this harness scores. NOT the production prompt — see the module
 // header above.
-const SYSTEM_PROMPT = [
+const BASE_SYSTEM_PROMPT = [
   'You are Requirement Agent, a product-requirements drafting assistant for a retail/CPG product.',
   'One conversation = one release scope, symmetric across all touched capabilities.',
   'You output section-level deltas only (sectionUpdates), never a full-document regeneration.',
@@ -62,6 +146,13 @@ const SYSTEM_PROMPT = [
     '"sectionUpdates": [{"section": <string>, "content": <string>}], ' +
     '"openQuestions": [<string>], "clarifyingQuestions": [<string>]}.'
 ].join('\n');
+
+function buildSystemPrompt(liveContext) {
+  const parts = [BASE_SYSTEM_PROMPT];
+  if (liveContext && liveContext.discoveryMapText) parts.push(liveContext.discoveryMapText);
+  if (liveContext && liveContext.capabilityCanvasText) parts.push(liveContext.capabilityCanvasText);
+  return parts.join('\n\n');
+}
 
 function newClientCallId() {
   return crypto.randomUUID();
@@ -129,17 +220,18 @@ function tryParseJson(text) {
  * Returns {rawText, parsed, parseError, clientTraceId}.
  */
 async function sendMessage(state, action) {
+  const liveContext = await getLiveContext();
   const userContent = renderUserTurn(state, action);
   const clientCallId = newClientCallId();
 
   const body = {
     model: MODEL,
     max_tokens: 4000,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(liveContext),
     messages: [{ role: 'user', content: userContent }],
     _caller: 'requirement-agent-test-harness',
     company_id: COMPANY_ID,
-    product_id: null,
+    product_id: PRODUCT_ID || null,
     session_id: null,
     session_type: null,
     client_call_id: clientCallId,
