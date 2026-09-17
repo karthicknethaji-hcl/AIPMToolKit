@@ -217,17 +217,18 @@ function tryParseJson(text) {
 
 /**
  * Sends one turn. action: {content, attachedDocument?}.
- * Returns {rawText, parsed, parseError, clientTraceId}.
+ * Returns {rawText, parsed, parseError, clientTraceId, systemPrompt}.
  */
 async function sendMessage(state, action) {
   const liveContext = await getLiveContext();
   const userContent = renderUserTurn(state, action);
   const clientCallId = newClientCallId();
+  const systemPrompt = buildSystemPrompt(liveContext);
 
   const body = {
     model: MODEL,
     max_tokens: 4000,
-    system: buildSystemPrompt(liveContext),
+    system: systemPrompt,
     messages: [{ role: 'user', content: userContent }],
     _caller: 'requirement-agent-test-harness',
     company_id: COMPANY_ID,
@@ -282,7 +283,8 @@ async function sendMessage(state, action) {
     rawText,
     parsed,
     parseError: parsed === null,
-    clientTraceId: state.clientTraceId
+    clientTraceId: state.clientTraceId,
+    systemPrompt
   };
 }
 

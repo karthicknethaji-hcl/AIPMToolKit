@@ -213,7 +213,40 @@ async function evalLlmJudge(testCase, rubric, callResult, context, callJudgeMode
     jc,
     context || {}
   );
-  const prompt = fillTemplate(rubric.judgePromptTemplate, templateContext);
+  const rubricPrompt = fillTemplate(rubric.judgePromptTemplate, templateContext);
+
+  // The actual system prompt RA was operating under for this call is
+  // prepended here, centrally, rather than added to every rubric's own
+  // judgePromptTemplate — invoke-config.js already builds this text
+  // in-process (no trace-table round-trip needed, mt_ai_trace_payloads
+  // isn't even built in this project yet), so it's threaded straight
+  // through callResult.systemPrompt. Giving the judge this context is what
+  // lets a fail's recommendation name a concrete, quotable prompt change
+  // instead of a vague pointer — the judge can see exactly what current
+  // instruction produced the failing behavior.
+  //
+  // The recommendation-enrichment instruction below is appended centrally,
+  // the same way, rather than duplicated inside all 13 rubrics'
+  // judgePromptTemplate strings — every rubric already asks for a
+  // "recommendation" field; this just raises the bar on what that field
+  // should contain, in one place. This is a suggestion for a human to
+  // review and apply, not an auto-patch — nothing in this harness writes
+  // to scripts/prompts.js.
+  const RECOMMENDATION_ENRICHMENT =
+    '\n\nIf your "recommendation" field above is non-null, make it two ' +
+    'things combined into that one string: (1) a specific, quotable ' +
+    'instruction to add or change in the system prompt shown above that ' +
+    'would have made this response pass, and (2) a short example — one ' +
+    'realistic input and the corrected output it should produce with that ' +
+    'change applied. Format it exactly like: \'Prompt change: <the exact ' +
+    'instruction text>\\n\\nExample — Input: <short input>\\nExpected: ' +
+    '<short corrected output>\'.';
+
+  const prompt = (callResult.systemPrompt
+    ? 'RA was operating under this exact system prompt for the call being scored:\n' +
+      '---\n' + callResult.systemPrompt + '\n---\n\n' + rubricPrompt
+    : rubricPrompt) + RECOMMENDATION_ENRICHMENT;
+
   const judgeRaw = await callJudgeModel(prompt);
   const judged = extractJudgeJson(judgeRaw);
 

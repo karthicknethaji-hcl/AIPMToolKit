@@ -24,7 +24,9 @@ Env vars (see each agent's own README for the specific values it needs):
 - `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — optional. Without these,
   results print to console only and are not written to
   `mt_ai_quality_scores`.
-- `TEST_HARNESS_JUDGE_MODEL` — optional, defaults to `claude-sonnet-5`.
+- `TEST_HARNESS_JUDGE_MODEL` — optional, defaults to `claude-sonnet-4-6`
+  (must be one of `proxy/providerAdapters.js`'s known models for the
+  `anthropic` provider).
 
 ## What lives here vs. in an agent's own folder
 
@@ -46,6 +48,24 @@ thresholds, judge-prompt templates, and how to actually invoke that agent
   `toxicity_scan` (same as `llm_judge`, run once across every other
   captured output in the run). Ragas is deferred to v2 — no handler here.
 
+## `mt_ai_quality_scores.recommendation`
+
+Every scored case gets a `recommendation` — `null` if it passes. For
+`script_diff` rubrics, the evaluator deterministically turns its own
+violation finding into one readable sentence (no model call). For
+`llm_judge` rubrics, the judge generates it in the same call that produces
+the score — and `evalLlmJudge()` centrally prepends the actual system
+prompt the agent was operating under (`callResult.systemPrompt`, if the
+agent's `sendMessage()` returns one) plus a shared instruction asking for a
+specific, quotable prompt change plus a short example, rather than a vague
+pointer. This instruction lives once in `evaluator.js`, not duplicated
+across every rubric's own `judgePromptTemplate` — a rubric only needs to
+ask for a `"recommendation"` field; what that field should *contain* is a
+framework-level policy.
+
+This is a suggestion for a human to review and apply, not an auto-patch —
+nothing in this harness writes to any agent's production prompt code.
+
 ## Onboarding a new agent
 
 1. Create `test-suite/agents/<new-agent-name>/`.
@@ -60,7 +80,12 @@ thresholds, judge-prompt templates, and how to actually invoke that agent
 4. Add `invoke-config.js` exporting `{ agentName, createConversationState(),
    async sendMessage(state, action) }` for however that agent is actually
    invoked (a direct API call, an ingestion endpoint, browser automation —
-   whatever fits that agent's real architecture).
+   whatever fits that agent's real architecture). `sendMessage()` should
+   also return `systemPrompt` (the exact prompt text used for that call) if
+   available — the evaluator feeds it to the judge on a fail, so
+   recommendations can name a specific prompt change instead of a vague
+   pointer. Optional: recommendations still work without it, just less
+   concretely.
 5. Run `node run-tests.js --agent <new-agent-name>`.
 
 `run-tests.js` and `evaluator.js` are never touched for this.
