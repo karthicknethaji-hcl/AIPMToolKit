@@ -49,13 +49,19 @@ if (!PRODUCT_ID) {
 // "current" and is what's used below; it is a heuristic, not a guarantee.
 // Fetched once per harness run (module-level cache), not per turn — this
 // mirrors how the harness reuses one static system prompt across turns
-// rather than re-deriving context every call.
+// rather than re-deriving context every call. Only a DEFINITIVE outcome is
+// cached (missing config, a real successful fetch, or a confirmed "no
+// session row exists") — a transient error (network blip, Supabase
+// timeout) is deliberately NOT cached, so the next sendMessage() call
+// retries instead of running the rest of that test run with permanently
+// no live context because of a one-off hiccup on the first call.
 // snapshot.gData shape: {northStarMetric, stages:[{id,label,l1_metrics:[{name,why}]}]}
 //   (scripts/session-store.js's _sessionStoreBuildSnapshot()/_ssApplySnapshotFields())
 // snapshot.capStore shape: object keyed by `${stageId}||${metricName}`, each
 //   value {metricName, stageLabel, stageId, capabilities:[{name, why, ...}]}
 //   (scripts/capability-canvas.js)
-let liveContextPromise = null;
+const EMPTY_LIVE_CONTEXT = { discoveryMapText: null, capabilityCanvasText: null };
+let cachedLiveContext = null;
 
 function renderDiscoveryMapContext(gData) {
   if (!gData || !Array.isArray(gData.stages) || !gData.stages.length) return null;
@@ -79,10 +85,20 @@ function renderCapabilityCanvasContext(capStore) {
   return lines.length > 1 ? lines.join('\n') : null;
 }
 
-async function fetchLiveContext() {
+async function getLiveContext() {
+  if (cachedLiveContext) return cachedLiveContext;
+
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !COMPANY_ID || !PRODUCT_ID) {
-    return { discoveryMapText: null, capabilityCanvasText: null };
+    // Definitive and won't change without a process restart (these are all
+    // read once from process.env at module load) — safe, and correct, to
+    // cache. Warn explicitly so a missing SUPABASE_SERVICE_ROLE_KEY isn't
+    // silently indistinguishable from "nothing wrong" the way the other
+    // three env vars already warn for their own missing case above.
+    console.warn('[invoke-config] Live Discovery Map/Capability Canvas context not fetched — SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, RA_TEST_COMPANY_ID, and RA_TEST_PRODUCT_ID must all be set. Cases that depend on real session state (RA-G03, RA-A02) will have nothing real to match against.');
+    cachedLiveContext = EMPTY_LIVE_CONTEXT;
+    return cachedLiveContext;
   }
+
   try {
     const { createClient } = require('@supabase/supabase-js');
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -95,27 +111,31 @@ async function fetchLiveContext() {
       .limit(1)
       .maybeSingle();
     if (error) {
-      console.warn('[invoke-config] Could not fetch live session snapshot:', error.message);
-      return { discoveryMapText: null, capabilityCanvasText: null };
+      // Could be transient (network blip, timeout) — do NOT cache, so the
+      // next sendMessage() call retries instead of running the rest of the
+      // test run with no live context because of a one-off failure.
+      console.warn('[invoke-config] Could not fetch live session snapshot (will retry on next call):', error.message);
+      return EMPTY_LIVE_CONTEXT;
     }
     if (!data) {
+      // Confirmed absence, not a transient failure — this won't change
+      // mid-run, so it's safe to cache.
       console.warn('[invoke-config] No mt_sessions row found for this company_id/product_id — nothing to fetch.');
-      return { discoveryMapText: null, capabilityCanvasText: null };
+      cachedLiveContext = EMPTY_LIVE_CONTEXT;
+      return cachedLiveContext;
     }
     const snapshot = data.snapshot || {};
-    return {
+    cachedLiveContext = {
       discoveryMapText: renderDiscoveryMapContext(snapshot.gData),
       capabilityCanvasText: renderCapabilityCanvasContext(snapshot.capStore)
     };
+    return cachedLiveContext;
   } catch (e) {
-    console.warn('[invoke-config] Live context fetch threw:', e.message);
-    return { discoveryMapText: null, capabilityCanvasText: null };
+    // Thrown exception (e.g. a network failure) — also not cached, for the
+    // same reason as the error branch above.
+    console.warn('[invoke-config] Live context fetch threw (will retry on next call):', e.message);
+    return EMPTY_LIVE_CONTEXT;
   }
-}
-
-function getLiveContext() {
-  if (!liveContextPromise) liveContextPromise = fetchLiveContext();
-  return liveContextPromise;
 }
 
 // Condensed, hand-maintained approximation of Requirement Agent's system

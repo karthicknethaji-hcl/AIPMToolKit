@@ -106,15 +106,20 @@ async function resolveTraceId(supabaseAdmin, clientTraceId, agentName) {
   return data ? data.trace_id : null;
 }
 
-async function writeScore(supabaseAdmin, runId, agentName, testCase, outcome, clientTraceId) {
+async function writeScore(supabaseAdmin, runId, agentName, testCase, outcome, clientTraceId, rubricsConfig) {
   if (!supabaseAdmin) return;
   const traceId = await resolveTraceId(supabaseAdmin, clientTraceId, agentName);
+  // The `metric` column is meant to hold the descriptive name each rubric
+  // defines (rubrics.js's own `.metric` field, e.g. 'groundedness') per the
+  // migration's own column comment — testCase.rubric alone is just the
+  // short dispatch code (e.g. "G"), not that descriptive name.
+  const rubricMeta = rubricsConfig && rubricsConfig[testCase.rubric];
   const { error } = await supabaseAdmin.from('mt_ai_quality_scores').insert({
     test_id: testCase.testId,
     trace_id: traceId,
     agent_name: agentName,
     category: testCase.category,
-    metric: testCase.rubric,
+    metric: (rubricMeta && rubricMeta.metric) || testCase.rubric,
     score: outcome.score,
     pass: outcome.pass,
     evaluator: outcome.evaluator,
@@ -214,7 +219,17 @@ async function main() {
       const outcome = await evaluate(testCase, rubricsConfig, run.callResult, run.context, callJudgeModel);
       results.push({ testCase, outcome });
       capturedOutputs.push({ testId: testCase.testId, text: run.callResult.rawText });
-      await writeScore(supabaseAdmin, runId, invoke.agentName, testCase, outcome, run.callResult.clientTraceId);
+      // Dual-conversation cases (e.g. RA-P01) produce a second, independent
+      // response in run.context.conversationB — the one actually being
+      // checked (for cross-session leakage). Previously only run.callResult
+      // (conversation A) was ever captured or persisted, so conversation
+      // B's output never reached the S2 toxicity scan and its trace was
+      // never the one recorded against the row.
+      if (run.context && run.context.conversationB) {
+        capturedOutputs.push({ testId: testCase.testId + ':conversationB', text: run.context.conversationB.rawText });
+      }
+      const traceIdForRow = (run.context && run.context.conversationB && run.context.conversationB.clientTraceId) || run.callResult.clientTraceId;
+      await writeScore(supabaseAdmin, runId, invoke.agentName, testCase, outcome, traceIdForRow, rubricsConfig);
       console.log(outcome.pass ? 'PASS' : 'FAIL');
     } catch (err) {
       console.log('ERROR — ' + err.message);
@@ -227,7 +242,7 @@ async function main() {
     try {
       const outcome = await evaluate(scanCase, rubricsConfig, { rawText: '' }, { allCapturedOutputs: capturedOutputs }, callJudgeModel);
       results.push({ testCase: scanCase, outcome });
-      await writeScore(supabaseAdmin, runId, invoke.agentName, scanCase, outcome, null);
+      await writeScore(supabaseAdmin, runId, invoke.agentName, scanCase, outcome, null, rubricsConfig);
       console.log(outcome.pass ? 'PASS' : 'FAIL');
     } catch (err) {
       console.log('ERROR — ' + err.message);

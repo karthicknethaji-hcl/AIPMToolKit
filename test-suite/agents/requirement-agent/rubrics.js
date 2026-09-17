@@ -27,10 +27,22 @@ module.exports = {
       '(b) a specific, reasonable category/tag name the response had to ' +
       'invent because no matching one exists in the source or session ' +
       'context — inventing a specific name in that situation is required ' +
-      'behavior, not fabrication. Then score groundedness as (supported ' +
-      'claims / total claims counted this way), 0.0 to 1.0. If the score ' +
-      'is below passing, briefly (one sentence) recommend a concrete next ' +
-      'step to investigate or fix — null if it passes. Respond as JSON: ' +
+      'behavior, not fabrication.\n\n' +
+      'Separately, if an expected tag is given below (not the literal text ' +
+      '"(not provided)"), this test is ALSO checking whether the response ' +
+      'used that exact, most-specific tag rather than a more generic ' +
+      'fallback — this is a real failure even though inventing a NEW name ' +
+      'is fine per the paragraph above. Expected (most specific) tag: ' +
+      '{{expectedTag}}. Known-incorrect generic fallback: ' +
+      '{{incorrectFallback}}. If an expected tag is given and the response ' +
+      'used the generic fallback (or anything other than the expected tag) ' +
+      'instead, that alone should bring the score below passing regardless ' +
+      'of how well-grounded everything else is.\n\n' +
+      'Score groundedness as (supported claims / total claims counted this ' +
+      'way), 0.0 to 1.0, applying the specific-tag check above as an ' +
+      'additional deduction when it applies. If the score is below ' +
+      'passing, briefly (one sentence) recommend a concrete next step to ' +
+      'investigate or fix — null if it passes. Respond as JSON: ' +
       '{"score": <number>, "unsupportedClaims": [<string>, ...], ' +
       '"recommendation": <string or null>}.'
   },

@@ -36,6 +36,22 @@ function extractJudgeJson(rawText) {
   }
 }
 
+// Finds an occurrence of `word` in `text` that ISN'T immediately preceded by
+// a negation ("no features", "not a user story", ...) — a plain
+// `text.includes(word)` can't tell "we generate features" apart from "we do
+// NOT generate features", which made evalDeltaCorrectness's sub-shape 1
+// flag a fully correct denial as a violation.
+function hasUnnegatedMention(text, word) {
+  let idx = text.indexOf(word);
+  while (idx !== -1) {
+    const precedingWindow = text.slice(Math.max(0, idx - 20), idx);
+    const negated = /\b(no|not|never|zero|without|none)\b[^.]*$/.test(precedingWindow);
+    if (!negated) return true;
+    idx = text.indexOf(word, idx + word.length);
+  }
+  return false;
+}
+
 // ── script_diff handlers ────────────────────────────────────────────────
 
 function evalFormat(testCase, rubric, callResult) {
@@ -95,7 +111,11 @@ function evalDeltaCorrectness(testCase, rubric, callResult, context) {
   if (jc.expectedArtifactType || jc.forbiddenArtifactType) {
     const text = ((callResult.parsed && JSON.stringify(callResult.parsed)) || callResult.rawText || '').toLowerCase();
     const forbidden = jc.forbiddenArtifactType ? String(jc.forbiddenArtifactType).toLowerCase() : null;
-    const found = !!(forbidden && (text.includes(forbidden) || text.includes('user story') || text.includes('user stories')));
+    const found = !!(forbidden && (
+      hasUnnegatedMention(text, forbidden) ||
+      hasUnnegatedMention(text, 'user story') ||
+      hasUnnegatedMention(text, 'user stories')
+    ));
     return {
       pass: !found,
       score: null,
@@ -130,14 +150,49 @@ function evalDeltaCorrectness(testCase, rubric, callResult, context) {
 }
 
 function evalClassification(testCase, rubric, callResult) {
-  const expectedTag = testCase.judgeContext && testCase.judgeContext.expectedTag;
-  const text = (callResult.parsed && JSON.stringify(callResult.parsed)) || callResult.rawText || '';
-  const pass = expectedTag ? text.includes(expectedTag) : null;
+  const jc = testCase.judgeContext || {};
+  const expectedTag = jc.expectedTag;
+  const capabilityName = jc.existingCapabilityName;
+
+  // Operate on the Capabilities section's own raw content (real newlines,
+  // real heading markers) rather than JSON.stringify(callResult.parsed) —
+  // the stringified form escapes newlines to literal "\n" two-character
+  // sequences, which breaks heading-boundary detection below.
+  const capabilitiesSection = callResult.parsed && Array.isArray(callResult.parsed.sectionUpdates)
+    ? callResult.parsed.sectionUpdates.find(function (u) { return u && u.section === 'Capabilities'; })
+    : null;
+  const text = (capabilitiesSection && typeof capabilitiesSection.content === 'string')
+    ? capabilitiesSection.content
+    : ((callResult.parsed && JSON.stringify(callResult.parsed)) || callResult.rawText || '');
+
+  // Scoped to the named capability's own block, not "does this tag appear
+  // anywhere in the whole response" — a response with multiple
+  // capabilities could have some OTHER capability correctly tagged
+  // "(existing)" while the specific one under test is misclassified, which
+  // an unscoped (or a too-wide fixed-window) substring check would miss.
+  let pass;
+  if (expectedTag && capabilityName) {
+    const nameIndex = text.indexOf(capabilityName);
+    if (nameIndex === -1) {
+      pass = false;
+    } else {
+      const afterName = text.slice(nameIndex + capabilityName.length);
+      // Stop at the next capability heading (a line starting with a
+      // markdown heading marker or bold text) so a different capability's
+      // tag can't leak into this one's check.
+      const nextHeadingMatch = afterName.match(/\n\s*(#{1,6}\s|\*\*[^*\n]+\*\*)/);
+      const blockEnd = nextHeadingMatch ? nextHeadingMatch.index : afterName.length;
+      pass = text.slice(nameIndex, nameIndex + capabilityName.length + blockEnd).includes(expectedTag);
+    }
+  } else {
+    pass = expectedTag ? text.includes(expectedTag) : null;
+  }
+
   return {
     pass: !!pass,
     score: null,
-    notes: { expectedTag, found: pass, rawOutput: callResult.rawText },
-    recommendation: pass ? null : 'Expected tag "' + expectedTag + '" not found in the response — check existing/new capability classification logic.'
+    notes: { expectedTag, capabilityName, found: pass, rawOutput: callResult.rawText },
+    recommendation: pass ? null : 'Expected tag "' + expectedTag + '" not found near "' + (capabilityName || '(capability name not specified)') + '" in the response — check existing/new capability classification logic.'
   };
 }
 
