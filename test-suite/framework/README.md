@@ -101,30 +101,43 @@ hand-authoring all three of its files from scratch across this project's
 first build; this generator drafts them instead, so the next agent doesn't
 repeat that cost.
 
-- **`generator/GENERATOR-PROMPT.md`** — the generator itself. There's no
-  script to run for the drafting step: reading an agent's source and
-  inferring its real behavior is a reasoning task, so this file is a set of
-  instructions run through a Claude Code session (source code required, a
-  PRD optional-supplementary), producing draft `<Agent>-Test-Cases.md` /
-  `<Agent>-Rubrics.md` / `invoke-config.js`, each opening with a `DRAFT —
-  pending review` confidence banner. Workflow is hybrid: one drafting pass,
-  then iterative refinement with the reviewer before either gate.
-- **`generator/smoke-test.js`** — automated pre-check, run against a drafted
-  `invoke-config.js` before it reaches a human reviewer:
-  `node generator/smoke-test.js --agent <new-agent-name>`. Confirms the draft
-  actually reaches the real endpoint, gets a well-formed response, and — the
-  full DB round-trip, not just response shape — is recorded in both
+**Invocation:** the `generate-agent-test-suite` skill
+(`.claude/skills/generate-agent-test-suite/SKILL.md`) — "run this generator
+using `<source files>`" is the entire ask; agent naming, output location,
+confidence labeling, and the smoke-test gate are all resolved automatically
+rather than asked for per run.
+
+- **`generator/GENERATOR-PROMPT.md`** — the generator's full rules (the
+  skill above is a thin wrapper around this). There's no script for the
+  drafting step itself: reading an agent's source and inferring its real
+  behavior is a reasoning task, so this file is instructions a Claude Code
+  session follows (source code required, a PRD optional-supplementary),
+  producing draft `<Agent>-Test-Cases.md` / `<Agent>-Rubrics.md` /
+  `invoke-config.js` / `README.md`, each opening with a `DRAFT — pending
+  review` confidence banner. Workflow is hybrid: one drafting pass
+  (including running the smoke test below, automatically), then iterative
+  refinement with the reviewer before either gate.
+- **`generator/smoke-test.js`** — automated pre-check, run by the generator
+  itself as the last step of drafting, before a human reviewer ever sees the
+  draft: `node generator/smoke-test.js --agent <agent-name>`. Confirms the
+  draft actually reaches the real endpoint, gets a well-formed response, and
+  — the full DB round-trip, not just response shape — is recorded in both
   `mt_ai_traces` and `mt_ai_usage_events`. Requires `SUPABASE_URL` /
   `SUPABASE_SERVICE_ROLE_KEY` (unlike `run-tests.js`, this check is
   meaningless without them, so it errors out rather than degrading).
 - **`generator/REVIEW-CHECKLIST.md`** — copy to
-  `test-suite/agents/<new-agent-name>/REVIEW.md`. Records two *independent*
+  `test-suite/agents/<agent-name>/REVIEW.md`. Records two *independent*
   approval gates — Gate 1 (PM-owned: test-cases + rubrics, a product
   judgment call) and Gate 2 (engineer-owned: invoke-config fidelity, a
   technical judgment call). Gate 1 passing never substitutes for Gate 2.
 
-Three decisions worth recording here, since they shaped the design and
+Four decisions worth recording here, since they shaped the design and
 aren't obvious from the files alone:
+- **Invocation is a single low-friction ask, not a multi-question intake.**
+  A dry run against Requirement Agent's own source (this thread) showed the
+  generator can derive the agent name, the confidence level, and the output
+  path from the source alone — asking for those separately just adds
+  friction the generator doesn't need.
 - **No standing Gate 2 reviewer is assigned.** Only Requirement Agent has
   been onboarded so far; who reviews the next agent's `invoke-config.js` is
   decided per-agent, at onboarding time, rather than fixed in advance.
