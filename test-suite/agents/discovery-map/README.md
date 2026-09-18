@@ -67,7 +67,16 @@ Env vars `invoke-config.js` reads:
   is a genuine simplification versus `requirement-agent`'s live-context
   fetch, not an oversight.
 - `DM_TEST_PROXY_URL` (optional) — defaults to
-  `http://localhost:3001/api/anthropic` (the local dev proxy).
+  `http://localhost:3001/api/anthropic` (the local dev proxy). **Confirmed
+  at draft time:** this checkout's local `proxy-dev` process has no
+  `proxy/.env` (none exists in this checkout — see "Known limitation"
+  below), so it starts with `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`/
+  `ANTHROPIC_API_KEY` unset server-side and returns `auth_error: "Auth not
+  configured on proxy"` for every call. Point this at the hosted dev proxy
+  instead — `https://pgt-proxy-dev.onrender.com/api/anthropic` (from
+  `scripts/env.js`'s own dev branch) — until `proxy/.env` is populated
+  locally; this is exactly the config the smoke-test run below actually
+  used.
 - `DM_TEST_TREE_MODEL` / `DM_TEST_LEAK_MODEL` (optional) — default
   `claude-sonnet-4-6` each, matching the real per-caller tier resolution
   for `dm-generate`/`diagnostic-leak` (`scripts/api.js`'s `CALLER_TIERS` +
@@ -82,6 +91,27 @@ Result persistence to `mt_ai_quality_scores` reuses
 `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`, same names `proxy/server.js`
 and `requirement-agent/invoke-config.js` use. Without these set, the
 harness still runs every case, it just won't persist results.
+
+## Smoke test — confirmed passing
+
+Run against the hosted dev proxy (`DM_TEST_PROXY_URL=https://pgt-proxy-dev.
+onrender.com/api/anthropic`), with `DM_TEST_COMPANY_ID` and
+`DM_TEST_AUTH_TOKEN` read from an active signed-in Product Studio session
+(`localStorage.getItem('pgt_active_company_id')` /
+`authGetFreshToken()`), and a caller-supplied `SUPABASE_SERVICE_ROLE_KEY`:
+
+```
+[1/3] calling sendMessage()... OK (880 chars back)
+[2/3] checking mt_ai_traces for client_trace_id ... OK
+[3/3] checking mt_ai_usage_events for trace_id ... OK
+PASS
+```
+
+`invoke-config.js` round-trips through the real endpoint, auth, and the AI
+Trace Layer — it uses the `dd` mode via `smokeTestAction()` (cheapest real
+mode to exercise). This does **not** mean the invocation is a faithful
+approximation of Discovery Map's real behavior for the other three modes
+(`tree`, `tree-manual`, `leak`) — that judgment is still Gate 2's job.
 
 ## Known limitation — request-fidelity (accepted, not hidden)
 

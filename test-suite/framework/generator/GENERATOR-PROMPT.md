@@ -63,7 +63,7 @@ prompt for these if they weren't offered:**
 
 ## What the generator produces
 
-Four draft files, written into `test-suite/agents/<agent-name>/` (same
+Five draft files, written into `test-suite/agents/<agent-name>/` (same
 folder shape as every hand-authored agent — check the rubric-code table in
 every OTHER agent's `*-Rubrics.md` before inventing a new one, so a fresh
 draft never silently collides with an existing rubric letter, the way a
@@ -99,6 +99,10 @@ generator dry run against Requirement Agent once did with "B"):
    convention), any one-time fixture setup the drafted test cases assume,
    and known limitations carried over from the source-reading (DOM-coupling,
    any live-context dependency).
+5. `REVIEW.md` — copy `generator/REVIEW-CHECKLIST.md` in verbatim. This is a
+   plain file copy, no judgment involved, so the generator does it itself
+   as part of drafting — don't leave it as a manual step the caller has to
+   remember (a real gap in an earlier revision of this file).
 
 Do **not** also produce `test-cases.json` or `rubrics.js` (the machine-
 readable files `run-tests.js` actually loads) until after both gates pass —
@@ -195,9 +199,9 @@ a real problem — fix it and rerun before saying the draft is done.
    (re-running the smoke test after any `invoke-config.js` change). Repeat
    until the reviewer is satisfied — this is the "refine" half; there is no
    fixed number of rounds.
-4. Gate 1 and Gate 2 review happen independently (see
-   `test-suite/agents/<agent-name>/REVIEW.md`, copied from
-   `generator/REVIEW-CHECKLIST.md`).
+4. Gate 1 and Gate 2 review happen independently, using the
+   `test-suite/agents/<agent-name>/REVIEW.md` the generator already wrote
+   in step 2.
 5. Once both gates pass: hand-transcribe the approved `.md` files into
    `test-cases.json` / `rubrics.js` (same schema as `requirement-agent`'s),
    drop the approved `invoke-config.js` in alongside them, and run
