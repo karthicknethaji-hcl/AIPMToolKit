@@ -346,14 +346,19 @@ because a metric-shaped name is often the most obvious phrasing for
 `"N/A"`, not an empty string, not a real-looking value.
 **Rule source:** "L4 metrics: return name only, definition/benchmark/
 red_flag = '—'" (`scripts/prompts.js:553`).
-**Note — this rule directly collides with the same prompt's own em-dash
-ban** ("Never use em dashes (—) in your output"
-(`scripts/prompts.js:458`)-equivalent instruction is not present verbatim
-in `buildDDPrompt` itself, but IS present in every one of the other three
-target prompts) — flag at Gate 1 whether `buildDDPrompt` genuinely lacks
-the em-dash-ban line (confirmed: it does — `scripts/prompts.js:546-563`
-has no such instruction) or whether this is an intentional, deliberate
-exception carved out for exactly this literal-placeholder use.
+**Correction (post-draft, Gate 1 review):** the original version of this
+note flagged `buildDDPrompt` itself (`scripts/prompts.js:546-563`) as
+missing an em-dash ban present in the other three target prompts. That
+was checking `buildDDPrompt`'s own returned user-prompt text in
+isolation — it missed that **both real DD call sites** (`scripts/
+capability-canvas.js:3027`, `scripts/metrics-definition.js:22`) always
+pass `SYS_DD` (`scripts/prompts.js:864`) as the system prompt alongside
+it, and `SYS_DD` already contains "Never use em dashes (—) in your
+output; use a hyphen (-) or rewrite the phrase" verbatim. **No gap
+exists in production code — confirmed by the PM (2026-09-18): no fix
+needed.** DD output is still held to the em-dash ban (it genuinely
+applies, via `SYS_DD`, at every real call) — see DM-F04's corrected
+case, now scored as a real failure if violated, not exempted.
 **Failure mode to watch:** The model substitutes a different placeholder
 (breaking any downstream code that pattern-matches on the literal `"—"`)
 or fabricates a real-looking benchmark for an L4 metric it was told to
@@ -381,11 +386,19 @@ leak).
 anywhere in any generated text field.
 **Rule source:** Repeated verbatim in `buildTreePrompt`
 (`scripts/prompts.js:84`), `buildTreePromptManual`
-(`scripts/prompts.js:180`), and the literal system-prompt strings both
+(`scripts/prompts.js:180`), the literal system-prompt strings both
 `kpi-tree.js` (`:354`) and `diagnostic-view.js` (`:664`) send for tree and
-leak generation respectively. `buildDDPrompt` is the one exception with no
-such instruction (see DM-F02's note) — score DD's output separately and do
-not fail it against this rule.
+leak generation respectively, and — **correction, post-draft** — `SYS_DD`
+(`scripts/prompts.js:864`), the real system prompt every DD call site
+(`scripts/capability-canvas.js:3027`, `scripts/metrics-definition.js:22`)
+sends alongside `buildDDPrompt`'s output. The original draft excluded DD
+from this scan on the mistaken belief that `buildDDPrompt` itself carries
+no such instruction anywhere in its real call path — true only of
+`buildDDPrompt`'s own returned text in isolation, not of the actual
+request DD sends. **DD output is included in this scan**, confirmed by
+the PM (2026-09-18) — a real em dash in DD output is scored as a genuine
+failure like the other three functions, not exempted, since `SYS_DD`
+genuinely instructs against it at every real call.
 **Failure mode to watch:** The model uses an em dash inside a `why`/
 `rationale`/`description` field despite the explicit ban — a cheap,
 mechanical regex check with no ambiguity.

@@ -103,6 +103,23 @@ generator dry run against Requirement Agent once did with "B"):
    plain file copy, no judgment involved, so the generator does it itself
    as part of drafting — don't leave it as a manual step the caller has to
    remember (a real gap in an earlier revision of this file).
+6. **`scriptChecks.js` — required whenever `<Agent>-Rubrics.md` includes any
+   `script_diff`-typed rubric** (draft one function per such rubric key,
+   exported as `module.exports = {<letter>: fn, ...}`). Unlike `llm_judge`,
+   `script_diff`'s check logic is inherently agent-specific — there is no
+   generic diff that works for every agent's output shape — so
+   `evaluator.js` dispatches to whichever function this file exports for a
+   given rubric letter (see `evaluator.js`'s own header comment). **This
+   step was missing from an earlier revision of this list**: Discovery
+   Map's onboarding drafted `rubrics.js` with 11 `script_diff` keys and
+   correctly noted each one's intended check in its `notes` field, but no
+   `scriptChecks.js` was drafted alongside it — `evaluator.js` also turned
+   out to hardcode Requirement Agent's specific keys instead of dispatching
+   generically, so every one of those 11 rubrics would have silently done
+   nothing until both gaps were found and fixed together. Write real
+   handler functions here, not stub placeholders — a rubric this file has
+   no real check for should be flagged to the caller, not silently drafted
+   as an empty function that will always pass.
 
 Do **not** also produce `test-cases.json` or `rubrics.js` (the machine-
 readable files `run-tests.js` actually loads) until after both gates pass —
@@ -137,10 +154,14 @@ inline, right where the reviewer's attention should land.
 - **Gate 1 (PM-owned):** `<Agent>-Test-Cases.md` + `<Agent>-Rubrics.md`. Is
   this test case a real behavior worth checking; is this threshold right for
   the risk involved. Same judgment already applied to RA's 37 cases.
-- **Gate 2 (engineer-owned, separate from Gate 1):** `invoke-config.js`. Does
-  this hand-built request faithfully represent the agent's real runtime
-  behavior; is a DOM-coupling (or similar) workaround handled honestly. Gate
-  1 passing never substitutes for Gate 2.
+- **Gate 2 (engineer-owned, separate from Gate 1):** `invoke-config.js` AND
+  `scriptChecks.js` (if drafted) — both are hand-written, agent-specific
+  code making the same kind of fidelity claim, so both get the same
+  scrutiny: does this hand-built request/check faithfully represent the
+  agent's real runtime behavior; is a DOM-coupling (or similar) workaround
+  handled honestly; does each `script_diff` handler actually implement what
+  its rubric's `notes` field claims, not just parse without error. Gate 1
+  passing never substitutes for Gate 2.
 - Per Nethaji's decision, there is no standing Gate 2 reviewer assignment yet
   — who reviews it is decided per agent, at onboarding time, until a second
   agent is actually being onboarded makes a fixed assignment worth deciding.

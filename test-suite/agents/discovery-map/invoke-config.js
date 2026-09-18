@@ -178,11 +178,33 @@ function tryParseJson(text) {
  *     - manualList: [{name, description?}], passed straight through to
  *       buildTreePromptManual and (after the real call) through the real
  *       _mmReconcileManualCaps-equivalent reconciliation below.
- *   {mode:'dd', metrics}
- *     - metrics: [{stage, level, name}]. metrics.length===1 routes through
- *       the same (model, maxTokens, caller) triple as the real cc-dd-single
- *       call site; length>1 routes through md-dd-batch's triple
- *       (scripts/capability-canvas.js:3027, scripts/metrics-definition.js:22).
+ *   {mode:'dd', metrics, source?}
+ *     - metrics: [{stage, level, name}].
+ *     - source: which of THREE real call sites to represent — the metrics
+ *       array alone can only distinguish "single" from "batch"; which of
+ *       the two real batch callers is meant is a UI-context choice (which
+ *       screen's Generate button was clicked), not something derivable
+ *       from the metrics list itself, so it's an explicit override:
+ *         - 'cc-dd-single' (scripts/capability-canvas.js:3027,
+ *           ccDDGenerateForMetricSafe): always exactly one metric,
+ *           maxTokens 1500. Default when metrics.length===1.
+ *         - 'cc-dd-batch' (scripts/capability-canvas.js:3086-3092,
+ *           ccDDGenerateAll): Capability Canvas's own "generate for all
+ *           metrics" action, maxTokens 8000.
+ *         - 'md-dd-batch' (scripts/metrics-definition.js:22, generateDD):
+ *           the standalone Metrics Definition screen's generate action,
+ *           maxTokens 8000. Default when metrics.length!==1 and no
+ *           `source` is given (matches this file's pre-fix behavior, kept
+ *           as the default so existing test cases don't need updating).
+ *       All three send the identical system prompt (SYS_DD, or — for
+ *       cc-dd-batch — a hardcoded literal at the real call site confirmed
+ *       byte-identical to SYS_DD's value) and the same model; only the
+ *       maxTokens/caller pairing differs by source. A prior version of
+ *       this dispatcher only ever produced 'cc-dd-single'/'md-dd-batch',
+ *       silently unable to represent the cc-dd-batch call path at all —
+ *       fixed in Gate 2 re-review (2026-09-18) after re-deriving every DD
+ *       call site from source instead of trusting the original two this
+ *       file already knew about.
  *   {mode:'leak', productCtx, nsm, stagesWithEvidence, readiness, changedMetrics?}
  */
 function buildRequestForAction(action) {
@@ -199,12 +221,25 @@ function buildRequestForAction(action) {
   if (action.mode === 'dd') {
     const userContent = promptSandbox.buildDDPrompt(action.metrics);
     const single = Array.isArray(action.metrics) && action.metrics.length === 1;
+    const source = action.source || (single ? 'cc-dd-single' : 'md-dd-batch');
+    // scripts/capability-canvas.js:3027 (cc-dd-single, maxTokens 1500) /
+    // scripts/capability-canvas.js:3086-3092 (cc-dd-batch, maxTokens 8000) /
+    // scripts/metrics-definition.js:22 (md-dd-batch, maxTokens 8000) — see
+    // this function's doc comment above for why `source` can't be derived
+    // from `metrics` alone.
+    const DD_SOURCE_MAX_TOKENS = { 'cc-dd-single': 1500, 'cc-dd-batch': 8000, 'md-dd-batch': 8000 };
+    if (!(source in DD_SOURCE_MAX_TOKENS)) {
+      throw new Error(
+        `[invoke-config] Unknown action.source for mode 'dd': ${source} ` +
+        `(expected one of: ${Object.keys(DD_SOURCE_MAX_TOKENS).join(', ')})`
+      );
+    }
     return {
       system: SYS_DD,
       userContent,
       model: DD_MODEL,
-      maxTokens: single ? 1500 : 8000, // scripts/capability-canvas.js:3027 vs scripts/metrics-definition.js:22
-      caller: single ? 'cc-dd-single' : 'md-dd-batch'
+      maxTokens: DD_SOURCE_MAX_TOKENS[source],
+      caller: source
     };
   }
   if (action.mode === 'leak') {

@@ -190,6 +190,19 @@ async function main() {
     return;
   }
 
+  // scriptChecks.js is optional — an agent with no script_diff rubrics
+  // (all llm_judge/toxicity_scan) has no need for one. Only script_diff
+  // rubrics fail if this is missing (evaluator.js reports exactly which
+  // rubric key has no handler wired, rather than this failing the whole run).
+  let scriptChecks = {};
+  try {
+    scriptChecks = require(path.join(agentDir, 'scriptChecks.js'));
+  } catch (e) {
+    // ENOENT (no file) is expected and fine; anything else (a real syntax/
+    // load error in an existing file) should be visible, not swallowed.
+    if (e.code !== 'MODULE_NOT_FOUND') throw e;
+  }
+
   const supabaseAdmin = makeSupabaseAdmin();
   const runId = crypto.randomUUID();
 
@@ -222,7 +235,7 @@ async function main() {
       else if (testCase.executionMode === 'dual-conversation') run = await runDualConversation(invoke, testCase);
       else throw new Error('Unrecognized executionMode: ' + testCase.executionMode);
 
-      const outcome = await evaluate(testCase, rubricsConfig, run.callResult, run.context, callJudgeModel);
+      const outcome = await evaluate(testCase, rubricsConfig, run.callResult, run.context, callJudgeModel, scriptChecks);
       results.push({ testCase, outcome });
       capturedOutputs.push({ testId: testCase.testId, text: run.callResult.rawText });
       // Dual-conversation cases (e.g. RA-P01) produce a second, independent
@@ -246,7 +259,7 @@ async function main() {
   for (const scanCase of backgroundScanCases) {
     process.stdout.write('[' + scanCase.testId + '] running... ');
     try {
-      const outcome = await evaluate(scanCase, rubricsConfig, { rawText: '' }, { allCapturedOutputs: capturedOutputs }, callJudgeModel);
+      const outcome = await evaluate(scanCase, rubricsConfig, { rawText: '' }, { allCapturedOutputs: capturedOutputs }, callJudgeModel, scriptChecks);
       results.push({ testCase: scanCase, outcome });
       await writeScore(supabaseAdmin, runId, invoke.agentName, scanCase, outcome, null, rubricsConfig);
       console.log(outcome.pass ? 'PASS' : 'FAIL');

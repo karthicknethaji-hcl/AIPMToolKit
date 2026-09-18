@@ -31,9 +31,17 @@ Diagnostic View / Capability Canvas screens:
   `generateConfirmed()`.
 - **Manual capability placement** — `buildTreePromptManual`, same call
   site, used when the PM supplies their own capability list.
-- **Metric Definitions (DD)** — `buildDDPrompt`, called from
-  `scripts/capability-canvas.js` (single-metric refresh) and
-  `scripts/metrics-definition.js` (full batch).
+- **Metric Definitions (DD)** — `buildDDPrompt`, called from **three** real
+  sites: `scripts/capability-canvas.js:3027` (single-metric refresh,
+  caller `cc-dd-single`), `scripts/capability-canvas.js:3086-3092`
+  (Capability Canvas's own "generate for all metrics" action, caller
+  `cc-dd-batch`), and `scripts/metrics-definition.js:22` (the standalone
+  Metrics Definition screen's batch generate, caller `md-dd-batch`).
+  `invoke-config.js`'s `'dd'` mode takes an optional `source` field to pick
+  which of these three to represent (defaults: a single metric →
+  `cc-dd-single`, more than one → `md-dd-batch`, matching pre-fix
+  behavior) — found missing (only two of the three were represented) and
+  fixed during Gate 2 re-review, see `REVIEW.md`.
 - **Product Leak diagnostic** — `buildProductLeakPrompt`, called from
   `scripts/diagnostic-view.js`.
 

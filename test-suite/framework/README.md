@@ -43,10 +43,19 @@ thresholds, judge-prompt templates, and how to actually invoke that agent
   `invoke-config.js` only needs to expose two primitives:
   `createConversationState()` and `async sendMessage(state, action)`.
 - `evaluator.js` — routes each test case to one of three handlers by its
-  rubric's `evaluatorType`: `script_diff` (pure JS, no model call),
-  `llm_judge` (calls out via an injected `callJudgeModel(prompt)`), or
-  `toxicity_scan` (same as `llm_judge`, run once across every other
-  captured output in the run). Ragas is deferred to v2 — no handler here.
+  rubric's `evaluatorType`: `script_diff`, `llm_judge` (calls out via an
+  injected `callJudgeModel(prompt)`), or `toxicity_scan` (same as
+  `llm_judge`, run once across every other captured output in the run).
+  Ragas is deferred to v2 — no handler here. `llm_judge`/`toxicity_scan`
+  are genuinely generic — a rubric's own `judgePromptTemplate` is all the
+  "logic" there is. `script_diff` is different: there's no generic JS diff
+  that works for every agent's output shape, so each agent supplies its own
+  `scriptChecks.js` (object keyed by rubric letter), loaded by
+  `run-tests.js` and passed into `evaluate()` alongside `callJudgeModel` —
+  `evaluator.js` itself contains no agent-specific check logic (fixed
+  2026-09-18: an earlier revision hardcoded Requirement Agent's F/A1/A2/P1
+  keys directly here, silently breaking "agent-agnostic" for this one
+  evaluator type — see the file's own header comment).
 
 ## `mt_ai_quality_scores.recommendation`
 
@@ -76,7 +85,13 @@ nothing in this harness writes to any agent's production prompt code.
    giving `evaluatorType`, `threshold` (or `null` for binary/zero-tolerance),
    and — for `llm_judge`/`toxicity_scan` — a `judgePromptTemplate` string
    using `{{placeholder}}` tokens filled from `judgeContext` and the
-   captured output.
+   captured output. **For any `script_diff` rubric, also add
+   `scriptChecks.js`** exporting a real function per such rubric key
+   (`module.exports = {<letter>: (testCase, rubric, callResult, context) => outcome}`)
+   — see `requirement-agent/scriptChecks.js` or
+   `discovery-map/scriptChecks.js` for the shape. A `script_diff` rubric
+   with no matching key here fails every case with "No script-diff handler
+   wired," by design (loud and specific, not a silent pass).
 4. Add `invoke-config.js` exporting `{ agentName, createConversationState(),
    async sendMessage(state, action) }` for however that agent is actually
    invoked (a direct API call, an ingestion endpoint, browser automation —

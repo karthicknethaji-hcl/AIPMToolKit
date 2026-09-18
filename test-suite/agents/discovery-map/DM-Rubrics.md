@@ -69,10 +69,15 @@ evidentiary basis.
 **Metric:** Fabrication rate, split into two genuinely distinct sub-types
 that need different scoring:
 
-**H-framework (DM-H01, DM-N02's inverse check):** Did the model invent a
-plausible-sounding but non-existent framework name, rather than either
-citing one from the fixed CORE FRAMEWORKS list or honestly naming "First
-Principles"?
+**H-framework (DM-H01, DM-H03, DM-N02's inverse check):** Did the model
+invent a plausible-sounding but non-existent framework name, rather than
+either citing one from the fixed CORE FRAMEWORKS list or honestly naming
+"First Principles"? **Compile-time addition (2026-09-18):** DM-H03 (AAER
+not force-fit onto a non-B2C product) was missing an explicit bucket
+assignment in this document — it's the same deterministic-routing-table
+shape as DM-H01 (check the applied framework against what Product Type
+routing actually permits), so it's scored here too, not as its own
+sub-type.
 **Scoring method:** Hybrid — a deterministic check first (is
 `measurementModel.frameworks` a subset of the fixed 14-framework list, or
 exactly `["First Principles"]`-shaped with a named reasoning model?); an
@@ -168,13 +173,20 @@ evaluator library at all" note as `RA-Rubrics.md`'s F rubric.
 (`_mmReconcileManualCaps`, `renderMM()`, Capability Canvas/DD rendering)
 depends on exact format compliance, same reasoning RA gives for its own F
 rubric's zero-tolerance bar.
-**Scope note:** DM-F02 and DM-F04 interact — `buildDDPrompt` is
-confirmed to have no em-dash-ban instruction at all (unlike the other
-three target prompts), so DM-F04's em-dash scan should exclude DD output
-from its scoring population rather than fail it against a rule it was
-never given. Flag this asymmetry to Gate 1 as its own small finding
-(intentional exception, or an oversight worth adding the line to
-`buildDDPrompt` too) — this document does not resolve which.
+**Scope note — corrected post-draft, Gate 1 review:** DM-F02 and DM-F04's
+original drafts excluded DD output from the em-dash scan on the belief
+that `buildDDPrompt` carries no em-dash-ban instruction anywhere in its
+real call path. That checked `buildDDPrompt`'s own returned user-prompt
+text in isolation and missed that both real DD call sites
+(`scripts/capability-canvas.js:3027`, `scripts/metrics-definition.js:22`)
+always pair it with `SYS_DD` (`scripts/prompts.js:864`) as the system
+prompt, and `SYS_DD` already bans em dashes verbatim. **There is no
+asymmetry and no production gap — confirmed by the PM (2026-09-18): no
+fix to `scripts/prompts.js` needed.** DD output IS included in the
+DM-F04 scan like the other three functions, and a real em dash in DD
+output is scored as a genuine failure — the instruction applies to DD
+too (via `SYS_DD`), it just isn't hidden away in `buildDDPrompt`'s own
+returned text.
 
 ---
 

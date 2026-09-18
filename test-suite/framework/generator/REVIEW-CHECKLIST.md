@@ -45,9 +45,11 @@ Notes:
 
 ## Gate 2 — Technical review (engineer-owned, separate from Gate 1)
 
-Reviews: `invoke-config.js`.
+Reviews: `invoke-config.js`, and `scriptChecks.js` if this agent has any
+`script_diff`-typed rubric (both are hand-written, agent-specific code
+making a fidelity claim — same scrutiny applies to both).
 
-Question this gate answers: *does this hand-built request faithfully
+Question this gate answers: *does this hand-built request/check faithfully
 represent the agent's real runtime behavior, and is any DOM-coupling (or
 similar) workaround handled honestly, not silently?* — the same judgment this
 project's own review applied to Requirement Agent's Option 1c decision.
@@ -61,6 +63,12 @@ project's own review applied to Requirement Agent's Option 1c decision.
 - [ ] `sendMessage()` returns `clientTraceId` and, if available,
       `systemPrompt` (needed for the recommendation feature — see
       `../README.md`'s "`mt_ai_quality_scores.recommendation`" section).
+- [ ] If this agent has any `script_diff` rubric: `scriptChecks.js` exports
+      a real function for every such rubric key (not a stub that always
+      passes), and each function actually implements what that rubric's
+      `notes`/description says it checks — verified with at least one
+      deliberately-passing and one deliberately-failing mock input per
+      function, not just confirmed to run without throwing.
 - [ ] Smoke test result above is from *this* version of the file (rerun it
       if `invoke-config.js` changed since).
 
