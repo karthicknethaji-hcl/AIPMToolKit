@@ -19,6 +19,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { evaluate } = require('./evaluator');
+const { readAppEnvJs } = require('./readAppEnvJs');
 
 function parseArgs(argv) {
   const args = { agent: null, only: null, all: false };
@@ -75,10 +76,15 @@ async function callJudgeModel(promptText) {
 // without these env vars set (prints to console only); set SUPABASE_URL and
 // SUPABASE_SERVICE_ROLE_KEY (same names proxy/server.js uses) to persist.
 function makeSupabaseAdmin() {
-  const SUPABASE_URL = process.env.SUPABASE_URL;
+  // SUPABASE_URL is non-secret and already sits in scripts/env.js locally —
+  // don't make every run-tests.js invocation re-paste a value that's already
+  // in the repo. SUPABASE_SERVICE_ROLE_KEY has no such local source (never in
+  // scripts/env.js — correctly, it's server-only — and this checkout carries
+  // no proxy/.env either), so it stays an explicit, manually-supplied env var.
+  const SUPABASE_URL = process.env.SUPABASE_URL || readAppEnvJs().SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    console.warn('[run-tests] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set — results will print to console only, not persisted to mt_ai_quality_scores.\n');
+    console.warn('[run-tests] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not set (and scripts/env.js did not supply SUPABASE_URL either) — results will print to console only, not persisted to mt_ai_quality_scores.\n');
     return null;
   }
   const { createClient } = require('@supabase/supabase-js');

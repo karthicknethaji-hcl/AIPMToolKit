@@ -84,7 +84,15 @@ generator dry run against Requirement Agent once did with "B"):
    or coupled to something a Node script can't reach (DOM, browser storage,
    a framework runtime) — in which case, follow RA's own precedent (Option
    1c: a hand-built request matching the real call shape, documented as an
-   accepted known limitation, not hidden).
+   accepted known limitation, not hidden). **`action`'s own shape is never
+   part of the fixed contract** — RA takes a plain `{content}`, but an
+   agent with multiple distinct real call sites (confirmed necessary for
+   Discovery Map: `{mode:'tree'|'tree-manual'|'dd'|'leak', ...}`) should
+   define whatever shape its own `sendMessage()` actually needs. If that
+   shape isn't RA's plain `{content}`, also export `smokeTestAction()` — a
+   zero-argument function returning one minimal, cheap-to-run valid action
+   — so `smoke-test.js`'s automated pre-check (which otherwise defaults to
+   RA's shape) has something real to call.
 4. `README.md` — mirror `requirement-agent/README.md`'s structure: the env
    vars this agent's `invoke-config.js` reads (derive names from the agent
    slug, e.g. `<AGENT>_TEST_AUTH_TOKEN` following RA's `RA_TEST_*`
@@ -141,12 +149,35 @@ caller to remember:
 node test-suite/framework/generator/smoke-test.js --agent <agent-name>
 ```
 
-If it needs credentials the environment doesn't have (`RA_TEST_AUTH_TOKEN`-
-style vars for the new agent, `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`),
-say exactly which ones are missing and where to get them (the drafted
-`README.md`) rather than silently skipping the check. A failing smoke test
-means the draft isn't ready for a human to look at yet — fix it and rerun
-before saying the draft is done.
+**Resolve missing credentials before giving up — don't just report them
+missing and stop.** Three different kinds need three different responses,
+confirmed against this repo (Discovery Map onboarding, this thread):
+
+1. **Non-secret static config** (`SUPABASE_URL`) — already auto-resolved
+   from `scripts/env.js` by `readAppEnvJs.js` (used by both `run-tests.js`
+   and `smoke-test.js`). Nothing to do here.
+2. **Live, session-derived values** (`<AGENT>_TEST_AUTH_TOKEN`,
+   `<AGENT>_TEST_COMPANY_ID`) — not sitting in any file, because they only
+   exist once someone is actually signed in. If not already set as env
+   vars, **use the browser tool yourself**: start the local app
+   (`preview_start` with the `static-site`/`proxy-dev` launch configs) and
+   check whether a session is already active. If one is, read the token
+   and company id directly via the page's own JS (`authGetFreshToken()`,
+   `localStorage.getItem('pgt_active_company_id')`) instead of asking the
+   caller to open dev tools and paste values in — that's exactly the
+   manual step this automation exists to remove. If no session is active,
+   you cannot sign in yourself (entering someone's password is off-limits)
+   — ask the caller to sign in in the browser pane, then continue once
+   they confirm.
+3. **Secrets genuinely absent from this checkout** (`SUPABASE_SERVICE_ROLE_KEY`
+   — correctly never in `scripts/env.js`, since that file is browser-served;
+   and this repo carries no local `proxy/.env` either) — there is nothing
+   to read or automate here. Ask the caller directly for this one, name it
+   specifically, and don't imply it should be derivable the same way the
+   other two are.
+
+A failing smoke test after exhausting the above means the draft itself has
+a real problem — fix it and rerun before saying the draft is done.
 
 ## Workflow (hybrid: draft, then refine)
 

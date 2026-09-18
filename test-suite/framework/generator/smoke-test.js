@@ -22,6 +22,7 @@
 // them. A draft that can't be checked end-to-end isn't ready for Gate 2.
 
 const path = require('path');
+const { readAppEnvJs } = require('../readAppEnvJs');
 
 function parseArgs(argv) {
   const args = { agent: null };
@@ -81,11 +82,17 @@ async function main() {
     return;
   }
 
-  const SUPABASE_URL = process.env.SUPABASE_URL;
+  // SUPABASE_URL is non-secret and already sits in scripts/env.js locally —
+  // fall back to it so this doesn't need re-pasting on top of the env var.
+  // SUPABASE_SERVICE_ROLE_KEY has no such local source (never in
+  // scripts/env.js — correctly, it's server-only — and this checkout carries
+  // no proxy/.env either), so it stays a required, manually-supplied env var.
+  const SUPABASE_URL = process.env.SUPABASE_URL || readAppEnvJs().SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     console.error(
-      '[smoke-test] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are both required. ' +
+      '[smoke-test] SUPABASE_URL' + (SUPABASE_URL ? ' (resolved)' : ' (not set, and scripts/env.js did not supply it either)') +
+      ' and SUPABASE_SERVICE_ROLE_KEY are both required. ' +
       'This check exists specifically to confirm the DB round-trip (mt_ai_traces / ' +
       'mt_ai_usage_events) — unlike run-tests.js, it cannot degrade to console-only.'
     );
@@ -109,16 +116,29 @@ async function main() {
 
   // 1/3 — shape + auth: does the drafted invoke-config actually reach the
   // real endpoint and get a well-formed response back?
+  //
+  // Only createConversationState()/sendMessage(state, action) are part of
+  // the framework's fixed contract — `action`'s own shape is agent-
+  // specific (confirmed by Discovery Map's invoke-config.js, which takes
+  // {mode:'tree'|'tree-manual'|'dd'|'leak', ...} rather than RA's plain
+  // {content}). A drafted invoke-config.js may export an optional
+  // `smokeTestAction()` returning a minimal valid action for ITS OWN real
+  // shape; fall back to RA's plain-text shape only when that's absent, so
+  // this doesn't silently assume every future agent looks like RA.
+  const probeAction = (typeof invoke.smokeTestAction === 'function')
+    ? invoke.smokeTestAction()
+    : {
+        content:
+          'Smoke test probe — please acknowledge briefly. This message only ' +
+          'verifies the drafted invoke-config.js reaches the real endpoint; ' +
+          'its content is not a real requirement and does not need to be acted on.'
+      };
+
   process.stdout.write('[1/3] calling sendMessage()... ');
   let callResult;
   try {
     const state = invoke.createConversationState();
-    callResult = await invoke.sendMessage(state, {
-      content:
-        'Smoke test probe — please acknowledge briefly. This message only ' +
-        'verifies the drafted invoke-config.js reaches the real endpoint; ' +
-        'its content is not a real requirement and does not need to be acted on.'
-    });
+    callResult = await invoke.sendMessage(state, probeAction);
   } catch (e) {
     console.log('FAILED');
     console.error('[smoke-test] sendMessage() threw — endpoint, auth, or request body is likely wrong:', e.message);
