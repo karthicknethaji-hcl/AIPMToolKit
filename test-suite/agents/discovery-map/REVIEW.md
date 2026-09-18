@@ -325,3 +325,49 @@ see the "no standing reviewer" note above).
       is no longer blocked on this — see the `run-agent-tests` skill for
       actually running it (still needs live credentials, a separate,
       unrelated prerequisite).
+
+---
+
+**First live run, 2026-09-18 (`run-agent-tests` skill), against the hosted
+dev proxy, all 19 v1-active cases, results persisted to
+`mt_ai_quality_scores`** (run ids `0ef6778b-ef09-47af-a662-2b82909ff2a9` +
+`a870d2e4-14c3-4b4f-b109-26219d6c2628` for a token-expiry re-run of 3 cases
++ `46952f67-becb-432b-92ed-de8dc4cd2683` for a post-fix re-run of 2 cases —
+see below): **17 pass, 2 real fail**, after one test-suite bug (not a
+product bug) found and fixed mid-run:
+
+- **Real bug found and fixed: `scriptChecks.js`'s `evalNoEmDashAcrossAllOutputs`
+  (F4) false-positived on DM-F02.** DM-F02's own output legitimately
+  contains an em dash as the exact, *required* L4 placeholder value
+  (`"definition": "—"` — literally what F2's own check demands). A raw
+  substring scan couldn't distinguish that from a genuine stray em dash in
+  prose, so it flagged DM-F02 for doing exactly what it's supposed to do.
+  Fixed by stripping the standalone JSON-string-value form (`"—"`, which
+  can only occur as the L4 placeholder itself, never as an em dash
+  embedded inside a longer sentence) before scanning. Re-verified
+  DM-F02+DM-F04 together post-fix: both PASS, re-persisted at run
+  `46952f67-becb-432b-92ed-de8dc4cd2683`, superseding the earlier
+  false-fail row for DM-F04 under the first run id.
+- **DM-H05 — genuine fail, borderline.** Scored 0.95 against a strict 1.0
+  ("zero-tolerance") threshold. Reading the actual output, the response is
+  well-calibrated (explicit "should be treated as a hypothesis, not a
+  conclusion," severity capped at Medium for thin evidence) — this reads
+  more like a threshold-tuning question (is 1.0-exactly too strict for
+  this rubric) than a real model defect. Worth a PM look, not an
+  automatic "the model failed."
+  Recommendation: none returned by the judge (score-only path).
+- **DM-N02 — genuine fail, real finding.** The model chose "SaaS Bowtie" +
+  "APQC PCF" for a competitive drone-racing league (an intentionally
+  poor-fit industry, designed to test the FALLBACK RULE) instead of
+  honestly falling back to First Principles — exactly the failure mode
+  this case exists to catch. Judge's recommendation: add an explicit
+  instruction requiring the model to name at least one gap when applying
+  a partial-fit framework, or state outright that no framework cleanly
+  fits and construct a first-principles model instead. This is a real,
+  actionable finding for whoever owns `scripts/prompts.js`'s FALLBACK
+  RULE wording — out of this test harness's own scope to fix.
+
+All 3 cases that hit `[auth_error] Session expired or invalid` on the
+first pass (DM-X02, DM-N01, DM-N02) were infrastructure (the ~1-hour JWT
+expired partway through a long sequential run), not test bugs — re-run
+individually with a fresh token and got real results for all three.

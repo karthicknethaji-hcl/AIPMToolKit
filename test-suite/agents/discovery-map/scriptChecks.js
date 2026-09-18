@@ -297,11 +297,25 @@ function evalPlainStringArrayFields(testCase, rubric, callResult) {
 // F4 — no_em_dash_in_output (DM-F04). background-scan execution mode:
 // run-tests.js passes { allCapturedOutputs } as context, callResult is a
 // throwaway {rawText:''} — read from context, not callResult, here.
+//
+// Real false positive found on first live run (2026-09-18): DM-F02's own
+// captured output legitimately contains an em dash as the exact, REQUIRED
+// L4 placeholder value ("definition": "—") — F2's own check requires this
+// literal value. A raw substring scan can't tell that apart from a genuine
+// stray em dash in prose, so it flagged DM-F02 as a DM-F04 violation for
+// doing exactly what DM-F02 requires. Strip the standalone JSON-string-
+// value form ("—", i.e. a field whose entire value is one em dash) before
+// scanning — that pattern can only occur as the L4 placeholder itself,
+// never as an em dash embedded inside a longer sentence (which would have
+// other characters between the em dash and the surrounding quotes).
+const STANDALONE_EM_DASH_VALUE = /"—"/g;
 function evalNoEmDashAcrossAllOutputs(testCase, rubric, callResult, context) {
   const outputs = (context && context.allCapturedOutputs) || [];
   const violations = [];
   for (const item of outputs) {
-    if (item && item.text && item.text.includes(EM_DASH)) violations.push(item.testId);
+    if (!item || !item.text) continue;
+    const withoutPlaceholders = item.text.replace(STANDALONE_EM_DASH_VALUE, '');
+    if (withoutPlaceholders.includes(EM_DASH)) violations.push(item.testId);
   }
   const pass = violations.length === 0;
   return {
