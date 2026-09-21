@@ -1,4 +1,5 @@
-.claude/
+.claude/*
+!.claude/skills/
 scripts/env.js
 node_modules/
 favicon-base64.txt
