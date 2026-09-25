@@ -4,3 +4,7 @@ scripts/env.js
 node_modules/
 favicon-base64.txt
 netlify/functions/providerAdapters.js
+test-suite/
+.agent-test-kit-results/*
+test-suite/agents/*/results/
+.agent-test-kit-migration-backup-*/
