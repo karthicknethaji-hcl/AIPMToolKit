@@ -96,9 +96,44 @@ All that apply must succeed. If any fails, fix and recheck — don't report
 validates both compiled files together in one pass and is what Gate-check
 automation (and the caller) will actually rely on afterward.
 
-## 6. Report back
+## 6. Write `review/review-status.json` — `agent-test-kit run` reads THIS, not `REVIEW.md`
+
+`REVIEW.md`'s `[x] Approved` checkboxes (step 2) are this repo's own
+human-facing gate record — `agent-test-kit run`/`validate` never read it.
+They enforce the gate via a separate, machine-readable
+`test-suite/agents/<agent-name>/review/review-status.json`
+(`getAgentPaths(agentDir).review.reviewStatus`), which nothing before this
+step ever creates. Skipping this step is exactly why a freshly-compiled
+agent's `review/` folder doesn't exist yet and `agent-test-kit run` refuses
+it even though both `REVIEW.md` gates are checked off.
+
+Write it via `agent-test-kit`'s own exported `reviewStatus` module (it
+already knows the right path, JSON shape, and content-hash algorithm — don't
+hand-rewrite any of that in this step):
+
+```
+node -e "
+const { reviewStatus } = require('@karthicknethaji-hcl/agent-test-kit');
+const agentDir = 'test-suite/agents/<agent-name>';
+const hash = reviewStatus.computeContentHash(agentDir);
+const status = reviewStatus.defaultReviewStatus();
+for (const gate of ['gate1', 'gate2']) {
+  status[gate] = { approved: true, reviewer: '<Reviewer from REVIEW.md>', date: '<Date from REVIEW.md, YYYY-MM-DD>', notes: '<a one-paragraph summary of that gate\'s REVIEW.md findings, not just Approved>', approvedContentHash: hash };
+}
+reviewStatus.saveReviewStatus(agentDir, status);
+console.log('review-status.json written.');
+"
+```
+
+Pull `Reviewer`/`Date` directly from each gate's own line in `REVIEW.md` —
+don't invent them. If either is blank there (a verdict was checked without
+filling in who/when), stop and ask rather than guessing. Confirm afterward
+with `npx agent-test-kit status <agent-name>` — it should now report both
+gates approved.
+
+## 7. Report back
 
 State what was written (`test-cases.json`'s case count, `rubrics.js`'s
-rubric letters), and that the natural next step is running them — point at
-the `run-agent-tests` skill rather than telling the caller to open a
-terminal themselves.
+rubric letters, and that `review-status.json` was created), and that the
+natural next step is running them — point at the `run-agent-tests` skill
+rather than telling the caller to open a terminal themselves.
