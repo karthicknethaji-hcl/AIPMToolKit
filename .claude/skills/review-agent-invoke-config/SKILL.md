@@ -26,7 +26,7 @@ lighter pass just because it's "just test logic").
 
 | Input | Required? | If not given |
 |---|---|---|
-| Agent name | **Yes** | Stop and ask. Must have an existing `test-suite/agents/<agent-name>/invoke-config.js` and `REVIEW.md`. |
+| Agent name | **Yes** | Stop and ask. Must have an existing `test-suite/agents/<agent-name>/config/invoke-config.js` and `REVIEW.md`. |
 | — `scriptChecks.js` | N/A | Include it in the review automatically if the file exists — don't ask whether to check it. |
 
 ## 2. Extract every checkable claim
