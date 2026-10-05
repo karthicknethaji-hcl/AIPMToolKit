@@ -1866,7 +1866,7 @@ function piRenderRightPanel(storyId){
       <button class="pi-rp-close" onclick="piCloseRightPanel()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="pi-rp-scroll">
-      <div class="pi-rp-section">
+      ${(story.storyType||'traditional')==='traditional'?`<div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Story statement</div>
         <div class="pi-rp-story-stmt">${e(story.statement||story.title||'')}</div>
       </div>
@@ -1875,7 +1875,11 @@ function piRenderRightPanel(storyId){
           <summary class="pi-rp-section-lbl pi-rp-ac-summary">Acceptance Criteria <span class="pi-rp-ac-count">${story.scenarios.length} scenario${story.scenarios.length!==1?'s':''}</span></summary>
           ${story.scenarios.map(sc=>`<div class="pi-rp-ac-row"><div class="pi-rp-ac-name">${e(sc.name||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">Given</span> ${e(sc.given||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">When</span> ${e(sc.when||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">Then</span> ${e(sc.then||'')}</div></div>`).join('')}
         </details>
-      </div>`:''}
+      </div>`:''}`
+      :(typeof scGetStorySections==='function'?scGetStorySections(story):[]).map((sec,si)=>`<div class="pi-rp-section">
+        <div class="pi-rp-section-lbl">${e(sec.label)}</div>
+        ${si===0?`<div class="pi-rp-story-stmt">${sec.html}</div>`:sec.html}
+      </div>`).join('')}
       <div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Planning</div>
         <div class="pi-rp-planning-row">
@@ -2183,7 +2187,7 @@ function piOpenBacklogPanel(storyId){
       <button class="pi-rp-close" onclick="piCloseRightPanel()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="pi-rp-scroll">
-      <div class="pi-rp-section">
+      ${(story.storyType||'traditional')==='traditional'?`<div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Story Statement</div>
         <div class="pi-rp-story-stmt">${e(story.statement||story.title||'')}</div>
       </div>
@@ -2192,7 +2196,11 @@ function piOpenBacklogPanel(storyId){
           <summary class="pi-rp-section-lbl pi-rp-ac-summary">Acceptance Criteria <span class="pi-rp-ac-count">${story.scenarios.length} scenario${story.scenarios.length!==1?'s':''}</span></summary>
           ${story.scenarios.map(sc=>`<div class="pi-rp-ac-row"><div class="pi-rp-ac-name">${e(sc.name||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">Given</span> ${e(sc.given||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">When</span> ${e(sc.when||'')}</div><div class="pi-rp-ac-line"><span class="pi-rp-ac-kw">Then</span> ${e(sc.then||'')}</div></div>`).join('')}
         </details>
-      </div>`:''}
+      </div>`:''}`
+      :(typeof scGetStorySections==='function'?scGetStorySections(story):[]).map((sec,si)=>`<div class="pi-rp-section">
+        <div class="pi-rp-section-lbl">${e(sec.label)}</div>
+        ${si===0?`<div class="pi-rp-story-stmt">${sec.html}</div>`:sec.html}
+      </div>`).join('')}
       <div class="pi-rp-section">
         <div class="pi-rp-section-lbl">Planning</div>
         <div class="pi-rp-planning-row" style="align-items:center;gap:12px;">

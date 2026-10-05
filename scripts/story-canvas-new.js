@@ -546,6 +546,8 @@ function newScBuildStoryCard(st,feat,stageColor){
     <div class="sc-card-name" style="margin:4px 0 3px;">${e(st.title)}</div>
     <div class="sc-card-footer">
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+        ${st.storyType==='ai_feature'?'<span style="font-size:7.5px;font-weight:700;background:var(--blue-pale);color:var(--blue);border-radius:3px;padding:1px 5px;">AI FEATURE</span>':''}
+        ${st.storyType==='agentic'?'<span style="font-size:7.5px;font-weight:700;background:var(--purple-pale);color:var(--purple);border-radius:3px;padding:1px 5px;">AGENTIC</span>':''}
         ${st.priority?`<span style="font-size:7.5px;font-weight:700;background:${priColor};color:${priText};border-radius:3px;padding:1px 5px;">${e(st.priority)}</span>`:''}
         <span style="font-size:8.5px;font-weight:600;color:var(--t3);">${ptsLabel}</span>
         ${dorLabel}
@@ -905,16 +907,16 @@ function newScRenderPanelContent(st,feat){
   const allStories=[];
   scCanvas.forEach(f=>{if(f.stories)f.stories.forEach(s=>{if(s.id!==st.id)allStories.push({id:s.id,title:s.title,feat:f.name});});});
 
-  // Acceptance criteria
-  const acHtml=(st.scenarios&&st.scenarios.length>0)
-    ?`<div class="sc-ac-block">`+st.scenarios.map((sc,si)=>{
-        if(typeof sc==='string'){
-          return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t2);line-height:1.5;">${e(sc)}</div></div>`;
-        }
-        return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name||'')}\n<span class="sc-ac-kw">Given</span> ${e(sc.given||'')}\n<span class="sc-ac-kw">When</span>  ${e(sc.when||'')}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then||'')}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}
-        </div></div>`;
-      }).join('')+`</div>`
-    :'<div style="font-size:10px;color:var(--label);font-style:italic;">No acceptance criteria — generate stories in Feature Canvas to include ACs.</div>';
+  // Story body — Statement+AC / Outcome+Evals / Goal+Operating Contract,
+  // chosen per st.storyType. Shared with Release Canvas's own detail panels
+  // via scGetStorySections() (feature-canvas.js) so both screens stay in
+  // sync without duplicating the per-type branching.
+  const _scSections=(typeof scGetStorySections==='function')?scGetStorySections(st):[];
+  const sectionsHtml=_scSections.map((sec,si)=>`
+    <div style="margin-bottom:14px;">
+      <div class="pi-section-lbl" style="margin-bottom:5px;">${e(sec.label)}</div>
+      ${si===0?`<div style="background:var(--card);border-radius:5px;padding:8px 10px;">${sec.html}</div>`:sec.html}
+    </div>`).join('');
 
   // v9.08: computed once per panel render, matches the readOnly-inline-
   // in-template pattern used elsewhere (settings-page.js Company Profile).
@@ -923,17 +925,7 @@ function newScRenderPanelContent(st,feat){
     <!-- Traceability — uses FC scRenderLineage with nsc-trace-meta target -->
     <div id="nsc-trace-meta" style="margin-bottom:10px;"></div>
 
-    <!-- Story statement (read-only) -->
-    <div style="margin-bottom:14px;">
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Story Statement</div>
-      <div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;background:var(--card);border-radius:5px;padding:8px 10px;">${e(st.statement||'')}</div>
-    </div>
-
-    <!-- Acceptance Criteria (read-only) -->
-    <div style="margin-bottom:14px;">
-      <div class="pi-section-lbl" style="margin-bottom:5px;">Acceptance Criteria</div>
-      ${acHtml}
-    </div>
+    ${sectionsHtml}
 
     <!-- DoR toggle -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--divider);">
@@ -1388,12 +1380,51 @@ function newScDoAddStory(){
     sessionStoreSave(_activeSessionId).then(function(ok){ if(ok&&typeof _lsMarkManualEdit==='function')_lsMarkManualEdit('sc',featId+_LS_SC_TARGET_SEP+newId); });
   }
 }
+// Shared text<->structure conversion for the non-traditional story-edit
+// fields below — same "one concept per line" convention as the existing
+// Gherkin scenariosToText()/parse-back, just generalized to plain bullet
+// lists, eval-scenario/rubric pairs, and name:threshold metric lines.
+function _nscBulletsToText(arr){return(arr&&arr.length)?arr.join('\n'):'';}
+function _nscTextToBullets(text){return(text||'').split('\n').map(l=>l.trim()).filter(Boolean);}
+function _nscEvalScenariosToText(arr){
+  if(!arr||!arr.length)return'';
+  return arr.map(s=>'Scenario: '+(s.scenario||'')+'\nRubric: '+(s.rubric||'')).join('\n\n');
+}
+function _nscTextToEvalScenarios(text){
+  if(!text||!text.trim())return[];
+  return text.trim().split(/\n{2,}/).map(block=>{
+    const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
+    const out={scenario:'',rubric:''};
+    let last='scenario';
+    lines.forEach(l=>{
+      if(/^Scenario:/i.test(l)){out.scenario=l.replace(/^Scenario:\s*/i,'');last='scenario';}
+      else if(/^Rubric:/i.test(l)){out.rubric=l.replace(/^Rubric:\s*/i,'');last='rubric';}
+      else{out[last]=out[last]?out[last]+' '+l:l;}
+    });
+    return out;
+  }).filter(s=>s.scenario||s.rubric);
+}
+function _nscMetricsToText(metrics){
+  if(!metrics||!metrics.length)return'';
+  return metrics.map(m=>(m.name||'')+': '+(m.threshold||'')).join('\n');
+}
+function _nscTextToMetrics(text){
+  if(!text||!text.trim())return[];
+  return text.trim().split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
+    const idx=l.indexOf(':');
+    if(idx===-1)return{name:l,threshold:''};
+    return{name:l.slice(0,idx).trim(),threshold:l.slice(idx+1).trim()};
+  });
+}
+
 function newScShowEditStoryModal(storyId,featId){
   if(typeof canEditSession==='function'&&!canEditSession())return;
   const feat=scCanvas.find(f=>f.id===featId);
   if(!feat||!feat.stories)return;
   const st=feat.stories.find(s=>s.id===storyId);
   if(!st)return;
+  const storyType=st.storyType||'traditional';
+  const d=st.detail||{};
   // Convert structured scenarios to Gherkin text for editing
   function scenariosToText(scenarios){
     if(!scenarios||!scenarios.length)return '';
@@ -1408,19 +1439,51 @@ function newScShowEditStoryModal(storyId,featId){
     }).join('\n\n');
   }
   const acText=scenariosToText(st.scenarios||[]);
+  const lbl=(text,opt)=>`<label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">${text} ${opt?'<span style="font-size:9px;color:var(--label);font-weight:400;">(optional)</span>':'<span style="color:var(--red);">*</span>'}</label>`;
+  const ta=(id,rows,val,placeholder,required)=>`<textarea id="${id}" rows="${rows}" ${placeholder?`placeholder="${placeholder}"`:''} ${required?'oninput="newScValidateEditStory()"':''} style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(val)}</textarea>`;
+  let bodyFields;
+  if(storyType==='ai_feature'){
+    bodyFields=`
+      <div>${lbl('Outcome')}${ta('nsc-edit-outcome',3,d.outcome||'','',true)}</div>
+      <div>${lbl('Behavior Expectations',true)}${ta('nsc-edit-behavior',3,_nscBulletsToText(d.behaviorExpectations),'One expectation per line')}</div>
+      <div>${lbl('Eval Scenarios &amp; Rubrics',true)}${ta('nsc-edit-evals',6,_nscEvalScenariosToText(d.evalScenarios),'Scenario: …&#10;Rubric: …')}</div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:2;">${lbl('Quality Bar metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.qualityBar&&d.qualityBar.metrics),'Task success rate: &gt;= 90%')}</div>
+        <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.qualityBar&&d.qualityBar.rerunTrigger)||'')}</div>
+      </div>`;
+  } else if(storyType==='agentic'){
+    bodyFields=`
+      <div>${lbl('Goal')}${ta('nsc-edit-goal',3,d.goal||'','',true)}</div>
+      <div>${lbl('Decision Rights',true)}${ta('nsc-edit-decision-rights',3,_nscBulletsToText(d.decisionRights),'One per line')}</div>
+      <div>${lbl('Guardrails',true)}${ta('nsc-edit-guardrails',3,_nscBulletsToText(d.guardrails),'One per line')}</div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:1;">${lbl('Escalation triggers',true)}${ta('nsc-edit-esc-triggers',3,_nscBulletsToText((d.escalation||{}).triggers),'One per line')}</div>
+        <div style="flex:1;">${lbl('Handoff includes',true)}${ta('nsc-edit-esc-handoff',3,_nscBulletsToText((d.escalation||{}).handoff),'One per line')}</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <div style="flex:2;">${lbl('Acceptance Envelope metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.metrics),'Name: Threshold, one per line')}</div>
+        <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.acceptanceEnvelope&&d.acceptanceEnvelope.rerunTrigger)||'')}</div>
+      </div>`;
+  } else {
+    bodyFields=`
+      <div>${lbl('Statement')}<textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea></div>
+      <div>${lbl('Acceptance Criteria',true)}<textarea id="nsc-edit-ac" rows="6" placeholder="Scenario: …&#10;Given …&#10;When …&#10;Then …" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(acText)}</textarea></div>`;
+  }
   // Build feature options
   const featOpts=scCanvas.map(f=>`<option value="${e(f.id)}"${f.id===featId?' selected':''}>${e(f.name)}</option>`).join('');
+  const typeTag=storyType!=='traditional'?`<span style="font-size:9px;font-weight:700;background:${storyType==='agentic'?'var(--purple-pale)':'var(--blue-pale)'};color:${storyType==='agentic'?'var(--purple)':'var(--blue)'};border-radius:3px;padding:1px 5px;margin-left:5px;">${storyType==='agentic'?'AGENTIC':'AI FEATURE'}</span>`:'';
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
   overlay.id='nsc-edit-story-overlay';
+  overlay.dataset.storyType=storyType;
   overlay.innerHTML=`<div class="modal" style="max-width:500px;position:relative;">
     <button onclick="document.getElementById('nsc-edit-story-overlay').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;cursor:pointer;padding:3px;color:var(--t3);display:flex;align-items:center;border-radius:4px;z-index:1;" title="Close">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
     <div style="padding:16px 44px 14px 16px;border-bottom:0.5px solid var(--divider);">
-      <div style="font-size:13px;font-weight:500;color:var(--t1);">Edit Story <span style="font-size:10px;color:var(--label);font-weight:400;">${e(st.id)}</span></div>
+      <div style="font-size:13px;font-weight:500;color:var(--t1);">Edit Story <span style="font-size:10px;color:var(--label);font-weight:400;">${e(st.id)}</span>${typeTag}</div>
     </div>
-    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 16px 4px;">
+    <div style="display:flex;flex-direction:column;gap:10px;padding:14px 16px 4px;max-height:60vh;overflow-y:auto;">
       <div>
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Feature</label>
         <select id="nsc-edit-feat" style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);">${featOpts}</select>
@@ -1429,14 +1492,7 @@ function newScShowEditStoryModal(storyId,featId){
         <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Title <span style="color:var(--red);">*</span></label>
         <input type="text" id="nsc-edit-title" value="${e(st.title||'')}" oninput="newScValidateEditStory()" style="width:100%;height:30px;border:1px solid var(--divider);border-radius:5px;padding:0 8px;font-size:11px;font-family:var(--font);color:var(--t1);box-sizing:border-box;"/>
       </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Statement <span style="color:var(--red);">*</span></label>
-        <textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea>
-      </div>
-      <div>
-        <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Acceptance Criteria <span style="font-size:9px;color:var(--label);font-weight:400;">(optional)</span></label>
-        <textarea id="nsc-edit-ac" rows="6" placeholder="Scenario: …&#10;Given …&#10;When …&#10;Then …" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:vertical;box-sizing:border-box;line-height:1.6;">${e(acText)}</textarea>
-      </div>
+      ${bodyFields}
       <div style="display:flex;gap:8px;">
         <div style="flex:1;">
           <label style="font-size:10px;font-weight:500;color:var(--t2);display:block;margin-bottom:3px;">Priority</label>
@@ -1475,10 +1531,13 @@ function newScShowEditStoryModal(storyId,featId){
 }
 
 function newScValidateEditStory(){
+  const overlay=document.getElementById('nsc-edit-story-overlay');
+  const storyType=(overlay&&overlay.dataset.storyType)||'traditional';
   const title=document.getElementById('nsc-edit-title');
-  const stmt=document.getElementById('nsc-edit-stmt');
   const btn=document.getElementById('nsc-edit-story-submit');
-  if(btn)btn.disabled=!(title&&title.value.trim()&&stmt&&stmt.value.trim());
+  const primaryId=storyType==='ai_feature'?'nsc-edit-outcome':storyType==='agentic'?'nsc-edit-goal':'nsc-edit-stmt';
+  const primary=document.getElementById(primaryId);
+  if(btn)btn.disabled=!(title&&title.value.trim()&&primary&&primary.value.trim());
 }
 
 function newScDoEditStory(storyId,origFeatId){
@@ -1486,39 +1545,73 @@ function newScDoEditStory(storyId,origFeatId){
   if(!origFeat||!origFeat.stories)return;
   const st=origFeat.stories.find(s=>s.id===storyId);
   if(!st)return;
+  const storyType=st.storyType||'traditional';
   const title=(document.getElementById('nsc-edit-title')||{}).value||'';
-  const stmt=(document.getElementById('nsc-edit-stmt')||{}).value||'';
   const priority=(document.getElementById('nsc-edit-priority')||{}).value||'';
   const ptsRaw=(document.getElementById('nsc-edit-pts')||{}).value;
-  const acRaw=(document.getElementById('nsc-edit-ac')||{}).value||'';
   const newFeatId=(document.getElementById('nsc-edit-feat')||{}).value||origFeatId;
-  if(!title.trim()||!stmt.trim())return;
+  if(!title.trim())return;
+  if(storyType==='ai_feature'){
+    const outcome=(document.getElementById('nsc-edit-outcome')||{}).value||'';
+    if(!outcome.trim())return;
+    st.detail={
+      outcome:outcome.trim(),
+      behaviorExpectations:_nscTextToBullets((document.getElementById('nsc-edit-behavior')||{}).value),
+      evalScenarios:_nscTextToEvalScenarios((document.getElementById('nsc-edit-evals')||{}).value),
+      qualityBar:{
+        metrics:_nscTextToMetrics((document.getElementById('nsc-edit-metrics')||{}).value),
+        rerunTrigger:((document.getElementById('nsc-edit-rerun')||{}).value||'').trim()
+      }
+    };
+  } else if(storyType==='agentic'){
+    const goal=(document.getElementById('nsc-edit-goal')||{}).value||'';
+    if(!goal.trim())return;
+    st.detail={
+      goal:goal.trim(),
+      decisionRights:_nscTextToBullets((document.getElementById('nsc-edit-decision-rights')||{}).value),
+      guardrails:_nscTextToBullets((document.getElementById('nsc-edit-guardrails')||{}).value),
+      escalation:{
+        triggers:_nscTextToBullets((document.getElementById('nsc-edit-esc-triggers')||{}).value),
+        handoff:_nscTextToBullets((document.getElementById('nsc-edit-esc-handoff')||{}).value)
+      },
+      acceptanceEnvelope:{
+        metrics:_nscTextToMetrics((document.getElementById('nsc-edit-metrics')||{}).value),
+        rerunTrigger:((document.getElementById('nsc-edit-rerun')||{}).value||'').trim()
+      }
+    };
+  } else {
+    const stmt=(document.getElementById('nsc-edit-stmt')||{}).value||'';
+    if(!stmt.trim())return;
+    st.statement=stmt.trim();
+    const acRaw=(document.getElementById('nsc-edit-ac')||{}).value||'';
+    // Parse AC text back into structured scenarios
+    if(acRaw.trim()){
+      const blocks=acRaw.trim().split(/\n{2,}/);
+      st.scenarios=blocks.map(block=>{
+        const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
+        const sc={name:'',given:'',when:'',then:'',and:''};
+        let lastField='name';
+        lines.forEach(l=>{
+          if(/^Scenario:/i.test(l)){sc.name=l.replace(/^Scenario:\s*/i,'');lastField='name';}
+          else if(/^Given/i.test(l)){sc.given=l.replace(/^Given\s*/i,'');lastField='given';}
+          else if(/^When/i.test(l)){sc.when=l.replace(/^When\s*/i,'');lastField='when';}
+          else if(/^Then/i.test(l)){sc.then=l.replace(/^Then\s*/i,'');lastField='then';}
+          else if(/^And/i.test(l)){sc.and=l.replace(/^And\s*/i,'');lastField='and';}
+          else{
+            // Unmatched line — append to last matched field
+            if(sc[lastField])sc[lastField]+=' '+l;
+            else sc[lastField]=l;
+          }
+        });
+        return sc;
+      });
+    } else {
+      st.scenarios=[];
+    }
+  }
   st.title=title.trim();
-  st.statement=stmt.trim();
   st.priority=priority||null;
   st.points=ptsRaw?parseInt(ptsRaw):null;
-  // Parse AC text back into structured scenarios
-  if(acRaw.trim()){
-    const blocks=acRaw.trim().split(/\n{2,}/);
-    st.scenarios=blocks.map(block=>{
-      const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
-      const sc={name:'',given:'',when:'',then:'',and:''};
-      let lastField='name';
-      lines.forEach(l=>{
-        if(/^Scenario:/i.test(l)){sc.name=l.replace(/^Scenario:\s*/i,'');lastField='name';}
-        else if(/^Given/i.test(l)){sc.given=l.replace(/^Given\s*/i,'');lastField='given';}
-        else if(/^When/i.test(l)){sc.when=l.replace(/^When\s*/i,'');lastField='when';}
-        else if(/^Then/i.test(l)){sc.then=l.replace(/^Then\s*/i,'');lastField='then';}
-        else if(/^And/i.test(l)){sc.and=l.replace(/^And\s*/i,'');lastField='and';}
-        else{
-          // Unmatched line — append to last matched field
-          if(sc[lastField])sc[lastField]+=' '+l;
-          else sc[lastField]=l;
-        }
-      });
-      return sc;
-    });
-  }
   // Feature reassignment
   if(newFeatId!==origFeatId){
     const newFeat=scCanvas.find(f=>f.id===newFeatId);

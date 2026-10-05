@@ -1428,6 +1428,59 @@ function scRenderLineage(feat,targetElId){
   <div class="sc-panel-lineage-body">${rows}</div>`;
 }
 
+// Three-tier story classification (traditional / ai_feature / agentic) —
+// shared across Story Canvas and Release Canvas detail panels, same
+// cross-file-helper pattern as scRenderLineage() above. Returns an array
+// of {label, html} fragments rather than one finished block so each caller
+// keeps its own existing label/container chrome (the two screens already
+// style "Story Statement" etc. differently) instead of all converging on
+// one hardcoded look.
+function scGetStorySections(st){
+  const t=st.storyType||'traditional';
+  const bullets=(arr)=>!arr||!arr.length?'<div style="font-size:10px;color:var(--label);font-style:italic;">None specified.</div>'
+    :'<ul style="margin:0;padding-left:16px;font-size:11px;color:var(--t2);line-height:1.6;">'+arr.map(x=>`<li>${e(x)}</li>`).join('')+'</ul>';
+  const metricsBlock=(m)=>{
+    const o=m||{};const rows=o.metrics||[];
+    return(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;"><span>${e(r.name||'')}</span><span style="font-weight:600;flex-shrink:0;">${e(r.threshold||'')}</span></div>`).join('')
+      :'<div style="font-size:10px;color:var(--label);font-style:italic;">No metrics specified.</div>')
+      +(o.rerunTrigger?`<div style="font-size:10px;color:var(--t3);margin-top:4px;">Rerun trigger: ${e(o.rerunTrigger)}</div>`:'');
+  };
+  if(t==='ai_feature'){
+    const d=st.detail||{};
+    return[
+      {label:'User Outcome',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(d.outcome||'')}</div>`},
+      {label:'Behavior Expectations',html:bullets(d.behaviorExpectations)},
+      {label:'Eval Scenarios & Rubrics',html:(d.evalScenarios&&d.evalScenarios.length?d.evalScenarios.map(s=>`<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div></div>`).join(''):'<div style="font-size:10px;color:var(--label);font-style:italic;">No eval scenarios.</div>')},
+      {label:'Quality Bar',html:metricsBlock(d.qualityBar)}
+    ];
+  }
+  if(t==='agentic'){
+    const d=st.detail||{};
+    const esc=d.escalation||{};
+    return[
+      {label:'Goal',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(d.goal||'')}</div>`},
+      {label:'Decision Rights',html:bullets(d.decisionRights)},
+      {label:'Guardrails',html:bullets(d.guardrails)},
+      {label:'Escalation',html:'<div style="font-size:10px;font-weight:600;color:var(--t2);margin-bottom:2px;">Triggers</div>'+bullets(esc.triggers)+'<div style="font-size:10px;font-weight:600;color:var(--t2);margin:6px 0 2px;">Handoff includes</div>'+bullets(esc.handoff)},
+      {label:'Acceptance Envelope',html:metricsBlock(d.acceptanceEnvelope)}
+    ];
+  }
+  // traditional — identical output to the previous hardcoded panel blocks
+  const acHtml=(st.scenarios&&st.scenarios.length>0)
+    ?`<div class="sc-ac-block">`+st.scenarios.map((sc)=>{
+        if(typeof sc==='string'){
+          return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t2);line-height:1.5;">${e(sc)}</div></div>`;
+        }
+        return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name||'')}\n<span class="sc-ac-kw">Given</span> ${e(sc.given||'')}\n<span class="sc-ac-kw">When</span>  ${e(sc.when||'')}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then||'')}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}
+        </div></div>`;
+      }).join('')+`</div>`
+    :'<div style="font-size:10px;color:var(--label);font-style:italic;">No acceptance criteria — generate stories in Feature Canvas to include ACs.</div>';
+  return[
+    {label:'Story Statement',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(st.statement||'')}</div>`},
+    {label:'Acceptance Criteria',html:acHtml}
+  ];
+}
+
 function scToggleLineage(fid){
   scPanelLineageOpen=!scPanelLineageOpen;
   scPanelLinkingMetric=false;
@@ -1764,24 +1817,34 @@ function scRenderPanel(feat){
     h+=`</div>`;
     h+=`<div class="sc-story-title-row">`;
     h+=`<div class="sc-story-title" id="sc-st-title-${si}">${e(st.title)}</div>`;
+    if(st.storyType==='ai_feature')h+=`<span style="font-weight:700;font-size:7.5px;background:var(--blue-pale);color:var(--blue);border-radius:3px;padding:1px 5px;flex-shrink:0;">AI FEATURE</span>`;
+    if(st.storyType==='agentic')h+=`<span style="font-weight:700;font-size:7.5px;background:var(--purple-pale);color:var(--purple);border-radius:3px;padding:1px 5px;flex-shrink:0;">AGENTIC</span>`;
     if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryTitle('${e(feat.id)}',${si})" title="Edit title"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
     h+=`</div>`;
-    h+=`<div class="sc-story-stmt-row">`;
-    h+=`<div class="sc-story-stmt" id="sc-st-stmt-${si}">${e(st.statement)}</div>`;
-    if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
-    h+=`</div>`;
-    if(st.scenarios&&st.scenarios.length>0){
-      h+=`<div class="sc-ac-block"><div class="sc-ac-label">Acceptance criteria</div>`;
-      st.scenarios.forEach((sc,sci)=>{
-        h+=`<div class="sc-ac-scenario" id="sc-st-ac-${si}-${sci}">`;
-        h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
-        h+=`<div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name)}\n<span class="sc-ac-kw">Given</span> ${e(sc.given)}\n<span class="sc-ac-kw">When</span>  ${e(sc.when)}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then)}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}`;
-        h+=`</div>`;
-        if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
-        h+=`</div>`;
-        h+=`</div>`;
-      });
+    if((st.storyType||'traditional')==='traditional'){
+      h+=`<div class="sc-story-stmt-row">`;
+      h+=`<div class="sc-story-stmt" id="sc-st-stmt-${si}">${e(st.statement)}</div>`;
+      if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryStmt('${e(feat.id)}',${si})" title="Edit description" style="margin-top:2px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
       h+=`</div>`;
+      if(st.scenarios&&st.scenarios.length>0){
+        h+=`<div class="sc-ac-block"><div class="sc-ac-label">Acceptance criteria</div>`;
+        st.scenarios.forEach((sc,sci)=>{
+          h+=`<div class="sc-ac-scenario" id="sc-st-ac-${si}-${sci}">`;
+          h+=`<div style="display:flex;justify-content:space-between;align-items:flex-start;">`;
+          h+=`<div style="flex:1;white-space:pre-wrap;"><span class="sc-ac-kw">Scenario:</span> ${e(sc.name)}\n<span class="sc-ac-kw">Given</span> ${e(sc.given)}\n<span class="sc-ac-kw">When</span>  ${e(sc.when)}\n<span class="sc-ac-kw">Then</span>  ${e(sc.then)}${sc.and?`\n<span class="sc-ac-kw">And</span>   ${e(sc.and)}`:''}`;
+          h+=`</div>`;
+          if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryAC('${e(feat.id)}',${si},${sci})" title="Edit acceptance criteria" style="flex-shrink:0;margin-left:4px;margin-top:1px;"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
+          h+=`</div>`;
+          h+=`</div>`;
+        });
+        h+=`</div>`;
+      }
+    } else {
+      // ai_feature / agentic — same shared sections as Story Canvas/Release
+      // Canvas (scGetStorySections), read-only here (no per-field edit
+      // affordance yet, matching the pencil-edit gating in Story Canvas).
+      const _secs=(typeof scGetStorySections==='function')?scGetStorySections(st):[];
+      h+=`<div class="sc-ac-block">`+_secs.map(sec=>`<div class="sc-ac-label" style="margin-top:8px;">${e(sec.label)}</div><div class="sc-ac-scenario">${sec.html}</div>`).join('')+`</div>`;
     }
     h+=`</div></div>`;
   });
@@ -2256,8 +2319,12 @@ async function scGenerateStories(featureIds){
   // Dynamic token limit: scale with features × stories to prevent truncation at higher settings.
   // Model override: if projected output exceeds ~7k tokens (Haiku's safe ceiling),
   // force Sonnet regardless of batch size — Haiku's 8192 output limit would truncate.
+  // Per-story estimate raised 900->1300 for the three-tier story classification
+  // (ai_feature/agentic stories carry a nested `detail` object) — this only
+  // raises the ceiling passed to callAPI, not committed cost, but it does mean
+  // the Haiku->Sonnet override below now trips at smaller batch sizes.
   const _maxStories=(typeof appSettings!=='undefined'?appSettings.maxStories:5)||5;
-  const _projectedTok=features.length*_maxStories*900;
+  const _projectedTok=features.length*_maxStories*1300;
   const _dynTok=Math.min(32000,Math.max(12000,_projectedTok+2000));
   const _batchModel=_projectedTok>7000?null:(typeof resolveThresholdModel==='function')?resolveThresholdModel(features.length):null;
   // v9.13: tags WHY a non-null _batchModel was supplied, so usage-tracking
@@ -2266,7 +2333,7 @@ async function scGenerateStories(featureIds){
   // (unaudited) modelOverride call site currently gets.
   const _batchSource=_batchModel?'batch_threshold_override':null;
   const txt=await callAPI(
-    'You are a senior product manager and scrum master. Write grooming-ready user stories with Gherkin acceptance criteria. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
+    'You are a senior product manager and scrum master. Write grooming-ready user stories, choosing the right rigor format per story (traditional Gherkin acceptance criteria, AI-feature eval scenarios with rubrics, or an agentic operating/evaluation contract) based on each story\'s own nature. Respond ONLY with valid JSON. No markdown, no backticks, no preamble. Never use em dashes (—) in your output; use a hyphen (-) or rewrite the phrase.',
     prompt,
     _dynTok,
     _signal,
@@ -2290,18 +2357,54 @@ async function scGenerateStories(featureIds){
         const isRefine=!!(feat._refinement);
         const newStories=(featBlock.stories||[]).map((st)=>{
           scStoryIdCounter++;
-          return{
+          const _rawType=String(st.story_type||'traditional').toLowerCase().trim();
+          const storyType=['traditional','ai_feature','agentic'].includes(_rawType)?_rawType:'traditional';
+          const base={
             id:'ST-'+String(scStoryIdCounter).padStart(3,'0'),
             title:st.title,
-            statement:st.statement,
             points:st.points||3,
             priority:st.priority||'Should Have',
             dor:'NOT READY',
             dorReason:'',
+            storyType,
             scenarios:st.scenarios||[],
             _inSC:false,
             _hiddenFromSC:false
           };
+          if(storyType==='traditional'){
+            base.statement=st.statement||'';
+            return base;
+          }
+          // ai_feature / agentic — every nested read defensively guarded so a
+          // partially-truncated response (see the repair path above) degrades
+          // to empty fields instead of throwing.
+          const d=st.detail||{};
+          if(storyType==='ai_feature'){
+            base.detail={
+              outcome:d.outcome||'',
+              behaviorExpectations:Array.isArray(d.behavior_expectations)?d.behavior_expectations:[],
+              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})):[],
+              qualityBar:{
+                metrics:Array.isArray(d.quality_bar&&d.quality_bar.metrics)?d.quality_bar.metrics.map(m=>({name:(m&&m.name)||'',threshold:(m&&m.threshold)||''})):[],
+                rerunTrigger:(d.quality_bar&&d.quality_bar.rerun_trigger)||''
+              }
+            };
+          } else {
+            base.detail={
+              goal:d.goal||'',
+              decisionRights:Array.isArray(d.decision_rights)?d.decision_rights:[],
+              guardrails:Array.isArray(d.guardrails)?d.guardrails:[],
+              escalation:{
+                triggers:Array.isArray(d.escalation&&d.escalation.triggers)?d.escalation.triggers:[],
+                handoff:Array.isArray(d.escalation&&d.escalation.handoff)?d.escalation.handoff:[]
+              },
+              acceptanceEnvelope:{
+                metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:(m&&m.name)||'',threshold:(m&&m.threshold)||''})):[],
+                rerunTrigger:(d.acceptance_envelope&&d.acceptance_envelope.rerun_trigger)||''
+              }
+            };
+          }
+          return base;
         });
         if(isRefine&&feat.stories&&feat.stories.length>0){
           // Merge: keep existing stories, append new ones (avoiding duplicates by title)
@@ -2438,22 +2541,41 @@ ${refinement?'\nRefinement instruction: '+refinement+'\nApply this refinement to
 Features to story-ify:
 ${featList}
 
-Return a JSON array — one object per feature. Format EXACTLY:
+Return a JSON array — one object per feature. Each story is classified independently with its own "story_type" and must match exactly ONE of the three shapes below — never mix shapes (a "traditional" story has no "detail" key; an "ai_feature"/"agentic" story has no "statement"/"scenarios" keys):
 [
   {
     "feature": "exact feature name",
     "stories": [
       {
+        "story_type": "traditional",
         "title": "outcome-oriented title — [Persona] can [action] so that [outcome]",
         "statement": "As a [persona], I want to [action], so that [outcome].",
-        "points": 3,
-        "priority": "Must Have",
-        "dor": "READY",
-        "dor_reason": "",
+        "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
         "scenarios": [
           {"name": "scenario name", "given": "precondition", "when": "action", "then": "outcome", "and": "additional outcome or empty string"},
           {"name": "edge case name", "given": "precondition", "when": "action", "then": "outcome", "and": ""}
         ]
+      },
+      {
+        "story_type": "ai_feature",
+        "title": "outcome-oriented title", "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
+        "detail": {
+          "outcome": "the user outcome this AI behavior should achieve",
+          "behavior_expectations": ["concrete behavior that must always hold", "..."],
+          "eval_scenarios": [{"scenario": "a concrete input/situation", "rubric": "one-sentence grading criteria for a good response to it"}],
+          "quality_bar": {"metrics": [{"name": "metric name", "threshold": ">= 90%"}], "rerun_trigger": "what change requires re-running the scenario set"}
+        }
+      },
+      {
+        "story_type": "agentic",
+        "title": "outcome-oriented title", "points": 3, "priority": "Must Have", "dor": "READY", "dor_reason": "",
+        "detail": {
+          "goal": "the outcome the agent is pursuing and when it applies",
+          "decision_rights": ["what it may determine, recommend, or execute on its own", "..."],
+          "guardrails": ["what it must never do regardless of instruction", "..."],
+          "escalation": {"triggers": ["concrete condition that forces a handoff to a human", "..."], "handoff": ["what context must travel with the handoff", "..."]},
+          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rerun_trigger": "what change requires re-running the scenario set"}
+        }
       }
     ]
   }
@@ -2466,10 +2588,17 @@ Rules:
 - priority: Must Have / Should Have / Could Have
 - dor: READY or NOT READY
 - dor_reason: only if NOT READY — state reason (e.g. "UX design needed", "API contract undefined")
-- scenarios: minimum 2 per story, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — one happy path, one edge/error case always included
-- given/when/then/and: concrete, testable language — never vague
-- and: empty string if not needed
-- If a feature lists an outcome hypothesis above, favor acceptance criteria that would plausibly move that specific metric in that direction — do not ignore this context when present
+- story_type: classify EACH story independently as "traditional", "ai_feature", or "agentic":
+  - "traditional": one correct, verifiable behavior per input — a lookup, calculation, CRUD action, or workflow step where right/wrong is unambiguous and testable with Given/When/Then.
+  - "ai_feature": the story's core behavior is produced by a generative/ML model where multiple different outputs can be equally acceptable (summarization, recommendation, drafting, judgment-based classification) — quality is graded by a rubric across a distribution of scenarios, not one pass/fail assertion.
+  - "agentic": the system autonomously decides AND acts across multiple steps on the user's/business's behalf (not just answering a question) — it needs explicit decision rights, guardrails, and escalation rules because it can take consequential action without a human approving each step.
+  Do not default every story in a feature to the same story_type — a single feature can and often should mix types. Most stories in most products are still "traditional" — reserve "ai_feature" and "agentic" for stories whose core value genuinely depends on model-generated judgment or autonomous action, not merely because the product itself has AI in it.
+- scenarios (traditional only): minimum 2 per story, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — one happy path, one edge/error case always included. given/when/then/and: concrete, testable language — never vague. and: empty string if not needed
+- detail.behavior_expectations / decision_rights / guardrails: 2-5 concrete bullets each, never vague
+- detail.eval_scenarios (ai_feature only): minimum 2, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — concrete scenario + a one-sentence grading rubric for that scenario
+- detail.escalation (agentic only): triggers = concrete handoff conditions; handoff = what context travels with the handoff
+- detail.quality_bar / detail.acceptance_envelope: 1-4 measurable metrics with name+threshold (threshold is a short string with unit/operator, e.g. ">= 80%", "< $0.25", "= 0", never a bare number); rerun_trigger: one sentence on what change requires re-running the scenario set
+- If a feature lists an outcome hypothesis above, favor acceptance criteria / eval scenarios that would plausibly move that specific metric in that direction — do not ignore this context when present
 - Return ONLY the JSON array. No other text.`;
 }
 
