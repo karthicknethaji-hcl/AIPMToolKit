@@ -1439,18 +1439,26 @@ function scGetStorySections(st){
   const t=st.storyType||'traditional';
   const bullets=(arr)=>!arr||!arr.length?'<div style="font-size:10px;color:var(--label);font-style:italic;">None specified.</div>'
     :'<ul style="margin:0;padding-left:16px;font-size:11px;color:var(--t2);line-height:1.6;">'+arr.map(x=>`<li>${e(x)}</li>`).join('')+'</ul>';
+  // Shared scenario+rubric row renderer — used both for ai_feature's
+  // standalone Eval Scenarios section and for rubrics nested inside an
+  // Acceptance Envelope (agentic) alongside its aggregate metrics.
+  const rubricRows=(arr)=>(arr&&arr.length)?arr.map(s=>`<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div></div>`).join(''):'';
   const metricsBlock=(m)=>{
     const o=m||{};const rows=o.metrics||[];
-    return(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;"><span>${e(r.name||'')}</span><span style="font-weight:600;flex-shrink:0;">${e(r.threshold||'')}</span></div>`).join('')
-      :'<div style="font-size:10px;color:var(--label);font-style:italic;">No metrics specified.</div>')
-      +(o.rerunTrigger?`<div style="font-size:10px;color:var(--t3);margin-top:4px;">Rerun trigger: ${e(o.rerunTrigger)}</div>`:'');
+    let html=(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;"><span>${e(r.name||'')}</span><span style="font-weight:600;flex-shrink:0;">${e(r.threshold||'')}</span></div>`).join('')
+      :'<div style="font-size:10px;color:var(--label);font-style:italic;">No metrics specified.</div>');
+    if(o.rubrics&&o.rubrics.length){
+      html+='<div style="font-size:10px;font-weight:600;color:var(--t2);margin:8px 0 2px;">Rubrics</div>'+rubricRows(o.rubrics);
+    }
+    html+=(o.rerunTrigger?`<div style="font-size:10px;color:var(--t3);margin-top:4px;">Rerun trigger: ${e(o.rerunTrigger)}</div>`:'');
+    return html;
   };
   if(t==='ai_feature'){
     const d=st.detail||{};
     return[
       {label:'User Outcome',html:`<div style="font-size:11px;color:var(--t3);line-height:1.5;font-style:italic;">${e(d.outcome||'')}</div>`},
       {label:'Behavior Expectations',html:bullets(d.behaviorExpectations)},
-      {label:'Eval Scenarios & Rubrics',html:(d.evalScenarios&&d.evalScenarios.length?d.evalScenarios.map(s=>`<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div></div>`).join(''):'<div style="font-size:10px;color:var(--label);font-style:italic;">No eval scenarios.</div>')},
+      {label:'Eval Scenarios & Rubrics',html:(d.evalScenarios&&d.evalScenarios.length?rubricRows(d.evalScenarios):'<div style="font-size:10px;color:var(--label);font-style:italic;">No eval scenarios.</div>')},
       {label:'Quality Bar',html:metricsBlock(d.qualityBar)}
     ];
   }
@@ -2400,6 +2408,7 @@ async function scGenerateStories(featureIds){
               },
               acceptanceEnvelope:{
                 metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:(m&&m.name)||'',threshold:(m&&m.threshold)||''})):[],
+                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})):[],
                 rerunTrigger:(d.acceptance_envelope&&d.acceptance_envelope.rerun_trigger)||''
               }
             };
@@ -2574,7 +2583,7 @@ Return a JSON array — one object per feature. Each story is classified indepen
           "decision_rights": ["what it may determine, recommend, or execute on its own", "..."],
           "guardrails": ["what it must never do regardless of instruction", "..."],
           "escalation": {"triggers": ["concrete condition that forces a handoff to a human", "..."], "handoff": ["what context must travel with the handoff", "..."]},
-          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rerun_trigger": "what change requires re-running the scenario set"}
+          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rubrics": [{"scenario": "a concrete judgment-call situation the agent may face (e.g. a borderline escalation call)", "rubric": "one-sentence criteria for what a sound decision looks like in that situation"}], "rerun_trigger": "what change requires re-running the scenario set"}
         }
       }
     ]
@@ -2598,6 +2607,7 @@ Rules:
 - detail.eval_scenarios (ai_feature only): minimum 2, up to ${typeof appSettings!=='undefined'?appSettings.maxACs:3} — concrete scenario + a one-sentence grading rubric for that scenario
 - detail.escalation (agentic only): triggers = concrete handoff conditions; handoff = what context travels with the handoff
 - detail.quality_bar / detail.acceptance_envelope: 1-4 measurable metrics with name+threshold (threshold is a short string with unit/operator, e.g. ">= 80%", "< $0.25", "= 0", never a bare number); rerun_trigger: one sentence on what change requires re-running the scenario set
+- detail.acceptance_envelope.rubrics (agentic only): 2-4 concrete judgment-call scenarios the agent may plausibly face (a borderline escalation call, an ambiguous guardrail boundary, a low-confidence decision) + a one-sentence rubric for what a sound decision looks like in that scenario. This grades the quality of the agent's in-the-moment judgment, separate from the aggregate pass/fail metrics above — do not omit it, and do not just restate the guardrails as rubrics
 - If a feature lists an outcome hypothesis above, favor acceptance criteria / eval scenarios that would plausibly move that specific metric in that direction — do not ignore this context when present
 - Return ONLY the JSON array. No other text.`;
 }

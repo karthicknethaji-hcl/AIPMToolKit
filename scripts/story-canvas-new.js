@@ -1463,7 +1463,8 @@ function newScShowEditStoryModal(storyId,featId){
       <div style="display:flex;gap:8px;">
         <div style="flex:2;">${lbl('Acceptance Envelope metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.metrics),'Name: Threshold, one per line')}</div>
         <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.acceptanceEnvelope&&d.acceptanceEnvelope.rerunTrigger)||'')}</div>
-      </div>`;
+      </div>
+      <div>${lbl('Acceptance Envelope rubrics',true)}${ta('nsc-edit-ae-rubrics',4,_nscEvalScenariosToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.rubrics),'Scenario: a judgment-call situation the agent may face&#10;Rubric: what a sound decision looks like')}</div>`;
   } else {
     bodyFields=`
       <div>${lbl('Statement')}<textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea></div>
@@ -1576,6 +1577,7 @@ function newScDoEditStory(storyId,origFeatId){
       },
       acceptanceEnvelope:{
         metrics:_nscTextToMetrics((document.getElementById('nsc-edit-metrics')||{}).value),
+        rubrics:_nscTextToEvalScenarios((document.getElementById('nsc-edit-ae-rubrics')||{}).value),
         rerunTrigger:((document.getElementById('nsc-edit-rerun')||{}).value||'').trim()
       }
     };
