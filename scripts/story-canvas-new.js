@@ -4,7 +4,7 @@
 // scPiSelectedIds and scStoryIdCounter are global — declared in story-canvas.js
 
 // ── State ──
-let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[]};
+let newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[],storyType:[]};
 let newScCollapsedGroups=new Set();
 let newScPanelStoryId=null;
 let newScPanelFeatId=null;
@@ -72,7 +72,7 @@ function newScRender(){
 }
 
 function newScClear(){
-  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null};
+  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,storyType:[]};
   newScCollapsedGroups=new Set();
   newScPanelStoryId=null;
   newScPanelFeatId=null;
@@ -232,6 +232,9 @@ function newScSetNavFeat(featId){
 function newScBuildFilterPanel(){
   return `<div style="padding:8px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Priority</div>
     ${['Must Have','Should Have','Could Have','Won\'t Have'].map(p=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('priority','${e(p)}')" ${newScFilter.priority.includes(p)?'checked':''}> ${p}</label>`).join('')}
+    <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
+    <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Story Type</div>
+    ${[{label:'Traditional',value:'traditional'},{label:'AI Feature',value:'ai_feature'},{label:'Agentic',value:'agentic'}].map(t=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('storyType','${t.value}')" ${newScFilter.storyType.includes(t.value)?'checked':''}> ${t.label}</label>`).join('')}
     <div style="border-top:1px solid var(--divider);margin:4px 0;"></div>
     <div style="padding:6px 12px 4px;font-size:9px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--label);">Readiness</div>
     ${['Ready','Not Ready','Points not set'].map(r=>`<label class="fc-filter-row"><input type="checkbox" onchange="newScToggleFilter_v('readiness','${e(r)}')" ${newScFilter.readiness.includes(r)?'checked':''}> ${r}</label>`).join('')}
@@ -767,7 +770,7 @@ function newScToggleFilter_v(section,value){
     if(idx>=0)arr.splice(idx,1);
     else arr.push(value);
   }
-  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies||newScFilter.briefRq.length;
+  const hasFilter=newScFilter.priority.length||newScFilter.readiness.length||newScFilter.piStatus.length||newScFilter.dependencies||newScFilter.briefRq.length||newScFilter.storyType.length;
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.toggle('active',!!hasFilter);
   newScUpdateFilterBadge();
@@ -778,7 +781,7 @@ function newScUpdateFilterBadge(){
   const badge=document.getElementById('nsc-filter-badge');
   const lbl=document.getElementById('nsc-filter-badge-label');
   if(!badge||!lbl)return;
-  const count=(newScFilter.priority.length)+(newScFilter.readiness.length)+(newScFilter.piStatus.length)+(newScFilter.dependencies?1:0);
+  const count=(newScFilter.priority.length)+(newScFilter.readiness.length)+(newScFilter.piStatus.length)+(newScFilter.dependencies?1:0)+(newScFilter.storyType.length);
   if(count>0){
     lbl.textContent=count+' filter'+(count!==1?'s':'');
     badge.style.display='inline-flex';
@@ -788,7 +791,7 @@ function newScUpdateFilterBadge(){
 }
 
 function newScClearFilters(){
-  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[]};
+  newScFilter={priority:[],readiness:[],piStatus:[],dependencies:null,briefRq:[],storyType:[]};
   const btn=document.getElementById('nsc-filter-btn');
   if(btn)btn.classList.remove('active');
   const drop=document.getElementById('nsc-filter-drop');
@@ -805,6 +808,7 @@ function newScClearFilters(){
 function newScApplyFilter(stories,feat){
   let result=stories;
   if(newScFilter.priority.length)result=result.filter(s=>newScFilter.priority.includes(s.priority));
+  if(newScFilter.storyType.length)result=result.filter(s=>newScFilter.storyType.includes(s.storyType||'traditional'));
   if(newScFilter.readiness.length){
     result=result.filter(s=>{
       if(newScFilter.readiness.includes('Ready')&&s.dor==='READY')return true;
