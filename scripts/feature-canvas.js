@@ -1428,6 +1428,24 @@ function scRenderLineage(feat,targetElId){
   <div class="sc-panel-lineage-body">${rows}</div>`;
 }
 
+// `||''` would treat a legitimate numeric 0 threshold (e.g. "guardrail
+// breaches = 0") as missing. Only an actually-missing value falls back.
+function _scNameOrThreshold(v){return v==null?'':String(v);}
+
+// Shared story-type badge pill — single source for the AI FEATURE/AGENTIC
+// label+color mapping so Feature Canvas, Story Canvas's card footer, and
+// its edit-modal title tag can't drift out of sync with each other.
+function scStoryTypeBadge(storyType,opts){
+  if(storyType!=='ai_feature'&&storyType!=='agentic')return'';
+  opts=opts||{};
+  const isAgentic=storyType==='agentic';
+  const bg=isAgentic?'var(--purple-pale)':'var(--blue-pale)';
+  const fg=isAgentic?'var(--purple)':'var(--blue)';
+  const label=isAgentic?'AGENTIC':'AI FEATURE';
+  const size=opts.size||7.5;
+  return `<span style="font-weight:700;font-size:${size}px;background:${bg};color:${fg};border-radius:3px;padding:1px 5px;${opts.extraStyle||''}">${label}</span>`;
+}
+
 // Three-tier story classification (traditional / ai_feature / agentic) —
 // shared across Story Canvas and Release Canvas detail panels, same
 // cross-file-helper pattern as scRenderLineage() above. Returns an array
@@ -1825,8 +1843,7 @@ function scRenderPanel(feat){
     h+=`</div>`;
     h+=`<div class="sc-story-title-row">`;
     h+=`<div class="sc-story-title" id="sc-st-title-${si}">${e(st.title)}</div>`;
-    if(st.storyType==='ai_feature')h+=`<span style="font-weight:700;font-size:7.5px;background:var(--blue-pale);color:var(--blue);border-radius:3px;padding:1px 5px;flex-shrink:0;">AI FEATURE</span>`;
-    if(st.storyType==='agentic')h+=`<span style="font-weight:700;font-size:7.5px;background:var(--purple-pale);color:var(--purple);border-radius:3px;padding:1px 5px;flex-shrink:0;">AGENTIC</span>`;
+    h+=scStoryTypeBadge(st.storyType,{extraStyle:'flex-shrink:0;'});
     if(_canEditFcPiPanel)h+=`<button class="sc-story-edit-btn" onmousedown="event.preventDefault()" onclick="event.stopPropagation();scEditStoryTitle('${e(feat.id)}',${si})" title="Edit title"><i class="ti ti-pencil" style="font-size:10px;" aria-hidden="true"></i></button>`;
     h+=`</div>`;
     if((st.storyType||'traditional')==='traditional'){
@@ -1852,7 +1869,11 @@ function scRenderPanel(feat){
       // Canvas (scGetStorySections), read-only here (no per-field edit
       // affordance yet, matching the pencil-edit gating in Story Canvas).
       const _secs=(typeof scGetStorySections==='function')?scGetStorySections(st):[];
-      h+=`<div class="sc-ac-block">`+_secs.map(sec=>`<div class="sc-ac-label" style="margin-top:8px;">${e(sec.label)}</div><div class="sc-ac-scenario">${sec.html}</div>`).join('')+`</div>`;
+      // Plain text styling (no .sc-ac-scenario) — that class is monospace/
+      // pre-wrap for Gherkin blocks and shouldn't apply to prose/bullet
+      // sections here, matching the unstyled divs Story Canvas/PI Planning
+      // use for the same scGetStorySections() output.
+      h+=`<div class="sc-ac-block">`+_secs.map(sec=>`<div class="sc-ac-label" style="margin-top:8px;">${e(sec.label)}</div><div style="font-size:10px;color:var(--t2);line-height:1.7;">${sec.html}</div>`).join('')+`</div>`;
     }
     h+=`</div></div>`;
   });
@@ -2365,8 +2386,17 @@ async function scGenerateStories(featureIds){
         const isRefine=!!(feat._refinement);
         const newStories=(featBlock.stories||[]).map((st)=>{
           scStoryIdCounter++;
-          const _rawType=String(st.story_type||'traditional').toLowerCase().trim();
-          const storyType=['traditional','ai_feature','agentic'].includes(_rawType)?_rawType:'traditional';
+          // Normalize separators (hyphen/space) before matching, and if the
+          // model still returns something off-list, infer from whichever
+          // detail.* shape is actually present rather than defaulting straight
+          // to 'traditional' — that default previously discarded an entire
+          // ai_feature/agentic detail payload (statement/scenarios stay empty
+          // for those types) whenever story_type didn't match exactly.
+          const _rawType=String(st.story_type||'traditional').toLowerCase().trim().replace(/[\s-]+/g,'_');
+          const _d0=st.detail||{};
+          const storyType=['traditional','ai_feature','agentic'].includes(_rawType)?_rawType
+            :(_d0.goal||_d0.decision_rights||_d0.guardrails||_d0.escalation?'agentic'
+              :(_d0.outcome||_d0.behavior_expectations||_d0.eval_scenarios||_d0.quality_bar?'ai_feature':'traditional'));
           const base={
             id:'ST-'+String(scStoryIdCounter).padStart(3,'0'),
             title:st.title,
@@ -2391,9 +2421,9 @@ async function scGenerateStories(featureIds){
             base.detail={
               outcome:d.outcome||'',
               behaviorExpectations:Array.isArray(d.behavior_expectations)?d.behavior_expectations:[],
-              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})):[],
+              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})).filter(s=>s.scenario||s.rubric):[],
               qualityBar:{
-                metrics:Array.isArray(d.quality_bar&&d.quality_bar.metrics)?d.quality_bar.metrics.map(m=>({name:(m&&m.name)||'',threshold:(m&&m.threshold)||''})):[],
+                metrics:Array.isArray(d.quality_bar&&d.quality_bar.metrics)?d.quality_bar.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
                 rerunTrigger:(d.quality_bar&&d.quality_bar.rerun_trigger)||''
               }
             };
@@ -2407,8 +2437,8 @@ async function scGenerateStories(featureIds){
                 handoff:Array.isArray(d.escalation&&d.escalation.handoff)?d.escalation.handoff:[]
               },
               acceptanceEnvelope:{
-                metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:(m&&m.name)||'',threshold:(m&&m.threshold)||''})):[],
-                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})):[],
+                metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
+                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})).filter(s=>s.scenario||s.rubric):[],
                 rerunTrigger:(d.acceptance_envelope&&d.acceptance_envelope.rerun_trigger)||''
               }
             };

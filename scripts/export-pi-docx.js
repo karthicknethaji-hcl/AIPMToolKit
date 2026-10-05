@@ -162,9 +162,9 @@ async function buildAndDownloadPIDocx(){
           const fromStory=piFindStory(d.fromId);const toStory=piFindStory(d.toId);
           const fromSprint=(piPlan.storyAssignments[d.fromId]||{}).sprint;const toSprint=(piPlan.storyAssignments[d.toId]||{}).sprint;
           depRows.push(new TableRow({children:[
-            cell((fromStory&&fromStory.statement||d.fromId||'').substring(0,60),3600),
+            cell((fromStory&&(fromStory.statement||fromStory.title)||d.fromId||'').substring(0,60),3600),
             cell(fromSprint?'S'+fromSprint:'—',1000),cell('blocks',600,null,true),
-            cell((toStory&&toStory.statement||d.toId||'').substring(0,60),3600),
+            cell((toStory&&(toStory.statement||toStory.title)||d.toId||'').substring(0,60),3600),
             cell(toSprint?'S'+toSprint:'—',1000),cell(d.source||'AI inferred',1560)
           ]}));
         });
@@ -176,7 +176,7 @@ async function buildAndDownloadPIDocx(){
         const extRows=[new TableRow({children:[hcell('Story',4800),hcell('Sprint',1200),hcell('External dependency',5360)]})];
         extDeps.forEach(d=>{
           const story=piFindStory(d.storyId);const sprint=(piPlan.storyAssignments[d.storyId]||{}).sprint;
-          extRows.push(new TableRow({children:[cell((story&&story.statement||d.storyId||'').substring(0,60),4800),cell(sprint?'S'+sprint:'—',1200),cell(d.description||'',5360)]}));
+          extRows.push(new TableRow({children:[cell((story&&(story.statement||story.title)||d.storyId||'').substring(0,60),4800),cell(sprint?'S'+sprint:'—',1200),cell(d.description||'',5360)]}));
         });
         s3.push(new Table({width:{size:11360,type:WidthType.DXA},columnWidths:[4800,1200,5360],rows:extRows}));
       }
@@ -315,7 +315,7 @@ async function buildAndDownloadPIDocx(){
       s7.push(h2('7. Story Notes'));
       notedStories.forEach(([sid,asgn])=>{
         const story=piFindStory(sid);
-        s7.push(new Paragraph({spacing:{before:120,after:6},children:[new TextRun({text:(story&&story.statement||sid).substring(0,80),font:'Arial',size:18,bold:true,color:GREY})]}));
+        s7.push(new Paragraph({spacing:{before:120,after:6},children:[new TextRun({text:(story&&(story.statement||story.title)||sid).substring(0,80),font:'Arial',size:18,bold:true,color:GREY})]}));
         s7.push(body(asgn.note));
         s7.push(gap(10));
       });

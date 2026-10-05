@@ -549,8 +549,7 @@ function newScBuildStoryCard(st,feat,stageColor){
     <div class="sc-card-name" style="margin:4px 0 3px;">${e(st.title)}</div>
     <div class="sc-card-footer">
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
-        ${st.storyType==='ai_feature'?'<span style="font-size:7.5px;font-weight:700;background:var(--blue-pale);color:var(--blue);border-radius:3px;padding:1px 5px;">AI FEATURE</span>':''}
-        ${st.storyType==='agentic'?'<span style="font-size:7.5px;font-weight:700;background:var(--purple-pale);color:var(--purple);border-radius:3px;padding:1px 5px;">AGENTIC</span>':''}
+        ${scStoryTypeBadge(st.storyType)}
         ${st.priority?`<span style="font-size:7.5px;font-weight:700;background:${priColor};color:${priText};border-radius:3px;padding:1px 5px;">${e(st.priority)}</span>`:''}
         <span style="font-size:8.5px;font-weight:600;color:var(--t3);">${ptsLabel}</span>
         ${dorLabel}
@@ -1415,7 +1414,7 @@ function _nscMetricsToText(metrics){
 function _nscTextToMetrics(text){
   if(!text||!text.trim())return[];
   return text.trim().split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
-    const idx=l.indexOf(':');
+    const idx=l.lastIndexOf(':'); // last, not first — a metric name can itself contain a colon (e.g. "Ratio (A:B)")
     if(idx===-1)return{name:l,threshold:''};
     return{name:l.slice(0,idx).trim(),threshold:l.slice(idx+1).trim()};
   });
@@ -1476,7 +1475,7 @@ function newScShowEditStoryModal(storyId,featId){
   }
   // Build feature options
   const featOpts=scCanvas.map(f=>`<option value="${e(f.id)}"${f.id===featId?' selected':''}>${e(f.name)}</option>`).join('');
-  const typeTag=storyType!=='traditional'?`<span style="font-size:9px;font-weight:700;background:${storyType==='agentic'?'var(--purple-pale)':'var(--blue-pale)'};color:${storyType==='agentic'?'var(--purple)':'var(--blue)'};border-radius:3px;padding:1px 5px;margin-left:5px;">${storyType==='agentic'?'AGENTIC':'AI FEATURE'}</span>`:'';
+  const typeTag=scStoryTypeBadge(storyType,{size:9,extraStyle:'margin-left:5px;'});
   const overlay=document.createElement('div');
   overlay.className='modal-overlay';
   overlay.id='nsc-edit-story-overlay';
