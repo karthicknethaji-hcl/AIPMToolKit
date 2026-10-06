@@ -1433,33 +1433,44 @@ function scRenderLineage(feat,targetElId){
 function _scNameOrThreshold(v){return v==null?'':String(v);}
 
 // Rubric category classification (ai_feature eval scenarios / agentic
-// acceptance-envelope rubrics) — reuses the company's agent-test-kit
-// taxonomy verbatim so a story's rubrics are a head start for whenever
-// that feature is later onboarded into real automated testing, not a
-// parallel vocabulary someone would have to remap later. An unrecognized
-// or missing value falls back to 'General' — it never drops the
-// scenario/rubric entry itself (the exact bug class the storyType
+// acceptance-envelope rubrics) — the stored value is a lowercase slug
+// matching agent-test-kit's own test-cases.json category convention
+// verbatim (test-suite/agents/*/config/test-cases.json), not a Title-Case
+// display string, so this data is a genuine zero-translation head start
+// for whenever that feature is later onboarded into real automated
+// testing. _scCategoryLabel() below renders the PM-friendly form. An
+// unrecognized or missing value falls back to 'general' — it never drops
+// the scenario/rubric entry itself (the exact bug class the storyType
 // normalization fix above exists to prevent).
 const _scRubricCategoryAliases={
-  groundedness:'Groundedness',
-  hallucination:'Hallucination',hallucinations:'Hallucination',
-  accuracy:'Accuracy',
-  adversarial:'Adversarial','adversarial robustness':'Adversarial',
-  'out of context':'Out-of-context',outofcontext:'Out-of-context',
-  consistency:'Consistency','consistency determinism':'Consistency',determinism:'Consistency',
-  format:'Format','instruction following':'Format','instruction following format':'Format','format compliance':'Format',
-  bias:'Bias','bias fairness':'Bias',fairness:'Bias',
-  safety:'Safety','safety harmful content':'Safety','harmful content':'Safety',
-  robustness:'Robustness','noisy input':'Robustness','robustness to noisy input':'Robustness',
-  privacy:'Privacy',pii:'Privacy','privacy pii':'Privacy',
-  completeness:'Completeness',coverage:'Completeness','completeness coverage':'Completeness',
-  tone:'Tone',calibration:'Tone','tone calibration':'Tone',
-  general:'General'
+  groundedness:'groundedness',
+  hallucination:'hallucination',hallucinations:'hallucination',
+  accuracy:'accuracy',
+  adversarial:'adversarial','adversarial robustness':'adversarial',
+  'out of context':'out_of_context',outofcontext:'out_of_context','out of scope':'out_of_context',
+  consistency:'consistency','consistency determinism':'consistency',determinism:'consistency',
+  format:'format','instruction following':'format','instruction following format':'format','format compliance':'format',
+  bias:'bias','bias fairness':'bias',fairness:'bias',
+  safety:'safety','safety harmful content':'safety','harmful content':'safety',
+  robustness:'robustness','noisy input':'robustness','robustness to noisy input':'robustness',
+  privacy:'privacy',pii:'privacy','privacy pii':'privacy',
+  completeness:'completeness',coverage:'completeness','completeness coverage':'completeness',
+  tone:'tone',calibration:'tone','tone calibration':'tone',
+  general:'general'
 };
 function _scNormalizeRubricCategory(raw){
-  const key=String(raw||'').toLowerCase().trim().replace(/[\s_\-\/]+/g,' ');
-  return _scRubricCategoryAliases[key]||'General';
+  // Collapse separators BEFORE trimming — otherwise a leading/trailing
+  // separator (e.g. "-Groundedness") collapses to a leading/trailing space
+  // that survives trim-first and fails the exact-match lookup below.
+  const key=String(raw||'').toLowerCase().replace(/[\s_\-\/]+/g,' ').trim();
+  // hasOwnProperty guard, not a bare `[key]||...` lookup — this is a plain
+  // object used as a map, so an input that normalizes to a key already on
+  // Object.prototype (e.g. "constructor") would otherwise resolve through
+  // the prototype chain to a function value instead of falling back.
+  return Object.prototype.hasOwnProperty.call(_scRubricCategoryAliases,key)?_scRubricCategoryAliases[key]:'general';
 }
+const _scCategoryLabels={groundedness:'Groundedness',hallucination:'Hallucination',accuracy:'Accuracy',adversarial:'Adversarial',out_of_context:'Out-of-context',consistency:'Consistency',format:'Format',bias:'Bias',safety:'Safety',robustness:'Robustness',privacy:'Privacy',completeness:'Completeness',tone:'Tone',general:'General'};
+function _scCategoryLabel(category){return _scCategoryLabels[category]||category||'';}
 
 // Scoring recommendation normalization — whitelists against agent-test-kit's
 // own literal evaluatorType/scale vocabulary (test-suite/agents/*/config/
@@ -1467,31 +1478,48 @@ function _scNormalizeRubricCategory(raw){
 // rubrics.js with no translation step. Falls back to the safer generic
 // defaults (llm_judge / scale keyed off the resolved evaluator) rather than
 // dropping anything — same defensive posture as every other normalizer here.
+const _scEvaluatorTypes=['script_diff','llm_judge','toxicity_scan'];
+const _scScales=['binary','0-1'];
 function _scNormalizeScoring(raw){
   const o=raw||{};
   const etRaw=String(o.evaluator_type||o.evaluatorType||'').toLowerCase().trim().replace(/[\s\-]+/g,'_');
-  const evaluatorType=['script_diff','llm_judge','toxicity_scan'].includes(etRaw)?etRaw:'llm_judge';
-  const scaleRaw=String(o.scale||'').toLowerCase().trim();
-  const scale=['binary','0-1'].includes(scaleRaw)?scaleRaw:(evaluatorType==='script_diff'?'binary':'0-1');
+  const evaluatorType=_scEvaluatorTypes.includes(etRaw)?etRaw:'llm_judge';
+  // Collapse whitespace around a hyphen (e.g. hand-typed "0 - 1") so it
+  // still matches the literal "0-1" scale value — scaleRaw's own hyphen
+  // (inside "0-1" itself) is never touched by this, only surrounding
+  // whitespace is removed.
+  const scaleRaw=String(o.scale||'').toLowerCase().trim().replace(/\s*-\s*/g,'-');
+  const scale=_scScales.includes(scaleRaw)?scaleRaw:(evaluatorType==='script_diff'?'binary':'0-1');
   return{evaluatorType,scale,threshold:_scNameOrThreshold(o.threshold),rationale:_scNameOrThreshold(o.rationale)};
 }
 
-// Rubric category pill — same visual pattern as scStoryTypeBadge() below but
-// neutral-colored so it never competes with the story-type pill. font-family
-// is set explicitly since .sc-ac-scenario (styles/08-feature-canvas.css)
-// forces monospace on its ancestor and this must not inherit it.
+// Shared pill renderer — one template for every small colored label pill in
+// this file, so scStoryTypeBadge()/scRubricCategoryBadge() can't drift out
+// of sync with each other on padding/sizing/radius the way two independent
+// hand-written templates eventually do.
+function _scPill(label,opts){
+  opts=opts||{};
+  const size=opts.size||7.5;
+  const border=opts.border?`border:1px solid ${opts.border};`:'';
+  return `<span style="font-weight:700;font-size:${size}px;background:${opts.bg};color:${opts.fg};${border}border-radius:3px;padding:1px 5px;${opts.extraStyle||''}">${label}</span>`;
+}
+
+// Rubric category pill — neutral-colored so it never competes with the
+// story-type pill. font-family is set explicitly since .sc-ac-scenario
+// (styles/08-feature-canvas.css) forces monospace on its ancestor and this
+// must not inherit it.
 function scRubricCategoryBadge(category){
   if(!category)return'';
-  return `<span style="font-weight:700;font-size:7.5px;background:var(--card);color:var(--t3);border:1px solid var(--divider);border-radius:3px;padding:1px 5px;font-family:var(--font);">${e(category)}</span>`;
+  return _scPill(e(_scCategoryLabel(category)),{bg:'var(--card)',fg:'var(--t3)',border:'var(--divider)',extraStyle:'font-family:var(--font);'});
 }
 
 // Scoring-recommendation line — stores the machine evaluatorType value,
 // translates to a PM-friendly label only here at render time (same
 // store-machine/render-friendly pattern scStoryTypeBadge() uses below).
+const _scScoringMethodLabels={script_diff:'Deterministic check',llm_judge:'AI judge review',toxicity_scan:'Safety/content scan'};
 function _scScoringLine(scoring){
   if(!scoring)return'';
-  const _labels={script_diff:'Deterministic check',llm_judge:'AI judge review',toxicity_scan:'Safety/content scan'};
-  const methodLabel=_labels[scoring.evaluatorType]||scoring.evaluatorType||'';
+  const methodLabel=_scScoringMethodLabels[scoring.evaluatorType]||scoring.evaluatorType||'';
   const summary=[methodLabel,scoring.scale,scoring.threshold?('threshold '+scoring.threshold):''].filter(Boolean).join(' · ');
   if(!summary)return'';
   return `<div style="font-size:9.5px;color:var(--t3);font-family:var(--font);margin-top:2px;">Suggested scoring: ${e(summary)}${scoring.rationale?' — '+e(scoring.rationale):''}</div>`;
@@ -1504,11 +1532,8 @@ function scStoryTypeBadge(storyType,opts){
   if(storyType!=='ai_feature'&&storyType!=='agentic')return'';
   opts=opts||{};
   const isAgentic=storyType==='agentic';
-  const bg=isAgentic?'var(--purple-pale)':'var(--blue-pale)';
-  const fg=isAgentic?'var(--purple)':'var(--blue)';
   const label=isAgentic?'AGENTIC':'AI FEATURE';
-  const size=opts.size||7.5;
-  return `<span style="font-weight:700;font-size:${size}px;background:${bg};color:${fg};border-radius:3px;padding:1px 5px;${opts.extraStyle||''}">${label}</span>`;
+  return _scPill(label,{bg:isAgentic?'var(--purple-pale)':'var(--blue-pale)',fg:isAgentic?'var(--purple)':'var(--blue)',size:opts.size,extraStyle:opts.extraStyle});
 }
 
 // Three-tier story classification (traditional / ai_feature / agentic) —
