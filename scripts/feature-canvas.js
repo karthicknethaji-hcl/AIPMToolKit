@@ -1432,6 +1432,71 @@ function scRenderLineage(feat,targetElId){
 // breaches = 0") as missing. Only an actually-missing value falls back.
 function _scNameOrThreshold(v){return v==null?'':String(v);}
 
+// Rubric category classification (ai_feature eval scenarios / agentic
+// acceptance-envelope rubrics) — reuses the company's agent-test-kit
+// taxonomy verbatim so a story's rubrics are a head start for whenever
+// that feature is later onboarded into real automated testing, not a
+// parallel vocabulary someone would have to remap later. An unrecognized
+// or missing value falls back to 'General' — it never drops the
+// scenario/rubric entry itself (the exact bug class the storyType
+// normalization fix above exists to prevent).
+const _scRubricCategoryAliases={
+  groundedness:'Groundedness',
+  hallucination:'Hallucination',hallucinations:'Hallucination',
+  accuracy:'Accuracy',
+  adversarial:'Adversarial','adversarial robustness':'Adversarial',
+  'out of context':'Out-of-context',outofcontext:'Out-of-context',
+  consistency:'Consistency','consistency determinism':'Consistency',determinism:'Consistency',
+  format:'Format','instruction following':'Format','instruction following format':'Format','format compliance':'Format',
+  bias:'Bias','bias fairness':'Bias',fairness:'Bias',
+  safety:'Safety','safety harmful content':'Safety','harmful content':'Safety',
+  robustness:'Robustness','noisy input':'Robustness','robustness to noisy input':'Robustness',
+  privacy:'Privacy',pii:'Privacy','privacy pii':'Privacy',
+  completeness:'Completeness',coverage:'Completeness','completeness coverage':'Completeness',
+  tone:'Tone',calibration:'Tone','tone calibration':'Tone',
+  general:'General'
+};
+function _scNormalizeRubricCategory(raw){
+  const key=String(raw||'').toLowerCase().trim().replace(/[\s_\-\/]+/g,' ');
+  return _scRubricCategoryAliases[key]||'General';
+}
+
+// Scoring recommendation normalization — whitelists against agent-test-kit's
+// own literal evaluatorType/scale vocabulary (test-suite/agents/*/config/
+// rubrics.js) so this data could feed a future export into a real
+// rubrics.js with no translation step. Falls back to the safer generic
+// defaults (llm_judge / scale keyed off the resolved evaluator) rather than
+// dropping anything — same defensive posture as every other normalizer here.
+function _scNormalizeScoring(raw){
+  const o=raw||{};
+  const etRaw=String(o.evaluator_type||o.evaluatorType||'').toLowerCase().trim().replace(/[\s\-]+/g,'_');
+  const evaluatorType=['script_diff','llm_judge','toxicity_scan'].includes(etRaw)?etRaw:'llm_judge';
+  const scaleRaw=String(o.scale||'').toLowerCase().trim();
+  const scale=['binary','0-1'].includes(scaleRaw)?scaleRaw:(evaluatorType==='script_diff'?'binary':'0-1');
+  return{evaluatorType,scale,threshold:_scNameOrThreshold(o.threshold),rationale:_scNameOrThreshold(o.rationale)};
+}
+
+// Rubric category pill — same visual pattern as scStoryTypeBadge() below but
+// neutral-colored so it never competes with the story-type pill. font-family
+// is set explicitly since .sc-ac-scenario (styles/08-feature-canvas.css)
+// forces monospace on its ancestor and this must not inherit it.
+function scRubricCategoryBadge(category){
+  if(!category)return'';
+  return `<span style="font-weight:700;font-size:7.5px;background:var(--card);color:var(--t3);border:1px solid var(--divider);border-radius:3px;padding:1px 5px;font-family:var(--font);">${e(category)}</span>`;
+}
+
+// Scoring-recommendation line — stores the machine evaluatorType value,
+// translates to a PM-friendly label only here at render time (same
+// store-machine/render-friendly pattern scStoryTypeBadge() uses below).
+function _scScoringLine(scoring){
+  if(!scoring)return'';
+  const _labels={script_diff:'Deterministic check',llm_judge:'AI judge review',toxicity_scan:'Safety/content scan'};
+  const methodLabel=_labels[scoring.evaluatorType]||scoring.evaluatorType||'';
+  const summary=[methodLabel,scoring.scale,scoring.threshold?('threshold '+scoring.threshold):''].filter(Boolean).join(' · ');
+  if(!summary)return'';
+  return `<div style="font-size:9.5px;color:var(--t3);font-family:var(--font);margin-top:2px;">Suggested scoring: ${e(summary)}${scoring.rationale?' — '+e(scoring.rationale):''}</div>`;
+}
+
 // Shared story-type badge pill — single source for the AI FEATURE/AGENTIC
 // label+color mapping so Feature Canvas, Story Canvas's card footer, and
 // its edit-modal title tag can't drift out of sync with each other.
@@ -1460,7 +1525,13 @@ function scGetStorySections(st){
   // Shared scenario+rubric row renderer — used both for ai_feature's
   // standalone Eval Scenarios section and for rubrics nested inside an
   // Acceptance Envelope (agentic) alongside its aggregate metrics.
-  const rubricRows=(arr)=>(arr&&arr.length)?arr.map(s=>`<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div></div>`).join(''):'';
+  // category/scoring are independently optional — a legacy entry (pre-
+  // categorization) has neither and must render with no badge/line at all,
+  // not a 'General' badge (that's only ever applied at normalization time).
+  const rubricRows=(arr)=>(arr&&arr.length)?arr.map(s=>{
+    const _meta=(s.category?`<div style="margin-top:4px;">${scRubricCategoryBadge(s.category)}</div>`:'')+_scScoringLine(s.scoring);
+    return `<div class="sc-ac-scenario"><div style="flex:1;white-space:pre-wrap;font-size:11px;color:var(--t2);">${e(s.scenario||'')}</div><div style="flex:1;white-space:pre-wrap;font-size:10px;color:var(--t3);font-style:italic;margin-top:2px;">Rubric: ${e(s.rubric||'')}</div>${_meta}</div>`;
+  }).join(''):'';
   const metricsBlock=(m)=>{
     const o=m||{};const rows=o.metrics||[];
     let html=(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:2px 0;"><span>${e(r.name||'')}</span><span style="font-weight:600;flex-shrink:0;">${e(r.threshold||'')}</span></div>`).join('')
@@ -2421,7 +2492,7 @@ async function scGenerateStories(featureIds){
             base.detail={
               outcome:d.outcome||'',
               behaviorExpectations:Array.isArray(d.behavior_expectations)?d.behavior_expectations:[],
-              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})).filter(s=>s.scenario||s.rubric):[],
+              evalScenarios:Array.isArray(d.eval_scenarios)?d.eval_scenarios.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||'',category:_scNormalizeRubricCategory(s&&s.category),scoring:_scNormalizeScoring(s&&s.scoring)})).filter(s=>s.scenario||s.rubric):[],
               qualityBar:{
                 metrics:Array.isArray(d.quality_bar&&d.quality_bar.metrics)?d.quality_bar.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
                 rerunTrigger:(d.quality_bar&&d.quality_bar.rerun_trigger)||''
@@ -2438,7 +2509,7 @@ async function scGenerateStories(featureIds){
               },
               acceptanceEnvelope:{
                 metrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.metrics)?d.acceptance_envelope.metrics.map(m=>({name:_scNameOrThreshold(m&&m.name),threshold:_scNameOrThreshold(m&&m.threshold)})):[],
-                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||''})).filter(s=>s.scenario||s.rubric):[],
+                rubrics:Array.isArray(d.acceptance_envelope&&d.acceptance_envelope.rubrics)?d.acceptance_envelope.rubrics.map(s=>({scenario:(s&&s.scenario)||'',rubric:(s&&s.rubric)||'',category:_scNormalizeRubricCategory(s&&s.category),scoring:_scNormalizeScoring(s&&s.scoring)})).filter(s=>s.scenario||s.rubric):[],
                 rerunTrigger:(d.acceptance_envelope&&d.acceptance_envelope.rerun_trigger)||''
               }
             };
@@ -2601,7 +2672,7 @@ Return a JSON array — one object per feature. Each story is classified indepen
         "detail": {
           "outcome": "the user outcome this AI behavior should achieve",
           "behavior_expectations": ["concrete behavior that must always hold", "..."],
-          "eval_scenarios": [{"scenario": "a concrete input/situation", "rubric": "one-sentence grading criteria for a good response to it"}],
+          "eval_scenarios": [{"scenario": "a concrete input/situation", "rubric": "one-sentence grading criteria for a good response to it", "category": "Groundedness", "scoring": {"evaluator_type": "llm_judge", "scale": "0-1", "threshold": ">= 0.7", "rationale": "one sentence on why this evaluator/scale/threshold fits"}}],
           "quality_bar": {"metrics": [{"name": "metric name", "threshold": ">= 90%"}], "rerun_trigger": "what change requires re-running the scenario set"}
         }
       },
@@ -2613,7 +2684,7 @@ Return a JSON array — one object per feature. Each story is classified indepen
           "decision_rights": ["what it may determine, recommend, or execute on its own", "..."],
           "guardrails": ["what it must never do regardless of instruction", "..."],
           "escalation": {"triggers": ["concrete condition that forces a handoff to a human", "..."], "handoff": ["what context must travel with the handoff", "..."]},
-          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rubrics": [{"scenario": "a concrete judgment-call situation the agent may face (e.g. a borderline escalation call)", "rubric": "one-sentence criteria for what a sound decision looks like in that situation"}], "rerun_trigger": "what change requires re-running the scenario set"}
+          "acceptance_envelope": {"metrics": [{"name": "metric name", "threshold": ">= 80%"}], "rubrics": [{"scenario": "a concrete judgment-call situation the agent may face (e.g. a borderline escalation call)", "rubric": "one-sentence criteria for what a sound decision looks like in that situation", "category": "Accuracy", "scoring": {"evaluator_type": "llm_judge", "scale": "0-1", "threshold": ">= 0.7", "rationale": "one sentence on why this evaluator/scale/threshold fits"}}], "rerun_trigger": "what change requires re-running the scenario set"}
         }
       }
     ]
@@ -2638,6 +2709,7 @@ Rules:
 - detail.escalation (agentic only): triggers = concrete handoff conditions; handoff = what context travels with the handoff
 - detail.quality_bar / detail.acceptance_envelope: 1-4 measurable metrics with name+threshold (threshold is a short string with unit/operator, e.g. ">= 80%", "< $0.25", "= 0", never a bare number); rerun_trigger: one sentence on what change requires re-running the scenario set
 - detail.acceptance_envelope.rubrics (agentic only): 2-4 concrete judgment-call scenarios the agent may plausibly face (a borderline escalation call, an ambiguous guardrail boundary, a low-confidence decision) + a one-sentence rubric for what a sound decision looks like in that scenario. This grades the quality of the agent's in-the-moment judgment, separate from the aggregate pass/fail metrics above — do not omit it, and do not just restate the guardrails as rubrics
+- detail.eval_scenarios[] / detail.acceptance_envelope.rubrics[] — "category" and "scoring": category classifies what that specific rubric actually tests — Groundedness (claims traceable to real context/data), Hallucination (states fabricated info as fact), Accuracy (factually/numerically correct), Adversarial (resists manipulation/prompt-injection/jailbreak), Out-of-context (correctly handles requests outside intended scope), Consistency (stable output across reruns of the same input), Format (follows required output structure), Bias (fair/non-discriminatory across groups), Safety (avoids harmful/toxic content), Robustness (handles malformed/noisy input gracefully), Privacy (avoids leaking PII/sensitive data), Completeness (covers everything the scenario requires), Tone (appropriately calibrated confidence/register), or General if none of these cleanly applies — never force a stretch fit. scoring is your recommendation for how this would actually be scored in automated testing: evaluator_type is "script_diff" (fully deterministic, no judgment involved), "llm_judge" (needs a model-as-judge), or "toxicity_scan" (a safety/content classifier); scale is "binary" (pass/fail) or "0-1" (continuous score); threshold is a short pass line in the same style as the metrics above (e.g. ">= 0.7", "pass iff no fabricated claim"); rationale is one sentence on why that evaluator/scale/threshold fits. Pick category and scoring independently per rubric based on what that specific scenario actually tests — most will cluster around Groundedness, Accuracy, Out-of-context, or Completeness, and most scoring will not need "llm_judge"/"0-1" by default; reserve the rarer categories (Adversarial, Bias, Safety, Privacy, Tone, Robustness, Format, Consistency) and non-"llm_judge" choices for scenarios that genuinely test that specific concern, not out of habit or because the surrounding story is AI-generated
 - If a feature lists an outcome hypothesis above, favor acceptance criteria / eval scenarios that would plausibly move that specific metric in that direction — do not ignore this context when present
 - Return ONLY the JSON array. No other text.`;
 }

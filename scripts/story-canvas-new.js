@@ -1391,19 +1391,39 @@ function _nscBulletsToText(arr){return(arr&&arr.length)?arr.join('\n'):'';}
 function _nscTextToBullets(text){return(text||'').split('\n').map(l=>l.trim()).filter(Boolean);}
 function _nscEvalScenariosToText(arr){
   if(!arr||!arr.length)return'';
-  return arr.map(s=>'Scenario: '+(s.scenario||'')+'\nRubric: '+(s.rubric||'')).join('\n\n');
+  return arr.map(s=>{
+    let block='Scenario: '+(s.scenario||'')+'\nRubric: '+(s.rubric||'');
+    if(s.category)block+='\nCategory: '+s.category;
+    if(s.scoring)block+='\nScoring: '+[s.scoring.evaluatorType,s.scoring.scale,s.scoring.threshold].filter(Boolean).join(', ')+(s.scoring.rationale?' — '+s.scoring.rationale:'');
+    return block;
+  }).join('\n\n');
 }
+// Category:/Scoring: are optional lines on top of the existing Scenario:/
+// Rubric: pair — omitting either leaves category/scoring genuinely absent
+// (not a defaulted value) so a legacy, pre-categorization entry round-trips
+// with no stray badge. A typo'd value here is piped through the same
+// _scNormalizeRubricCategory()/_scNormalizeScoring() (feature-canvas.js)
+// used at generation time, so it degrades the same defensive way instead
+// of crashing or silently keeping garbage.
 function _nscTextToEvalScenarios(text){
   if(!text||!text.trim())return[];
   return text.trim().split(/\n{2,}/).map(block=>{
     const lines=block.split('\n').map(l=>l.trim()).filter(Boolean);
     const out={scenario:'',rubric:''};
-    let last='scenario';
+    let rawCategory=null,rawScoring=null,last='scenario';
     lines.forEach(l=>{
       if(/^Scenario:/i.test(l)){out.scenario=l.replace(/^Scenario:\s*/i,'');last='scenario';}
       else if(/^Rubric:/i.test(l)){out.rubric=l.replace(/^Rubric:\s*/i,'');last='rubric';}
-      else{out[last]=out[last]?out[last]+' '+l:l;}
+      else if(/^Category:/i.test(l)){rawCategory=l.replace(/^Category:\s*/i,'');last='category';}
+      else if(/^Scoring:/i.test(l)){rawScoring=l.replace(/^Scoring:\s*/i,'');last='scoring';}
+      else if(last==='scenario'||last==='rubric'){out[last]=out[last]?out[last]+' '+l:l;}
     });
+    if(rawCategory!=null&&typeof _scNormalizeRubricCategory==='function')out.category=_scNormalizeRubricCategory(rawCategory);
+    if(rawScoring!=null&&typeof _scNormalizeScoring==='function'){
+      const emParts=rawScoring.split(/\s[—-]\s/);
+      const headParts=(emParts[0]||'').split(',').map(x=>x.trim());
+      out.scoring=_scNormalizeScoring({evaluator_type:headParts[0],scale:headParts[1],threshold:headParts[2],rationale:emParts.slice(1).join(' - ')});
+    }
     return out;
   }).filter(s=>s.scenario||s.rubric);
 }
@@ -1449,7 +1469,7 @@ function newScShowEditStoryModal(storyId,featId){
     bodyFields=`
       <div>${lbl('Outcome')}${ta('nsc-edit-outcome',3,d.outcome||'','',true)}</div>
       <div>${lbl('Behavior Expectations',true)}${ta('nsc-edit-behavior',3,_nscBulletsToText(d.behaviorExpectations),'One expectation per line')}</div>
-      <div>${lbl('Eval Scenarios &amp; Rubrics',true)}${ta('nsc-edit-evals',6,_nscEvalScenariosToText(d.evalScenarios),'Scenario: …&#10;Rubric: …')}</div>
+      <div>${lbl('Eval Scenarios &amp; Rubrics',true)}${ta('nsc-edit-evals',7,_nscEvalScenariosToText(d.evalScenarios),'Scenario: …&#10;Rubric: …&#10;Category: Groundedness (optional)&#10;Scoring: llm_judge, 0-1, &gt;= 0.7 (optional)')}</div>
       <div style="display:flex;gap:8px;">
         <div style="flex:2;">${lbl('Quality Bar metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.qualityBar&&d.qualityBar.metrics),'Task success rate: &gt;= 90%')}</div>
         <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.qualityBar&&d.qualityBar.rerunTrigger)||'')}</div>
@@ -1467,7 +1487,7 @@ function newScShowEditStoryModal(storyId,featId){
         <div style="flex:2;">${lbl('Acceptance Envelope metrics',true)}${ta('nsc-edit-metrics',3,_nscMetricsToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.metrics),'Name: Threshold, one per line')}</div>
         <div style="flex:1;">${lbl('Rerun trigger',true)}${ta('nsc-edit-rerun',3,(d.acceptanceEnvelope&&d.acceptanceEnvelope.rerunTrigger)||'')}</div>
       </div>
-      <div>${lbl('Acceptance Envelope rubrics',true)}${ta('nsc-edit-ae-rubrics',4,_nscEvalScenariosToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.rubrics),'Scenario: a judgment-call situation the agent may face&#10;Rubric: what a sound decision looks like')}</div>`;
+      <div>${lbl('Acceptance Envelope rubrics',true)}${ta('nsc-edit-ae-rubrics',6,_nscEvalScenariosToText(d.acceptanceEnvelope&&d.acceptanceEnvelope.rubrics),'Scenario: a judgment-call situation the agent may face&#10;Rubric: what a sound decision looks like&#10;Category: Accuracy (optional)&#10;Scoring: llm_judge, 0-1, &gt;= 0.7 (optional)')}</div>`;
   } else {
     bodyFields=`
       <div>${lbl('Statement')}<textarea id="nsc-edit-stmt" rows="3" oninput="newScValidateEditStory()" style="width:100%;border:1px solid var(--divider);border-radius:5px;padding:6px 8px;font-size:11px;font-family:var(--font);color:var(--t1);resize:none;box-sizing:border-box;">${e(st.statement||'')}</textarea></div>
